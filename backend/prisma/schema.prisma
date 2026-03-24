@@ -1,0 +1,17 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Analysis {
+  id         Int      @id @default(autoincrement())
+  createdAt  DateTime @default(now())
+  coins      String
+  marketData Json
+  coinsData  Json
+  result     String
+}

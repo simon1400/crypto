@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npx prisma:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "WebSearch",
+      "Bash(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@157.90.169.205 \"echo ''Connected OK'' && hostname\")",
+      "Bash(ssh root@157.90.169.205 \"node -v && npm -v && pm2 -v 2>/dev/null || echo ''pm2 not found''\")",
+      "Bash(ssh root@157.90.169.205 \"sudo -u postgres psql -c ''\\\\l''\")",
+      "Bash(ssh root@157.90.169.205 \"ls /etc/nginx/sites-enabled/ && nginx -v 2>&1 && cat /etc/nginx/sites-enabled/default 2>/dev/null | head -5\")",
+      "Bash(ssh root@157.90.169.205 \"pm2 list 2>/dev/null\")",
+      "Bash(ssh root@157.90.169.205 \"sudo -u postgres psql -c \"\"CREATE USER crypto_user WITH PASSWORD ''CryptoD4sh2026!'';\"\" 2>&1; sudo -u postgres psql -c \"\"CREATE DATABASE crypto_dashboard OWNER crypto_user;\"\" 2>&1\")",
+      "Bash(ssh root@157.90.169.205 \"mkdir -p /opt/crypto\")",
+      "Bash(scp -r d:/crypto/backend d:/crypto/frontend d:/crypto/DEPLOY.md d:/crypto/claude.md root@157.90.169.205:/opt/crypto/)",
+      "Bash(ssh root@157.90.169.205 \"ls -la /opt/crypto/\")",
+      "Bash(ssh root@157.90.169.205 \"rm -rf /opt/crypto/*\")",
+      "Bash(tar --exclude='node_modules' --exclude='dist' --exclude='.prisma' -czf /tmp/crypto-deploy.tar.gz backend frontend DEPLOY.md claude.md)",
+      "Bash(scp /tmp/crypto-deploy.tar.gz root@157.90.169.205:/opt/crypto/)",
+      "Bash(ssh root@157.90.169.205 \"cd /opt/crypto && tar -xzf crypto-deploy.tar.gz && rm crypto-deploy.tar.gz && ls -la\")",
+      "Bash(ssh root@157.90.169.205:*)",
+      "Bash(tar --exclude='node_modules' --exclude='dist' --exclude='.prisma' -czf /tmp/crypto-deploy.tar.gz backend frontend)",
+      "Bash(scp /tmp/crypto-deploy.tar.gz root@157.90.169.205:/tmp/)",
+      "Bash(scp dist/services/claude.js root@157.90.169.205:/opt/crypto/backend/dist/services/claude.js)"
+    ]
+  }
+}
