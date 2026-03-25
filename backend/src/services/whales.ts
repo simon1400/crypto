@@ -11,9 +11,9 @@ const TOP_WHALES = [
     description: 'Известный ETH-кит, крупные DeFi позиции',
   },
   {
-    address: '0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549',
-    name: 'Whale Fund',
-    description: 'Крупный институциональный кошелёк, 21k+ ETH',
+    address: '0x3BA21b6477F48273f41d241AA3722FFb9E07E247',
+    name: 'Curve Whale',
+    description: 'Крупный DeFi-трейдер, активный в Curve/USDC/CRV',
   },
 ]
 
@@ -107,7 +107,7 @@ async function fetchTokenTransfers(address: string): Promise<TokenTransfer[]> {
           // Skip zero-value transfers
           if (tx.value === '0') return false
           // Keep known legit tokens
-          const knownTokens = ['USDT', 'USDC', 'DAI', 'WETH', 'WBTC', 'LINK', 'UNI', 'AAVE', 'MKR', 'SNX', 'COMP', 'CRV', 'LDO', 'RPL', 'SUSHI', 'YFI', 'BAL', 'INCH', 'GRT', 'ENS', 'DYDX', 'FXS', 'FRAX', 'LUSD', 'RSR', 'PAXG', 'PEPE', 'SHIB', 'ARB', 'OP', 'MATIC', 'stETH', 'rETH', 'cbETH', 'PENDLE', 'ENA', 'ETHFI', 'EIGEN', 'DUSK', 'ILV', 'GHST', 'TUSD']
+          const knownTokens = ['USDT', 'USDC', 'DAI', 'WETH', 'WBTC', 'LINK', 'UNI', 'AAVE', 'MKR', 'SNX', 'COMP', 'CRV', 'LDO', 'RPL', 'SUSHI', 'YFI', 'BAL', 'INCH', 'GRT', 'ENS', 'DYDX', 'FXS', 'FRAX', 'LUSD', 'RSR', 'PAXG', 'PEPE', 'SHIB', 'ARB', 'OP', 'MATIC', 'stETH', 'rETH', 'cbETH', 'PENDLE', 'ENA', 'ETHFI', 'EIGEN', 'DUSK', 'ILV', 'GHST', 'TUSD', '3Crv', 'crvUSD', 'CVX', 'MEAN', 'steakETH', 'gtWETH']
           if (knownTokens.includes(symbol)) return true
           // Otherwise skip (likely airdrop spam)
           return false
