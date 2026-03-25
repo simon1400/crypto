@@ -11,9 +11,9 @@ const TOP_WHALES = [
     description: 'Известный ETH-кит, крупные DeFi позиции',
   },
   {
-    address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
-    name: 'Vitalik Buterin',
-    description: 'Ethereum co-founder',
+    address: '0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549',
+    name: 'Whale Fund',
+    description: 'Крупный институциональный кошелёк, 21k+ ETH',
   },
 ]
 
@@ -67,9 +67,10 @@ async function fetchEthBalance(address: string): Promise<number> {
 
 async function fetchTokenTransfers(address: string): Promise<TokenTransfer[]> {
   const key = getApiKey()
-  const threeDaysAgo = Math.floor((Date.now() - 3 * 24 * 60 * 60 * 1000) / 1000)
+  // Last 3 weeks
+  const threeWeeksAgo = Math.floor((Date.now() - 21 * 24 * 60 * 60 * 1000) / 1000)
 
-  const url = `${ETHERSCAN_BASE}?chainid=1&module=account&action=tokentx&address=${address}&page=1&offset=100&sort=desc&apikey=${key}`
+  const url = `${ETHERSCAN_BASE}?chainid=1&module=account&action=tokentx&address=${address}&page=1&offset=200&sort=desc&apikey=${key}`
 
   try {
     const res = await fetch(url)
@@ -79,20 +80,45 @@ async function fetchTokenTransfers(address: string): Promise<TokenTransfer[]> {
       return []
     }
 
-    // Filter spam tokens: skip tokens with non-ASCII names or zero value
-    const isSpam = (name: string, symbol: string) => {
-      const hasWeirdChars = /[^\x20-\x7E]/.test(symbol)
-      const tooLong = symbol.length > 12
-      return hasWeirdChars || tooLong
-    }
+    const addrLower = address.toLowerCase()
 
     return data.result
-      .filter((tx: any) => Number(tx.timeStamp) >= threeDaysAgo)
-      .filter((tx: any) => !isSpam(tx.tokenName, tx.tokenSymbol))
+      .filter((tx: any) => {
+        const ts = Number(tx.timeStamp)
+        if (ts < threeWeeksAgo) return false
+
+        // Only show transactions initiated BY the whale (not spam sent to them)
+        // If whale is sender → they initiated it (OUT)
+        // If whale is receiver → check if tx.from is a known contract/DEX (not random spam)
+        // Simple heuristic: only include if whale is the "from" address
+        // OR if the transfer is from a well-known DEX router / known contract
+        const fromWhale = tx.from.toLowerCase() === addrLower
+        const toWhale = tx.to.toLowerCase() === addrLower
+
+        if (fromWhale) return true
+
+        // For incoming: filter out spam by checking if it looks legit
+        if (toWhale) {
+          const symbol = tx.tokenSymbol || ''
+          // Skip non-ASCII symbols
+          if (/[^\x20-\x7E]/.test(symbol)) return false
+          // Skip symbols longer than 10 chars (usually spam)
+          if (symbol.length > 10) return false
+          // Skip zero-value transfers
+          if (tx.value === '0') return false
+          // Keep known legit tokens
+          const knownTokens = ['USDT', 'USDC', 'DAI', 'WETH', 'WBTC', 'LINK', 'UNI', 'AAVE', 'MKR', 'SNX', 'COMP', 'CRV', 'LDO', 'RPL', 'SUSHI', 'YFI', 'BAL', 'INCH', 'GRT', 'ENS', 'DYDX', 'FXS', 'FRAX', 'LUSD', 'RSR', 'PAXG', 'PEPE', 'SHIB', 'ARB', 'OP', 'MATIC', 'stETH', 'rETH', 'cbETH', 'PENDLE', 'ENA', 'ETHFI', 'EIGEN', 'DUSK', 'ILV', 'GHST', 'TUSD']
+          if (knownTokens.includes(symbol)) return true
+          // Otherwise skip (likely airdrop spam)
+          return false
+        }
+
+        return false
+      })
       .map((tx: any) => {
         const decimal = Number(tx.tokenDecimal) || 18
         const rawValue = Number(tx.value) / Math.pow(10, decimal)
-        const direction = tx.to.toLowerCase() === address.toLowerCase() ? 'IN' : 'OUT'
+        const direction = tx.to.toLowerCase() === addrLower ? 'IN' : 'OUT'
 
         return {
           hash: tx.hash,

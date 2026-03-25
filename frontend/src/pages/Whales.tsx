@@ -54,7 +54,7 @@ function WhaleCard({ whale }: { whale: WhaleData }) {
       {/* Top tokens */}
       {whale.summary.topTokens.length > 0 && (
         <div className="mb-4">
-          <h4 className="text-sm text-text-secondary mb-2">Топ токены (за 3 дня):</h4>
+          <h4 className="text-sm text-text-secondary mb-2">Топ токены (за 3 недели):</h4>
           <div className="flex flex-wrap gap-2">
             {whale.summary.topTokens.map((token) => (
               <div
@@ -96,7 +96,7 @@ function WhaleCard({ whale }: { whale: WhaleData }) {
       )}
 
       {whale.transfers.length === 0 && (
-        <p className="text-sm text-text-secondary">Нет токен-транзакций за последние 3 дня</p>
+        <p className="text-sm text-text-secondary">Нет транзакций за последние 3 недели</p>
       )}
     </div>
   )
@@ -151,7 +151,7 @@ export default function Whales() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Whale Tracker</h1>
-          <p className="text-text-secondary mt-1">Отслеживание топ-3 крипто-кошельков за последние 3 дня</p>
+          <p className="text-text-secondary mt-1">Отслеживание топ-3 крипто-кошельков за последние 3 недели</p>
         </div>
         <button
           onClick={handleScan}
