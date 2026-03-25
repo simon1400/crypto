@@ -1,19 +1,19 @@
-// Top 3 publicly known whale wallets (Ethereum)
+// Top 3 publicly known active whale wallets (Ethereum)
 const TOP_WHALES = [
-  {
-    address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
-    name: 'Vitalik Buterin',
-    description: 'Ethereum co-founder',
-  },
   {
     address: '0x176F3DAb24a159341c0509bB36B833E7fdd0a132',
     name: 'Justin Sun',
     description: 'Tron founder, активный on-chain трейдер',
   },
   {
-    address: '0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B',
-    name: 'Whale #3',
-    description: 'Крупный Ethereum-кошелёк',
+    address: '0x56178a0d5F301bAf6CF3e1Cd53d9863437345Bf9',
+    name: 'James Fickel',
+    description: 'Известный ETH-кит, крупные DeFi позиции',
+  },
+  {
+    address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
+    name: 'Vitalik Buterin',
+    description: 'Ethereum co-founder',
   },
 ]
 
@@ -43,7 +43,8 @@ export interface WhaleData {
   }
 }
 
-const ETHERSCAN_BASE = 'https://api.etherscan.io/api'
+// Etherscan V2 API
+const ETHERSCAN_BASE = 'https://api.etherscan.io/v2/api'
 
 function getApiKey(): string {
   return process.env.ETHERSCAN_API_KEY || ''
@@ -51,7 +52,7 @@ function getApiKey(): string {
 
 async function fetchEthBalance(address: string): Promise<number> {
   const key = getApiKey()
-  const url = `${ETHERSCAN_BASE}?module=account&action=balance&address=${address}&tag=latest&apikey=${key}`
+  const url = `${ETHERSCAN_BASE}?chainid=1&module=account&action=balance&address=${address}&tag=latest&apikey=${key}`
   try {
     const res = await fetch(url)
     const data: any = await res.json()
@@ -66,10 +67,9 @@ async function fetchEthBalance(address: string): Promise<number> {
 
 async function fetchTokenTransfers(address: string): Promise<TokenTransfer[]> {
   const key = getApiKey()
-  // Get last 3 days of transactions
   const threeDaysAgo = Math.floor((Date.now() - 3 * 24 * 60 * 60 * 1000) / 1000)
 
-  const url = `${ETHERSCAN_BASE}?module=account&action=tokentx&address=${address}&page=1&offset=100&sort=desc&apikey=${key}`
+  const url = `${ETHERSCAN_BASE}?chainid=1&module=account&action=tokentx&address=${address}&page=1&offset=100&sort=desc&apikey=${key}`
 
   try {
     const res = await fetch(url)
@@ -79,8 +79,16 @@ async function fetchTokenTransfers(address: string): Promise<TokenTransfer[]> {
       return []
     }
 
+    // Filter spam tokens: skip tokens with non-ASCII names or zero value
+    const isSpam = (name: string, symbol: string) => {
+      const hasWeirdChars = /[^\x20-\x7E]/.test(symbol)
+      const tooLong = symbol.length > 12
+      return hasWeirdChars || tooLong
+    }
+
     return data.result
       .filter((tx: any) => Number(tx.timeStamp) >= threeDaysAgo)
+      .filter((tx: any) => !isSpam(tx.tokenName, tx.tokenSymbol))
       .map((tx: any) => {
         const decimal = Number(tx.tokenDecimal) || 18
         const rawValue = Number(tx.value) / Math.pow(10, decimal)
@@ -109,7 +117,6 @@ function buildSummary(transfers: TokenTransfer[]) {
   const buys = transfers.filter((t) => t.direction === 'IN')
   const sells = transfers.filter((t) => t.direction === 'OUT')
 
-  // Aggregate by token
   const tokenMap = new Map<string, { symbol: string; name: string; inAmount: number; outAmount: number }>()
 
   for (const t of transfers) {
@@ -147,7 +154,6 @@ export async function fetchWhaleData(): Promise<WhaleData[]> {
   const results: WhaleData[] = []
 
   for (const whale of TOP_WHALES) {
-    // Small delay between requests to respect rate limits
     if (results.length > 0) {
       await new Promise((r) => setTimeout(r, 250))
     }
