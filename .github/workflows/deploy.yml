@@ -1,0 +1,126 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-backend:
+    name: Build Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Generate Prisma client
+        working-directory: backend
+        run: npx prisma generate
+
+      - name: TypeScript build
+        working-directory: backend
+        run: npm run build
+
+      - name: Upload backend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-dist
+          path: backend/dist/
+
+  build-frontend:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: TypeScript check
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Vite build
+        working-directory: frontend
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+          VITE_API_SECRET: ${{ secrets.VITE_API_SECRET }}
+        run: npx vite build
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+  deploy:
+    name: Deploy to VPS
+    needs: [build-backend, build-frontend]
+    runs-on: ubuntu-latest
+    if: success()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download backend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-dist
+          path: backend/dist/
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy backend
+        run: |
+          rsync -avz --delete backend/dist/ root@${{ secrets.VPS_HOST }}:/opt/crypto/backend/dist/
+          rsync -avz backend/package.json backend/package-lock.json root@${{ secrets.VPS_HOST }}:/opt/crypto/backend/
+          rsync -avz backend/prisma/ root@${{ secrets.VPS_HOST }}:/opt/crypto/backend/prisma/
+
+      - name: Deploy frontend
+        run: |
+          rsync -avz --delete frontend/dist/ root@${{ secrets.VPS_HOST }}:/opt/crypto/frontend/dist/
+
+      - name: Install deps, migrate & restart
+        run: |
+          ssh root@${{ secrets.VPS_HOST }} << 'EOF'
+            cd /opt/crypto/backend
+            npm ci --omit=dev
+            npx prisma migrate deploy
+            pm2 restart crypto-backend
+            echo "Backend restarted"
+          EOF
+
+      - name: Health check
+        run: |
+          sleep 3
+          STATUS=$(ssh root@${{ secrets.VPS_HOST }} "pm2 jlist" | python3 -c "import sys,json; apps=json.load(sys.stdin); print([a['pm2_env']['status'] for a in apps if a['name']=='crypto-backend'][0])")
+          if [ "$STATUS" != "online" ]; then
+            echo "::error::Backend is not online! Status: $STATUS"
+            exit 1
+          fi
+          echo "Backend is online"

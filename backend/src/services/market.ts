@@ -34,20 +34,30 @@ export async function fetchOHLCV(
 }
 
 export async function fetchMarketOverview(): Promise<MarketOverview> {
-  const [fngRes, globalRes] = await Promise.all([
-    fetch('https://api.alternative.me/fng/?limit=1'),
-    fetch('https://api.coingecko.com/api/v3/global'),
-  ])
+  let fearGreed = 50
+  let fearGreedLabel = 'Neutral'
+  let btcDominance = 60
 
-  if (!fngRes.ok) throw new Error(`Fear&Greed API error: ${fngRes.status}`)
-  if (!globalRes.ok) throw new Error(`CoinGecko API error: ${globalRes.status}`)
-
-  const fngData: any = await fngRes.json()
-  const globalData: any = await globalRes.json()
-
-  return {
-    fearGreed: Number(fngData.data[0].value),
-    fearGreedLabel: fngData.data[0].value_classification,
-    btcDominance: Math.round(globalData.data.market_cap_percentage.btc * 10) / 10,
+  try {
+    const fngRes = await fetch('https://api.alternative.me/fng/?limit=1')
+    if (fngRes.ok) {
+      const fngData: any = await fngRes.json()
+      fearGreed = Number(fngData.data[0].value)
+      fearGreedLabel = fngData.data[0].value_classification
+    }
+  } catch (e) {
+    console.warn('Fear&Greed API unavailable, using defaults')
   }
+
+  try {
+    const globalRes = await fetch('https://api.coingecko.com/api/v3/global')
+    if (globalRes.ok) {
+      const globalData: any = await globalRes.json()
+      btcDominance = Math.round(globalData.data.market_cap_percentage.btc * 10) / 10
+    }
+  } catch (e) {
+    console.warn('CoinGecko API unavailable, using defaults')
+  }
+
+  return { fearGreed, fearGreedLabel, btcDominance }
 }

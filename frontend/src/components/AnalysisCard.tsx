@@ -1,4 +1,4 @@
-import { CoinIndicators } from '../api/client'
+import { CoinIndicators, MultiTFIndicators } from '../api/client'
 import { useState } from 'react'
 
 interface ParsedSignal {
@@ -29,10 +29,14 @@ function parseSection(text: string): ParsedSignal {
       .filter(Boolean)
   }
 
+  // Support both old format (💰 Вход) and new format (📍 Оптимальная точка входа)
+  const entry = get('📍') || get('💰')
+  const signal = get('🎯')
+
   return {
     ticker: get('🪙'),
-    signal: get('🎯'),
-    entry: get('💰'),
+    signal,
+    entry,
     sl: get('🛑'),
     tp1: text.match(/✅\s*Take Profit 1:\s*(.+)/m)?.[1]?.trim() || '',
     tp2: text.match(/✅\s*Take Profit 2:\s*(.+)/m)?.[1]?.trim() || '',
@@ -62,13 +66,19 @@ function rsiColor(rsi: number) {
 
 interface Props {
   ticker: string
-  indicators: CoinIndicators
+  indicators: MultiTFIndicators | CoinIndicators
   sectionText: string
 }
 
-export default function AnalysisCard({ ticker, indicators, sectionText }: Props) {
+function getMainIndicators(indicators: MultiTFIndicators | CoinIndicators): CoinIndicators {
+  if ('tf1h' in indicators) return indicators.tf1h
+  return indicators
+}
+
+export default function AnalysisCard({ ticker, indicators: rawIndicators, sectionText }: Props) {
   const [risksOpen, setRisksOpen] = useState(false)
   const parsed = parseSection(sectionText)
+  const indicators = getMainIndicators(rawIndicators)
 
   return (
     <div className="bg-card rounded-xl p-5 border border-card hover:border-accent/30 transition-colors">
@@ -90,7 +100,7 @@ export default function AnalysisCard({ ticker, indicators, sectionText }: Props)
       </div>
 
       {parsed.entry && (
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4 text-xs">
+        <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5 mb-4 text-xs">
           {[
             ['Вход', parsed.entry],
             ['SL', parsed.sl],
@@ -98,9 +108,9 @@ export default function AnalysisCard({ ticker, indicators, sectionText }: Props)
             ['TP2', parsed.tp2],
             ['R:R', parsed.rr],
           ].map(([label, val]) => (
-            <div key={label} className="bg-input rounded-lg p-2 text-center">
-              <div className="text-text-secondary">{label}</div>
-              <div className="font-mono font-semibold text-sm mt-0.5">{val || '—'}</div>
+            <div key={label} className="bg-input rounded-lg p-2 text-center overflow-hidden">
+              <div className="text-text-secondary text-[10px]">{label}</div>
+              <div className="font-mono font-semibold text-xs mt-0.5 truncate" title={val || '—'}>{val || '—'}</div>
             </div>
           ))}
         </div>

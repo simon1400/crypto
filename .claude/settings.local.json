@@ -22,7 +22,15 @@
       "Bash(ssh root@157.90.169.205:*)",
       "Bash(tar --exclude='node_modules' --exclude='dist' --exclude='.prisma' -czf /tmp/crypto-deploy.tar.gz backend frontend)",
       "Bash(scp /tmp/crypto-deploy.tar.gz root@157.90.169.205:/tmp/)",
-      "Bash(scp dist/services/claude.js root@157.90.169.205:/opt/crypto/backend/dist/services/claude.js)"
+      "Bash(scp dist/services/claude.js root@157.90.169.205:/opt/crypto/backend/dist/services/claude.js)",
+      "Bash(scp -r d:/crypto/backend/dist/ root@157.90.169.205:/opt/crypto/backend/dist/)",
+      "Bash(scp -r d:/crypto/frontend/dist/* root@157.90.169.205:/opt/crypto/frontend/dist/)",
+      "Bash(scp -r d:/crypto/frontend/src/ root@157.90.169.205:/opt/crypto/frontend/src/)",
+      "Bash(scp d:/crypto/frontend/package.json root@157.90.169.205:/opt/crypto/frontend/package.json)",
+      "Bash(scp -r d:/crypto/backend/dist root@157.90.169.205:/opt/crypto/backend/dist)",
+      "Bash(scp d:/crypto/frontend/src/api/client.ts root@157.90.169.205:/opt/crypto/frontend/src/api/client.ts)",
+      "Bash(scp d:/crypto/frontend/src/components/AnalysisCard.tsx root@157.90.169.205:/opt/crypto/frontend/src/components/AnalysisCard.tsx)",
+      "Bash(gh --version)"
     ]
   }
 }
