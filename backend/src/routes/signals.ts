@@ -3,6 +3,7 @@ import { prisma } from '../db/prisma'
 import { getChannelMessages } from '../services/telegram'
 import { parseSignalMessage } from '../services/signalParser'
 import { trackActiveSignals } from '../services/signalTracker'
+import { fetchCurrentPrice } from '../services/market'
 
 const router = Router()
 
@@ -105,6 +106,25 @@ router.post('/sync', async (req, res) => {
     res.json({ data: signals, imported, skipped, channel })
   } catch (err: any) {
     console.error('[Signals] Sync error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/signals/prices — get current prices for coins
+router.post('/prices', async (req, res) => {
+  try {
+    const coins = req.body.coins as string[]
+    if (!Array.isArray(coins)) return res.status(400).json({ error: 'coins array required' })
+
+    const prices: Record<string, number | null> = {}
+    await Promise.all(
+      [...new Set(coins)].map(async (coin) => {
+        prices[coin] = await fetchCurrentPrice(coin + 'USDT')
+      })
+    )
+
+    res.json({ prices })
+  } catch (err: any) {
     res.status(500).json({ error: err.message })
   }
 })

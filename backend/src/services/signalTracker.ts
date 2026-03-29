@@ -1,5 +1,5 @@
 import { prisma } from '../db/prisma'
-import { fetchOHLCV } from './market'
+import { fetchOHLCV_MEXC } from './market'
 
 /**
  * Check prices for all active signals and update their status.
@@ -47,9 +47,9 @@ async function updateSignalStatus(signal: {
 
   let candles
   try {
-    candles = await fetchOHLCV(symbol, '1h', limit)
+    candles = await fetchOHLCV_MEXC(symbol, '1h', limit)
   } catch {
-    console.log(`[SignalTracker] Cannot fetch ${symbol} on Binance, skipping`)
+    console.log(`[SignalTracker] Cannot fetch ${symbol} on MEXC, skipping`)
     return
   }
 

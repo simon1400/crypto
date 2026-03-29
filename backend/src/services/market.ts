@@ -18,9 +18,43 @@ export async function fetchOHLCV(
   interval = '4h',
   limit = 60
 ): Promise<OHLCV[]> {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+  // Try Binance first, fallback to MEXC
+  const exchanges = [
+    `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+    `https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+  ]
+
+  for (const url of exchanges) {
+    try {
+      const res = await fetch(url)
+      if (!res.ok) continue
+      const data = (await res.json()) as any[][]
+      if (!Array.isArray(data) || data.length === 0) continue
+
+      return data.map((k) => ({
+        time: k[0] as number,
+        open: parseFloat(k[1] as string),
+        high: parseFloat(k[2] as string),
+        low: parseFloat(k[3] as string),
+        close: parseFloat(k[4] as string),
+        volume: parseFloat(k[5] as string),
+      }))
+    } catch {
+      continue
+    }
+  }
+
+  throw new Error(`Symbol ${symbol} not found on any exchange`)
+}
+
+export async function fetchOHLCV_MEXC(
+  symbol: string,
+  interval = '4h',
+  limit = 60
+): Promise<OHLCV[]> {
+  const url = `https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
   const res = await fetch(url)
-  if (!res.ok) throw new Error(`Binance error: ${res.status}`)
+  if (!res.ok) throw new Error(`MEXC error: ${res.status}`)
   const data = (await res.json()) as any[][]
 
   return data.map((k) => ({
@@ -31,6 +65,16 @@ export async function fetchOHLCV(
     close: parseFloat(k[4] as string),
     volume: parseFloat(k[5] as string),
   }))
+}
+
+export async function fetchCurrentPrice(symbol: string): Promise<number | null> {
+  try {
+    const res = await fetch(`https://api.mexc.com/api/v3/ticker/price?symbol=${symbol}`)
+    if (!res.ok) return null
+    const data = await res.json() as any
+    if (data.price) return parseFloat(data.price)
+  } catch {}
+  return null
 }
 
 export async function fetchMarketOverview(): Promise<MarketOverview> {

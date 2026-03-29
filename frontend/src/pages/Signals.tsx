@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Signal, SignalsResponse, getSignals, syncSignals } from '../api/client'
+import { Signal, SignalsResponse, getSignals, syncSignals, getSignalPrices } from '../api/client'
 import SignalTable from '../components/SignalTable'
 import SignalBadge from '../components/SignalBadge'
 import SignalChart from '../components/SignalChart'
@@ -120,6 +120,15 @@ export default function Signals() {
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Signal | null>(null)
+  const [prices, setPrices] = useState<Record<string, number | null>>({})
+
+  const fetchPrices = async (signals: Signal[]) => {
+    const coins = [...new Set(signals.map(s => s.coin))]
+    if (coins.length > 0) {
+      const p = await getSignalPrices(coins)
+      setPrices(p)
+    }
+  }
 
   const handleLoad = async () => {
     setLoading(true)
@@ -127,6 +136,7 @@ export default function Signals() {
     try {
       const result = await getSignals(channel, days)
       setData(result)
+      fetchPrices(result.data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка загрузки')
     } finally {
@@ -140,6 +150,7 @@ export default function Signals() {
     try {
       const result = await syncSignals(channel, days)
       setData(result)
+      fetchPrices(result.data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка синхронизации')
     } finally {
@@ -248,7 +259,7 @@ export default function Signals() {
       {/* Table */}
       {data && !loading && !syncing && (
         <div className="bg-card rounded-xl overflow-hidden">
-          <SignalTable signals={data.data} onSelect={setSelected} />
+          <SignalTable signals={data.data} prices={prices} onSelect={setSelected} />
         </div>
       )}
 

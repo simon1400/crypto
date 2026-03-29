@@ -3,6 +3,7 @@ import SignalBadge from './SignalBadge'
 
 interface Props {
   signals: Signal[]
+  prices: Record<string, number | null>
   onSelect: (signal: Signal) => void
 }
 
@@ -47,7 +48,7 @@ function pnl(signal: Signal): { text: string; color: string } | null {
   return null
 }
 
-export default function SignalTable({ signals, onSelect }: Props) {
+export default function SignalTable({ signals, prices, onSelect }: Props) {
   if (signals.length === 0) {
     return (
       <div className="text-center py-12 text-text-secondary">
@@ -64,6 +65,7 @@ export default function SignalTable({ signals, onSelect }: Props) {
             <th className="text-left py-3 px-3 font-medium">Дата</th>
             <th className="text-left py-3 px-3 font-medium">Тип</th>
             <th className="text-left py-3 px-3 font-medium">Монета</th>
+            <th className="text-right py-3 px-3 font-medium">Цена</th>
             <th className="text-right py-3 px-3 font-medium">Плечо</th>
             <th className="text-right py-3 px-3 font-medium">Вход</th>
             <th className="text-right py-3 px-3 font-medium">SL</th>
@@ -91,6 +93,9 @@ export default function SignalTable({ signals, onSelect }: Props) {
                 </td>
                 <td className="py-3 px-3">
                   <span className="font-mono font-bold text-text-primary">{signal.coin}</span>
+                </td>
+                <td className="py-3 px-3 text-right font-mono text-text-primary">
+                  {prices[signal.coin] != null ? formatPrice(prices[signal.coin]!) : '—'}
                 </td>
                 <td className="py-3 px-3 text-right font-mono text-text-secondary">
                   {signal.leverage}x
