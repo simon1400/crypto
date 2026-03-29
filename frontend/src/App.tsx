@@ -4,6 +4,7 @@ import Navbar from './components/Navbar'
 import Dashboard from './pages/Dashboard'
 import History from './pages/History'
 import Whales from './pages/Whales'
+import Signals from './pages/Signals'
 import Login from './pages/Login'
 import { setAuthToken } from './api/client'
 
@@ -38,6 +39,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/whales" element={<Whales />} />
+            <Route path="/signals" element={<Signals />} />
             <Route path="/history" element={<History />} />
           </Routes>
         </main>

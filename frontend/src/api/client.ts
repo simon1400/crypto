@@ -155,3 +155,55 @@ export async function scanWhales(): Promise<WhaleScanResponse> {
   }
   return res.json()
 }
+
+// Signals
+export interface Signal {
+  id: number
+  channel: string
+  messageId: number
+  publishedAt: string
+  type: 'LONG' | 'SHORT'
+  coin: string
+  leverage: number
+  entryMin: number
+  entryMax: number
+  stopLoss: number
+  takeProfits: number[]
+  status: string
+  entryFilledAt: string | null
+  statusUpdatedAt: string | null
+  priceHistory: { time: number; price: number }[]
+  createdAt: string
+}
+
+export interface SignalsResponse {
+  data: Signal[]
+  channel: string
+  imported?: number
+  skipped?: number
+}
+
+export async function getSignals(channel = 'EveningTrader'): Promise<SignalsResponse> {
+  const res = await fetch(`${BASE}/api/signals?channel=${channel}`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch signals')
+  return res.json()
+}
+
+export async function syncSignals(channel = 'EveningTrader'): Promise<SignalsResponse> {
+  const res = await fetch(`${BASE}/api/signals/sync`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ channel }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function getSignal(id: number): Promise<Signal> {
+  const res = await fetch(`${BASE}/api/signals/${id}`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch signal')
+  return res.json()
+}

@@ -15,3 +15,24 @@ model Analysis {
   coinsData  Json
   result     String
 }
+
+model Signal {
+  id              Int      @id @default(autoincrement())
+  channel         String
+  messageId       Int
+  publishedAt     DateTime
+  type            String   // LONG or SHORT
+  coin            String
+  leverage        Int
+  entryMin        Float
+  entryMax        Float
+  stopLoss        Float
+  takeProfits     Json     // Float[]
+  status          String   @default("ENTRY_WAIT") // ENTRY_WAIT, ACTIVE, SL_HIT, TP1_HIT, TP2_HIT, ...
+  entryFilledAt   DateTime?
+  statusUpdatedAt DateTime?
+  priceHistory    Json     @default("[]") // {time: number, price: number}[]
+  createdAt       DateTime @default(now())
+
+  @@unique([channel, messageId])
+}

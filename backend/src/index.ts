@@ -6,6 +6,8 @@ import analyzeRouter from './routes/analyze'
 import marketRouter from './routes/market'
 import historyRouter from './routes/history'
 import whalesRouter from './routes/whales'
+import signalsRouter from './routes/signals'
+import { trackActiveSignals } from './services/signalTracker'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -29,7 +31,13 @@ app.use('/api/analyze', analyzeRouter)
 app.use('/api/market', marketRouter)
 app.use('/api/history', historyRouter)
 app.use('/api/whales', whalesRouter)
+app.use('/api/signals', signalsRouter)
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
+
+  // Track signal prices every hour
+  setInterval(() => {
+    trackActiveSignals().catch(err => console.error('[SignalTracker] Interval error:', err))
+  }, 60 * 60 * 1000)
 })
