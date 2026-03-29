@@ -3,13 +3,12 @@ import { fetchOHLCV_MEXC } from './market'
 
 /**
  * Check prices for all active signals and update their status.
- * Called every hour via setInterval.
+ * Called every hour via setInterval and after sync.
  */
 export async function trackActiveSignals() {
   const signals = await prisma.signal.findMany({
     where: {
       status: { in: ['ENTRY_WAIT', 'ACTIVE'] },
-      publishedAt: { gte: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000) }, // last 2 weeks
     },
   })
 
@@ -41,13 +40,17 @@ async function updateSignalStatus(signal: {
   const takeProfits = signal.takeProfits as number[]
   const priceHistory = (signal.priceHistory as { time: number; price: number }[]) || []
 
-  // Fetch 1h candles since signal was published
   const hoursSince = Math.ceil((Date.now() - signal.publishedAt.getTime()) / (60 * 60 * 1000))
-  const limit = Math.min(hoursSince + 2, 500)
+
+  // Use 4h candles for signals older than 18 days (to fit in 500 limit), otherwise 1h
+  const use4h = hoursSince > 18 * 24
+  const interval = use4h ? '4h' : '1h'
+  const candlesSince = use4h ? Math.ceil(hoursSince / 4) : hoursSince
+  const limit = Math.min(candlesSince + 2, 500)
 
   let candles
   try {
-    candles = await fetchOHLCV_MEXC(symbol, '1h', limit)
+    candles = await fetchOHLCV_MEXC(symbol, interval, limit)
   } catch {
     console.log(`[SignalTracker] Cannot fetch ${symbol} on MEXC, skipping`)
     return
@@ -59,9 +62,7 @@ async function updateSignalStatus(signal: {
 
   if (relevantCandles.length === 0) return
 
-  const currentPrice = relevantCandles[relevantCandles.length - 1].close
-
-  // Update price history (keep hourly snapshots)
+  // Update price history (keep snapshots for chart)
   const lastHistoryTime = priceHistory.length > 0 ? priceHistory[priceHistory.length - 1].time : 0
   for (const candle of relevantCandles) {
     if (candle.time > lastHistoryTime) {
@@ -76,8 +77,10 @@ async function updateSignalStatus(signal: {
     // Check if price entered the entry zone
     const entryCandle = relevantCandles.find(c => {
       if (signal.type === 'LONG') {
+        // For LONG: price dipped into entry zone (low <= entryMax)
         return c.low <= signal.entryMax
       } else {
+        // For SHORT: price rose into entry zone (high >= entryMin)
         return c.high >= signal.entryMin
       }
     })
@@ -89,13 +92,10 @@ async function updateSignalStatus(signal: {
   }
 
   if (newStatus === 'ACTIVE') {
-    // Check candles after entry for SL/TP hits
     const entryTime = entryFilledAt?.getTime() || signalTime
     const postEntryCandles = relevantCandles.filter(c => c.time >= entryTime)
 
-    // Determine what was hit first and track max TP
     let maxTpHit = 0
-    let slHit = false
     let slHitTime = Infinity
 
     // Find when SL was first hit
@@ -106,14 +106,13 @@ async function updateSignalStatus(signal: {
 
       if (slTriggered) {
         slHitTime = candle.time
-        slHit = true
         break
       }
     }
 
     // Find max TP hit (only before SL was hit)
     for (const candle of postEntryCandles) {
-      if (candle.time > slHitTime) break // stop checking TPs after SL
+      if (candle.time > slHitTime) break
 
       for (let i = maxTpHit; i < takeProfits.length; i++) {
         const tpTriggered = signal.type === 'LONG'
@@ -123,19 +122,18 @@ async function updateSignalStatus(signal: {
         if (tpTriggered) {
           maxTpHit = i + 1
         } else {
-          break // TPs must be hit sequentially
+          break
         }
       }
     }
 
     if (maxTpHit > 0) {
       newStatus = `TP${maxTpHit}_HIT`
-    } else if (slHit) {
+    } else if (slHitTime < Infinity) {
       newStatus = 'SL_HIT'
     }
   }
 
-  // Update DB
   await prisma.signal.update({
     where: { id: signal.id },
     data: {
