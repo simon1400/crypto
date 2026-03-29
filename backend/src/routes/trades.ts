@@ -251,6 +251,9 @@ router.post('/:id/sl-hit', async (req: Request, res: Response) => {
 // PUT /api/trades/:id — обновить сделку
 router.put('/:id', async (req: Request, res: Response) => {
   try {
+    const trade = await prisma.trade.findUnique({ where: { id: Number(req.params.id) } })
+    if (!trade) return res.status(404).json({ error: 'Trade not found' })
+
     const { coin, type, leverage, entryPrice, amount, stopLoss, takeProfits, notes } = req.body
     const data: any = {}
     if (coin !== undefined) data.coin = coin.toUpperCase().replace('USDT', '') + 'USDT'
@@ -262,8 +265,30 @@ router.put('/:id', async (req: Request, res: Response) => {
     if (takeProfits !== undefined) data.takeProfits = takeProfits
     if (notes !== undefined) data.notes = notes || null
 
+    // Пересчитать P&L закрытий если изменились ключевые параметры
+    const newType = data.type || trade.type
+    const newEntry = data.entryPrice ?? trade.entryPrice
+    const newLeverage = data.leverage ?? trade.leverage
+    const newAmount = data.amount ?? trade.amount
+    const closes = Array.isArray(trade.closes) ? (trade.closes as any[]) : []
+
+    if (closes.length > 0) {
+      const direction = newType === 'LONG' ? 1 : -1
+      let totalPnl = 0
+      const recalculated = closes.map((c: any) => {
+        const priceDiff = (c.price - newEntry) * direction
+        const pnlPercent = (priceDiff / newEntry) * 100 * newLeverage
+        const portionAmount = newAmount * (c.percent / 100)
+        const pnl = Math.round(portionAmount * (pnlPercent / 100) * 100) / 100
+        totalPnl += pnl
+        return { ...c, pnl, pnlPercent: Math.round(pnlPercent * 100) / 100 }
+      })
+      data.closes = recalculated
+      data.realizedPnl = Math.round(totalPnl * 100) / 100
+    }
+
     const updated = await prisma.trade.update({
-      where: { id: Number(req.params.id) },
+      where: { id: trade.id },
       data,
     })
     res.json(updated)
