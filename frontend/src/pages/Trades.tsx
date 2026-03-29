@@ -109,17 +109,8 @@ function NewTradeForm({ onCreated }: { onCreated: () => void }) {
     }
   }
 
-  if (!open) {
-    return (
-      <button onClick={() => setOpen(true)}
-        className="px-4 py-2 bg-accent text-black rounded-lg font-medium hover:bg-accent/90 transition">
-        + Новая сделка
-      </button>
-    )
-  }
-
-  return (
-    <form onSubmit={submit} className="bg-card rounded-xl p-5 space-y-4 border border-card">
+  return open ? (
+    <form onSubmit={submit} className="bg-card rounded-xl p-5 space-y-4 border border-card col-span-full">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold text-text-primary">Новая сделка</h3>
         <button type="button" onClick={() => setOpen(false)} className="text-text-secondary hover:text-text-primary">&times;</button>
@@ -218,6 +209,11 @@ function NewTradeForm({ onCreated }: { onCreated: () => void }) {
         {loading ? 'Создаю...' : 'Записать сделку'}
       </button>
     </form>
+  ) : (
+    <button onClick={() => setOpen(true)}
+      className="px-4 py-2 bg-accent text-black rounded-lg font-medium hover:bg-accent/90 transition">
+      + Новая сделка
+    </button>
   )
 }
 
@@ -501,8 +497,9 @@ export default function Trades() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-text-primary">Журнал сделок</h1>
-        <NewTradeForm onCreated={load} />
+        {/* Кнопка показывается внутри NewTradeForm когда форма закрыта */}
       </div>
+      <NewTradeForm onCreated={load} />
 
       <StatsPanel stats={stats} />
 
