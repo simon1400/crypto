@@ -128,6 +128,20 @@ router.post('/prices', async (req, res) => {
   }
 })
 
+// POST /api/signals/reset/:id — reset signal status to ENTRY_WAIT (for mismatched prices)
+router.post('/reset/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id)
+    const signal = await prisma.signal.update({
+      where: { id },
+      data: { status: 'ENTRY_WAIT', entryFilledAt: null, statusUpdatedAt: null, priceHistory: [] },
+    })
+    res.json(signal)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // POST /api/signals/track — manually trigger price tracking
 router.post('/track', async (_req, res) => {
   try {

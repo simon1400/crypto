@@ -62,6 +62,16 @@ async function updateSignalStatus(signal: {
 
   if (relevantCandles.length === 0) return
 
+  // Sanity check: verify MEXC prices are in the same ballpark as signal levels
+  // If prices differ by more than 5x, it's likely a different token or redenomination
+  const avgCandle = relevantCandles[0].close
+  const avgEntry = (signal.entryMin + signal.entryMax) / 2
+  const priceRatio = avgCandle / avgEntry
+  if (priceRatio > 5 || priceRatio < 0.2) {
+    console.log(`[SignalTracker] ${symbol} price mismatch: MEXC=${avgCandle}, signal entry=${avgEntry} (ratio ${priceRatio.toFixed(2)}), skipping`)
+    return
+  }
+
   // Update price history (keep snapshots for chart)
   const lastHistoryTime = priceHistory.length > 0 ? priceHistory[priceHistory.length - 1].time : 0
   for (const candle of relevantCandles) {
