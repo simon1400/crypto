@@ -10,25 +10,29 @@ const CACHE_TTL = 60 * 60 * 1000
 
 async function loadSymbols(): Promise<string[]> {
   if (symbolsCache.length && Date.now() - symbolsCacheTime < CACHE_TTL) return symbolsCache
+  const all = new Set<string>()
+
+  // Binance
   try {
     const res = await fetch('https://api.binance.com/api/v3/exchangeInfo')
     const data = await res.json() as { symbols: { symbol: string; status: string; quoteAsset: string }[] }
-    symbolsCache = data.symbols
-      .filter(s => s.status === 'TRADING' && s.quoteAsset === 'USDT')
-      .map(s => s.symbol.replace('USDT', ''))
-      .sort()
+    for (const s of data.symbols) {
+      if (s.status === 'TRADING' && s.quoteAsset === 'USDT') all.add(s.symbol.replace('USDT', ''))
+    }
+  } catch { /* skip */ }
+
+  // MEXC
+  try {
+    const res = await fetch('https://api.mexc.com/api/v3/exchangeInfo')
+    const data = await res.json() as { symbols: { symbol: string; status: string; quoteAsset: string }[] }
+    for (const s of data.symbols) {
+      if (s.status === 'ENABLED' && s.quoteAsset === 'USDT') all.add(s.symbol.replace('USDT', ''))
+    }
+  } catch { /* skip */ }
+
+  if (all.size) {
+    symbolsCache = [...all].sort()
     symbolsCacheTime = Date.now()
-  } catch {
-    // fallback MEXC
-    try {
-      const res = await fetch('https://api.mexc.com/api/v3/exchangeInfo')
-      const data = await res.json() as { symbols: { symbol: string; status: string; quoteAsset: string }[] }
-      symbolsCache = data.symbols
-        .filter(s => s.status === 'ENABLED' && s.quoteAsset === 'USDT')
-        .map(s => s.symbol.replace('USDT', ''))
-        .sort()
-      symbolsCacheTime = Date.now()
-    } catch { /* keep old cache */ }
   }
   return symbolsCache
 }
