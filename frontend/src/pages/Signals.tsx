@@ -6,6 +6,7 @@ import SignalChart from '../components/SignalChart'
 
 const CHANNELS = [
   { id: 'EveningTrader', name: 'Evening Trader' },
+  { id: 'BitcoinBullets', name: 'Bitcoin Bullets' },
 ]
 
 function formatPrice(n: number): string {
