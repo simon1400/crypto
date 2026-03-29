@@ -10,30 +10,15 @@ const CACHE_TTL = 60 * 60 * 1000
 
 async function loadSymbols(): Promise<string[]> {
   if (symbolsCache.length && Date.now() - symbolsCacheTime < CACHE_TTL) return symbolsCache
-  const all = new Set<string>()
-
-  // Binance
-  try {
-    const res = await fetch('https://api.binance.com/api/v3/exchangeInfo')
-    const data = await res.json() as { symbols: { symbol: string; status: string; quoteAsset: string }[] }
-    for (const s of data.symbols) {
-      if (s.status === 'TRADING' && s.quoteAsset === 'USDT') all.add(s.symbol.replace('USDT', ''))
-    }
-  } catch { /* skip */ }
-
-  // MEXC
   try {
     const res = await fetch('https://api.mexc.com/api/v3/exchangeInfo')
     const data = await res.json() as { symbols: { symbol: string; status: string; quoteAsset: string }[] }
-    for (const s of data.symbols) {
-      if (s.status === 'ENABLED' && s.quoteAsset === 'USDT') all.add(s.symbol.replace('USDT', ''))
-    }
-  } catch { /* skip */ }
-
-  if (all.size) {
-    symbolsCache = [...all].sort()
+    symbolsCache = data.symbols
+      .filter(s => s.status === 'ENABLED' && s.quoteAsset === 'USDT')
+      .map(s => s.symbol.replace('USDT', ''))
+      .sort()
     symbolsCacheTime = Date.now()
-  }
+  } catch { /* keep old cache */ }
   return symbolsCache
 }
 
@@ -266,11 +251,16 @@ router.post('/:id/sl-hit', async (req: Request, res: Response) => {
 // PUT /api/trades/:id — обновить сделку
 router.put('/:id', async (req: Request, res: Response) => {
   try {
-    const { notes, stopLoss, takeProfits } = req.body
+    const { coin, type, leverage, entryPrice, amount, stopLoss, takeProfits, notes } = req.body
     const data: any = {}
-    if (notes !== undefined) data.notes = notes
+    if (coin !== undefined) data.coin = coin.toUpperCase().replace('USDT', '') + 'USDT'
+    if (type !== undefined) data.type = type.toUpperCase()
+    if (leverage !== undefined) data.leverage = Number(leverage)
+    if (entryPrice !== undefined) data.entryPrice = Number(entryPrice)
+    if (amount !== undefined) data.amount = Number(amount)
     if (stopLoss !== undefined) data.stopLoss = Number(stopLoss)
     if (takeProfits !== undefined) data.takeProfits = takeProfits
+    if (notes !== undefined) data.notes = notes || null
 
     const updated = await prisma.trade.update({
       where: { id: Number(req.params.id) },

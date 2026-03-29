@@ -322,7 +322,10 @@ export async function hitStopLoss(id: number): Promise<Trade> {
   return res.json()
 }
 
-export async function updateTrade(id: number, data: { notes?: string; stopLoss?: number; takeProfits?: TradeTP[] }): Promise<Trade> {
+export async function updateTrade(id: number, data: {
+  coin?: string; type?: string; leverage?: number; entryPrice?: number;
+  amount?: number; stopLoss?: number; takeProfits?: TradeTP[]; notes?: string
+}): Promise<Trade> {
   const res = await fetch(`${BASE}/api/trades/${id}`, {
     method: 'PUT', headers: getHeaders(), body: JSON.stringify(data),
   })
