@@ -22,6 +22,7 @@ export default function Navbar({ onLogout }: Props) {
           <Link to="/" className={linkClass('/')}>Анализ</Link>
           <Link to="/whales" className={linkClass('/whales')}>Киты</Link>
           <Link to="/signals" className={linkClass('/signals')}>Сигналы</Link>
+          <Link to="/trades" className={linkClass('/trades')}>Сделки</Link>
           <Link to="/history" className={linkClass('/history')}>История</Link>
           {onLogout && (
             <button

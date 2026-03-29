@@ -81,8 +81,11 @@ export async function getChannelMessages(
     let lastDate = 0
 
     for (const msg of result.messages) {
+      // Update offsetId for ALL message types (Message, MessageService, etc.)
+      if ('id' in msg) offsetId = msg.id as number
+      if ('date' in msg) lastDate = msg.date as number
+
       if (msg instanceof Api.Message) {
-        lastDate = msg.date
         if (msg.date < sinceTimestamp) {
           reachedOldest = true
           break
@@ -94,7 +97,6 @@ export async function getChannelMessages(
             text: msg.message,
           })
         }
-        offsetId = msg.id
       }
     }
 

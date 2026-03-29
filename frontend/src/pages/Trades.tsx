@@ -1,0 +1,575 @@
+import { useState, useEffect, useCallback } from 'react'
+import {
+  getTrades, getTradeStats, createTrade, closeTrade, hitStopLoss, deleteTrade,
+  Trade, TradeStats, TradeTP, TradeClose,
+} from '../api/client'
+
+const COINS = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOT', 'MATIC', 'LINK']
+
+function formatDate(d: string) {
+  return new Date(d).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+function pnlColor(v: number) {
+  return v > 0 ? 'text-long' : v < 0 ? 'text-short' : 'text-text-secondary'
+}
+
+function statusBadge(status: string) {
+  const map: Record<string, { bg: string; text: string; label: string }> = {
+    OPEN: { bg: 'bg-accent/10', text: 'text-accent', label: 'Открыта' },
+    PARTIALLY_CLOSED: { bg: 'bg-blue-500/10', text: 'text-blue-400', label: 'Частично' },
+    CLOSED: { bg: 'bg-long/10', text: 'text-long', label: 'Закрыта' },
+    SL_HIT: { bg: 'bg-short/10', text: 'text-short', label: 'Стоп-лосс' },
+    CANCELLED: { bg: 'bg-neutral/10', text: 'text-neutral', label: 'Отменена' },
+  }
+  const s = map[status] || map.CANCELLED
+  return <span className={`px-2 py-0.5 rounded text-xs font-medium ${s.bg} ${s.text}`}>{s.label}</span>
+}
+
+// ===================== NEW TRADE FORM =====================
+function NewTradeForm({ onCreated }: { onCreated: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [coin, setCoin] = useState('BTC')
+  const [type, setType] = useState<'LONG' | 'SHORT'>('LONG')
+  const [leverage, setLeverage] = useState('10')
+  const [entryPrice, setEntryPrice] = useState('')
+  const [amount, setAmount] = useState('')
+  const [stopLoss, setStopLoss] = useState('')
+  const [tps, setTps] = useState<{ price: string; percent: string }[]>([
+    { price: '', percent: '50' },
+    { price: '', percent: '50' },
+  ])
+  const [notes, setNotes] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  function addTP() {
+    setTps([...tps, { price: '', percent: '' }])
+  }
+  function removeTP(i: number) {
+    setTps(tps.filter((_, idx) => idx !== i))
+  }
+  function updateTP(i: number, field: 'price' | 'percent', value: string) {
+    const copy = [...tps]
+    copy[i] = { ...copy[i], [field]: value }
+    setTps(copy)
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    setError('')
+    const takeProfits: TradeTP[] = tps
+      .filter(t => t.price && t.percent)
+      .map(t => ({ price: Number(t.price), percent: Number(t.percent) }))
+
+    if (!takeProfits.length) { setError('Добавьте хотя бы один Take Profit'); return }
+    const totalPct = takeProfits.reduce((s, t) => s + t.percent, 0)
+    if (totalPct !== 100) { setError(`Сумма % должна быть 100 (сейчас ${totalPct})`); return }
+
+    setLoading(true)
+    try {
+      await createTrade({
+        coin, type, leverage: Number(leverage),
+        entryPrice: Number(entryPrice), amount: Number(amount),
+        stopLoss: Number(stopLoss), takeProfits,
+        notes: notes || undefined,
+      })
+      setOpen(false)
+      setCoin('BTC'); setType('LONG'); setLeverage('10')
+      setEntryPrice(''); setAmount(''); setStopLoss('')
+      setTps([{ price: '', percent: '50' }, { price: '', percent: '50' }])
+      setNotes('')
+      onCreated()
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)}
+        className="px-4 py-2 bg-accent text-black rounded-lg font-medium hover:bg-accent/90 transition">
+        + Новая сделка
+      </button>
+    )
+  }
+
+  return (
+    <form onSubmit={submit} className="bg-card rounded-xl p-5 space-y-4 border border-card">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold text-text-primary">Новая сделка</h3>
+        <button type="button" onClick={() => setOpen(false)} className="text-text-secondary hover:text-text-primary">&times;</button>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div>
+          <label className="text-xs text-text-secondary">Монета</label>
+          <select value={coin} onChange={e => setCoin(e.target.value)}
+            className="w-full bg-input rounded px-3 py-2 text-text-primary">
+            {COINS.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-text-secondary">Направление</label>
+          <div className="flex gap-2 mt-1">
+            <button type="button" onClick={() => setType('LONG')}
+              className={`flex-1 py-2 rounded font-medium text-sm ${type === 'LONG' ? 'bg-long text-black' : 'bg-input text-text-secondary'}`}>
+              LONG
+            </button>
+            <button type="button" onClick={() => setType('SHORT')}
+              className={`flex-1 py-2 rounded font-medium text-sm ${type === 'SHORT' ? 'bg-short text-white' : 'bg-input text-text-secondary'}`}>
+              SHORT
+            </button>
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-text-secondary">Плечо</label>
+          <input type="number" value={leverage} onChange={e => setLeverage(e.target.value)}
+            min="1" max="125" className="w-full bg-input rounded px-3 py-2 text-text-primary" />
+        </div>
+        <div>
+          <label className="text-xs text-text-secondary">Размер (USDT)</label>
+          <input type="number" value={amount} onChange={e => setAmount(e.target.value)}
+            step="0.01" placeholder="100" className="w-full bg-input rounded px-3 py-2 text-text-primary" required />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs text-text-secondary">Цена входа</label>
+          <input type="number" value={entryPrice} onChange={e => setEntryPrice(e.target.value)}
+            step="any" className="w-full bg-input rounded px-3 py-2 text-text-primary font-mono" required />
+        </div>
+        <div>
+          <label className="text-xs text-text-secondary">Stop Loss</label>
+          <input type="number" value={stopLoss} onChange={e => setStopLoss(e.target.value)}
+            step="any" className="w-full bg-input rounded px-3 py-2 text-text-primary font-mono" required />
+        </div>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <label className="text-xs text-text-secondary">Take Profits</label>
+          <button type="button" onClick={addTP} className="text-xs text-accent hover:underline">+ Добавить TP</button>
+        </div>
+        <div className="space-y-2">
+          {tps.map((tp, i) => (
+            <div key={i} className="flex gap-2 items-center">
+              <span className="text-xs text-text-secondary w-8">TP{i + 1}</span>
+              <input type="number" value={tp.price} onChange={e => updateTP(i, 'price', e.target.value)}
+                step="any" placeholder="Цена" className="flex-1 bg-input rounded px-3 py-2 text-text-primary font-mono text-sm" required />
+              <input type="number" value={tp.percent} onChange={e => updateTP(i, 'percent', e.target.value)}
+                min="1" max="100" placeholder="%" className="w-20 bg-input rounded px-3 py-2 text-text-primary text-sm" required />
+              <span className="text-xs text-text-secondary">%</span>
+              {tps.length > 1 && (
+                <button type="button" onClick={() => removeTP(i)} className="text-short text-sm hover:text-short/70">&times;</button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label className="text-xs text-text-secondary">Заметки (опционально)</label>
+        <textarea value={notes} onChange={e => setNotes(e.target.value)}
+          rows={2} className="w-full bg-input rounded px-3 py-2 text-text-primary text-sm" />
+      </div>
+
+      {error && <div className="text-short text-sm">{error}</div>}
+
+      <button type="submit" disabled={loading}
+        className="w-full py-2.5 bg-accent text-black rounded-lg font-medium hover:bg-accent/90 transition disabled:opacity-50">
+        {loading ? 'Создаю...' : 'Записать сделку'}
+      </button>
+    </form>
+  )
+}
+
+// ===================== CLOSE TRADE MODAL =====================
+function CloseModal({ trade, onClose, onDone }: { trade: Trade; onClose: () => void; onDone: () => void }) {
+  const [price, setPrice] = useState('')
+  const [percent, setPercent] = useState(String(100 - trade.closedPct))
+  const [loading, setLoading] = useState(false)
+
+  // Предзаполнить цену из следующего TP
+  useEffect(() => {
+    const nextTP = (trade.takeProfits as TradeTP[]).find((tp, i) => {
+      const hitCount = (trade.closes as TradeClose[]).filter(c => !c.isSL).length
+      return i >= hitCount
+    })
+    if (nextTP) {
+      setPrice(String(nextTP.price))
+      setPercent(String(Math.min(nextTP.percent, 100 - trade.closedPct)))
+    }
+  }, [trade])
+
+  async function submit() {
+    setLoading(true)
+    try {
+      await closeTrade(trade.id, Number(price), Number(percent))
+      onDone()
+    } catch { } finally { setLoading(false) }
+  }
+
+  async function doSL() {
+    setLoading(true)
+    try {
+      await hitStopLoss(trade.id)
+      onDone()
+    } catch { } finally { setLoading(false) }
+  }
+
+  const remaining = 100 - trade.closedPct
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-card rounded-xl p-5 w-full max-w-md space-y-4" onClick={e => e.stopPropagation()}>
+        <h3 className="text-lg font-semibold text-text-primary">
+          Закрыть {trade.coin.replace('USDT', '')} — {remaining}% осталось
+        </h3>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-text-secondary">Цена закрытия</label>
+            <input type="number" value={price} onChange={e => setPrice(e.target.value)}
+              step="any" className="w-full bg-input rounded px-3 py-2 text-text-primary font-mono" />
+          </div>
+          <div>
+            <label className="text-xs text-text-secondary">% позиции</label>
+            <input type="number" value={percent} onChange={e => setPercent(e.target.value)}
+              min="1" max={remaining} className="w-full bg-input rounded px-3 py-2 text-text-primary" />
+          </div>
+        </div>
+
+        {/* Быстрые кнопки TP */}
+        <div className="flex gap-2 flex-wrap">
+          {(trade.takeProfits as TradeTP[]).map((tp, i) => (
+            <button key={i} type="button"
+              onClick={() => { setPrice(String(tp.price)); setPercent(String(Math.min(tp.percent, remaining))) }}
+              className="px-3 py-1 bg-input rounded text-xs text-text-secondary hover:text-accent transition">
+              TP{i + 1}: ${tp.price}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex gap-2">
+          <button onClick={submit} disabled={loading || !price || !percent}
+            className="flex-1 py-2 bg-long text-black rounded-lg font-medium disabled:opacity-50">
+            Зафиксировать
+          </button>
+          <button onClick={doSL} disabled={loading}
+            className="px-4 py-2 bg-short text-white rounded-lg font-medium disabled:opacity-50">
+            SL Hit
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ===================== TRADE DETAIL MODAL =====================
+function TradeDetail({ trade, onClose, onRefresh }: { trade: Trade; onClose: () => void; onRefresh: () => void }) {
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const tps = trade.takeProfits as TradeTP[]
+  const closes = trade.closes as TradeClose[]
+  const direction = trade.type === 'LONG' ? 1 : -1
+  const slPct = Math.abs(((trade.stopLoss - trade.entryPrice) / trade.entryPrice) * 100 * trade.leverage)
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-card rounded-xl p-5 w-full max-w-lg max-h-[85vh] overflow-y-auto space-y-4" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <h3 className="text-xl font-bold text-text-primary font-mono">{trade.coin.replace('USDT', '')}</h3>
+            <span className={`px-2 py-0.5 rounded text-xs font-bold ${trade.type === 'LONG' ? 'bg-long/10 text-long' : 'bg-short/10 text-short'}`}>
+              {trade.type} {trade.leverage}x
+            </span>
+            {statusBadge(trade.status)}
+          </div>
+          <button onClick={onClose} className="text-text-secondary hover:text-text-primary text-xl">&times;</button>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3 text-sm">
+          <div className="bg-input rounded-lg p-3">
+            <div className="text-text-secondary text-xs">Вход</div>
+            <div className="text-text-primary font-mono font-semibold">${trade.entryPrice}</div>
+          </div>
+          <div className="bg-input rounded-lg p-3">
+            <div className="text-text-secondary text-xs">Stop Loss</div>
+            <div className="text-short font-mono font-semibold">${trade.stopLoss}</div>
+            <div className="text-short text-xs">-{slPct.toFixed(1)}%</div>
+          </div>
+          <div className="bg-input rounded-lg p-3">
+            <div className="text-text-secondary text-xs">Размер</div>
+            <div className="text-text-primary font-mono font-semibold">${trade.amount}</div>
+          </div>
+        </div>
+
+        {/* Take Profit уровни */}
+        <div>
+          <div className="text-xs text-text-secondary mb-2">Take Profits</div>
+          <div className="space-y-1">
+            {tps.map((tp, i) => {
+              const tpPct = ((tp.price - trade.entryPrice) * direction / trade.entryPrice) * 100 * trade.leverage
+              const hit = closes.find((c, ci) => ci === i && !c.isSL)
+              return (
+                <div key={i} className={`flex items-center justify-between px-3 py-2 rounded-lg text-sm ${hit ? 'bg-long/5' : 'bg-input'}`}>
+                  <span className="text-text-secondary">TP{i + 1}</span>
+                  <span className="font-mono text-text-primary">${tp.price}</span>
+                  <span className="text-long text-xs">+{tpPct.toFixed(1)}%</span>
+                  <span className="text-text-secondary text-xs">{tp.percent}%</span>
+                  {hit && <span className="text-long text-xs">&#10003;</span>}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* История закрытий */}
+        {closes.length > 0 && (
+          <div>
+            <div className="text-xs text-text-secondary mb-2">История закрытий</div>
+            <div className="space-y-1">
+              {closes.map((c, i) => (
+                <div key={i} className="flex items-center justify-between px-3 py-2 bg-input rounded-lg text-sm">
+                  <span className="text-text-secondary text-xs">{formatDate(c.closedAt)}</span>
+                  <span className="font-mono text-text-primary">${c.price}</span>
+                  <span className="text-text-secondary">{c.percent}%</span>
+                  <span className={`font-mono font-semibold ${pnlColor(c.pnl)}`}>
+                    {c.pnl > 0 ? '+' : ''}{c.pnl}$
+                  </span>
+                  {c.isSL && <span className="text-short text-xs">SL</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Итого */}
+        <div className="flex items-center justify-between px-3 py-3 bg-input rounded-lg">
+          <span className="text-text-secondary text-sm">Реализовано ({trade.closedPct}%)</span>
+          <span className={`font-mono font-bold text-lg ${pnlColor(trade.realizedPnl)}`}>
+            {trade.realizedPnl > 0 ? '+' : ''}{trade.realizedPnl}$
+          </span>
+        </div>
+
+        {trade.notes && (
+          <div className="text-sm text-text-secondary bg-input rounded-lg p-3">
+            <span className="text-xs text-text-secondary block mb-1">Заметки</span>
+            {trade.notes}
+          </div>
+        )}
+
+        <div className="text-xs text-text-secondary">
+          Открыта: {formatDate(trade.openedAt)}
+          {trade.closedAt && <> | Закрыта: {formatDate(trade.closedAt)}</>}
+        </div>
+
+        {/* Удаление */}
+        <div className="pt-2 border-t border-input">
+          {!confirmDelete ? (
+            <button onClick={() => setConfirmDelete(true)} className="text-xs text-text-secondary hover:text-short">
+              Удалить сделку
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-short">Точно удалить?</span>
+              <button onClick={async () => { await deleteTrade(trade.id); onClose(); onRefresh() }}
+                className="px-3 py-1 bg-short text-white rounded text-xs">Да</button>
+              <button onClick={() => setConfirmDelete(false)} className="px-3 py-1 bg-input text-text-secondary rounded text-xs">Нет</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ===================== STATS PANEL =====================
+function StatsPanel({ stats }: { stats: TradeStats | null }) {
+  if (!stats) return null
+
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+      <div className="bg-card rounded-xl p-4">
+        <div className="text-xs text-text-secondary">Всего</div>
+        <div className="text-2xl font-bold text-text-primary">{stats.total}</div>
+        <div className="text-xs text-text-secondary">{stats.open} открытых</div>
+      </div>
+      <div className="bg-card rounded-xl p-4">
+        <div className="text-xs text-text-secondary">Win Rate</div>
+        <div className={`text-2xl font-bold ${stats.winRate >= 50 ? 'text-long' : 'text-short'}`}>{stats.winRate}%</div>
+        <div className="text-xs text-text-secondary">{stats.wins}W / {stats.losses}L</div>
+      </div>
+      <div className="bg-card rounded-xl p-4">
+        <div className="text-xs text-text-secondary">Общий P&L</div>
+        <div className={`text-2xl font-bold font-mono ${pnlColor(stats.totalPnl)}`}>
+          {stats.totalPnl > 0 ? '+' : ''}{stats.totalPnl}$
+        </div>
+      </div>
+      <div className="bg-card rounded-xl p-4">
+        <div className="text-xs text-text-secondary">Средний Win</div>
+        <div className="text-lg font-bold font-mono text-long">+{stats.avgWin}$</div>
+        <div className="text-xs text-text-secondary">Avg Loss: {stats.avgLoss}$</div>
+      </div>
+      <div className="bg-card rounded-xl p-4">
+        <div className="text-xs text-text-secondary">LONG</div>
+        <div className={`text-lg font-bold font-mono ${pnlColor(stats.longStats.pnl)}`}>
+          {stats.longStats.pnl > 0 ? '+' : ''}{stats.longStats.pnl}$
+        </div>
+        <div className="text-xs text-text-secondary">{stats.longStats.count} сделок</div>
+      </div>
+      <div className="bg-card rounded-xl p-4">
+        <div className="text-xs text-text-secondary">SHORT</div>
+        <div className={`text-lg font-bold font-mono ${pnlColor(stats.shortStats.pnl)}`}>
+          {stats.shortStats.pnl > 0 ? '+' : ''}{stats.shortStats.pnl}$
+        </div>
+        <div className="text-xs text-text-secondary">{stats.shortStats.count} сделок</div>
+      </div>
+    </div>
+  )
+}
+
+// ===================== MAIN PAGE =====================
+export default function Trades() {
+  const [trades, setTrades] = useState<Trade[]>([])
+  const [stats, setStats] = useState<TradeStats | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
+  const [statusFilter, setStatusFilter] = useState('ALL')
+  const [selected, setSelected] = useState<Trade | null>(null)
+  const [closing, setClosing] = useState<Trade | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [tRes, sRes] = await Promise.all([
+        getTrades({ status: statusFilter !== 'ALL' ? statusFilter : undefined, page }),
+        getTradeStats(),
+      ])
+      setTrades(tRes.data)
+      setTotalPages(tRes.totalPages)
+      setStats(sRes)
+    } catch { } finally { setLoading(false) }
+  }, [page, statusFilter])
+
+  useEffect(() => { load() }, [load])
+
+  const statuses = ['ALL', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSED', 'SL_HIT']
+  const statusLabels: Record<string, string> = {
+    ALL: 'Все', OPEN: 'Открытые', PARTIALLY_CLOSED: 'Частичные', CLOSED: 'Закрытые', SL_HIT: 'Стоп-лосс',
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-text-primary">Журнал сделок</h1>
+        <NewTradeForm onCreated={load} />
+      </div>
+
+      <StatsPanel stats={stats} />
+
+      {/* Монеты P&L */}
+      {stats && Object.keys(stats.byCoin).length > 0 && (
+        <div className="flex gap-2 flex-wrap">
+          {Object.entries(stats.byCoin)
+            .sort((a, b) => b[1].pnl - a[1].pnl)
+            .map(([coin, d]) => (
+              <div key={coin} className="bg-card rounded-lg px-3 py-2 text-sm">
+                <span className="font-mono font-medium text-text-primary">{coin}</span>
+                <span className={`ml-2 font-mono ${pnlColor(d.pnl)}`}>{d.pnl > 0 ? '+' : ''}{d.pnl}$</span>
+                <span className="ml-1 text-text-secondary text-xs">({d.wins}/{d.trades})</span>
+              </div>
+            ))}
+        </div>
+      )}
+
+      {/* Фильтры */}
+      <div className="flex gap-2">
+        {statuses.map(s => (
+          <button key={s} onClick={() => { setStatusFilter(s); setPage(1) }}
+            className={`px-3 py-1.5 rounded-lg text-sm transition ${
+              statusFilter === s ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text-primary'
+            }`}>
+            {statusLabels[s]}
+          </button>
+        ))}
+      </div>
+
+      {/* Таблица */}
+      {loading ? (
+        <div className="text-center py-12 text-text-secondary">Загрузка...</div>
+      ) : trades.length === 0 ? (
+        <div className="text-center py-12 text-text-secondary">Нет сделок</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-text-secondary text-xs border-b border-input">
+                <th className="text-left py-3 px-2">Дата</th>
+                <th className="text-left py-3 px-2">Монета</th>
+                <th className="text-left py-3 px-2">Тип</th>
+                <th className="text-right py-3 px-2">Вход</th>
+                <th className="text-right py-3 px-2">SL</th>
+                <th className="text-right py-3 px-2">Размер</th>
+                <th className="text-center py-3 px-2">Закрыто</th>
+                <th className="text-right py-3 px-2">P&L</th>
+                <th className="text-center py-3 px-2">Статус</th>
+                <th className="text-right py-3 px-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {trades.map(t => (
+                <tr key={t.id} className="border-b border-input/50 hover:bg-card/50 cursor-pointer"
+                  onClick={() => setSelected(t)}>
+                  <td className="py-3 px-2 text-text-secondary text-xs">{formatDate(t.openedAt)}</td>
+                  <td className="py-3 px-2 font-mono font-medium text-text-primary">{t.coin.replace('USDT', '')}</td>
+                  <td className="py-3 px-2">
+                    <span className={`text-xs font-bold ${t.type === 'LONG' ? 'text-long' : 'text-short'}`}>
+                      {t.type} {t.leverage}x
+                    </span>
+                  </td>
+                  <td className="py-3 px-2 text-right font-mono text-text-primary">${t.entryPrice}</td>
+                  <td className="py-3 px-2 text-right font-mono text-short">${t.stopLoss}</td>
+                  <td className="py-3 px-2 text-right font-mono text-text-primary">${t.amount}</td>
+                  <td className="py-3 px-2 text-center text-text-secondary">{t.closedPct}%</td>
+                  <td className={`py-3 px-2 text-right font-mono font-semibold ${pnlColor(t.realizedPnl)}`}>
+                    {t.realizedPnl > 0 ? '+' : ''}{t.realizedPnl}$
+                  </td>
+                  <td className="py-3 px-2 text-center">{statusBadge(t.status)}</td>
+                  <td className="py-3 px-2 text-right">
+                    {(t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && (
+                      <button onClick={e => { e.stopPropagation(); setClosing(t) }}
+                        className="px-2 py-1 bg-accent/10 text-accent rounded text-xs hover:bg-accent/20 transition">
+                        Закрыть
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Пагинация */}
+      {totalPages > 1 && (
+        <div className="flex justify-center gap-2">
+          {Array.from({ length: totalPages }, (_, i) => (
+            <button key={i} onClick={() => setPage(i + 1)}
+              className={`w-8 h-8 rounded text-sm ${page === i + 1 ? 'bg-accent text-black' : 'bg-input text-text-secondary hover:text-text-primary'}`}>
+              {i + 1}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Модалки */}
+      {closing && <CloseModal trade={closing} onClose={() => setClosing(null)} onDone={() => { setClosing(null); load() }} />}
+      {selected && <TradeDetail trade={selected} onClose={() => setSelected(null)} onRefresh={load} />}
+    </div>
+  )
+}

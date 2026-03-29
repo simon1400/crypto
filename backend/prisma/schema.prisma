@@ -36,3 +36,22 @@ model Signal {
 
   @@unique([channel, messageId])
 }
+
+model Trade {
+  id          Int      @id @default(autoincrement())
+  coin        String                           // BTCUSDT, ETHUSDT...
+  type        String                           // LONG or SHORT
+  leverage    Int      @default(1)             // 1x-125x
+  entryPrice  Float                            // цена входа
+  amount      Float                            // размер позиции в USDT
+  stopLoss    Float                            // стоп-лосс
+  takeProfits Json                             // [{price: number, percent: number}] — уровни TP и % закрытия
+  closes      Json     @default("[]")          // [{price: number, percent: number, pnl: number, closedAt: string}]
+  closedPct   Float    @default(0)             // суммарно закрыто % позиции (0-100)
+  realizedPnl Float    @default(0)             // реализованный P&L в USDT
+  status      String   @default("OPEN")        // OPEN, PARTIALLY_CLOSED, CLOSED, SL_HIT, CANCELLED
+  notes       String?                          // заметки
+  openedAt    DateTime @default(now())
+  closedAt    DateTime?
+  createdAt   DateTime @default(now())
+}
