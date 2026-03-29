@@ -13,15 +13,22 @@ export interface MarketOverview {
   btcDominance: number
 }
 
+// MEXC uses different interval format: 1m,5m,15m,30m,60m,4h,8h,1d,1W,1M
+const MEXC_INTERVAL_MAP: Record<string, string> = {
+  '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
+  '1h': '60m', '4h': '4h', '8h': '8h', '1d': '1d',
+}
+
 export async function fetchOHLCV(
   symbol: string,
   interval = '4h',
   limit = 60
 ): Promise<OHLCV[]> {
   // Try Binance first, fallback to MEXC
+  const mexcInterval = MEXC_INTERVAL_MAP[interval] || interval
   const exchanges = [
     `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
-    `https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+    `https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=${mexcInterval}&limit=${limit}`,
   ]
 
   for (const url of exchanges) {
@@ -52,7 +59,8 @@ export async function fetchOHLCV_MEXC(
   interval = '4h',
   limit = 60
 ): Promise<OHLCV[]> {
-  const url = `https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+  const mexcInterval = MEXC_INTERVAL_MAP[interval] || interval
+  const url = `https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=${mexcInterval}&limit=${limit}`
   const res = await fetch(url)
   if (!res.ok) throw new Error(`MEXC error: ${res.status}`)
   const data = (await res.json()) as any[][]
