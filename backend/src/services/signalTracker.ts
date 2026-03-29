@@ -1,6 +1,15 @@
 import { prisma } from '../db/prisma'
 import { fetchOHLCV_MEXC } from './market'
 
+// Some signal tickers don't match MEXC symbol names
+const SYMBOL_MAP: Record<string, string> = {
+  ARC: 'ARCSOLUSDT',
+}
+
+export function resolveSymbol(coin: string): string {
+  return SYMBOL_MAP[coin] || coin + 'USDT'
+}
+
 /**
  * Check prices for all active signals and update their status.
  * Called every hour via setInterval and after sync.
@@ -36,7 +45,7 @@ async function updateSignalStatus(signal: {
   entryFilledAt: Date | null
   priceHistory: unknown
 }) {
-  const symbol = signal.coin + 'USDT'
+  const symbol = resolveSymbol(signal.coin)
   const takeProfits = signal.takeProfits as number[]
   const priceHistory = (signal.priceHistory as { time: number; price: number }[]) || []
 
