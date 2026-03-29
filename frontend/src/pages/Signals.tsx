@@ -4,6 +4,42 @@ import SignalTable from '../components/SignalTable'
 import SignalBadge from '../components/SignalBadge'
 import SignalChart from '../components/SignalChart'
 
+function exportCSV(signals: Signal[], prices: Record<string, number | null>, channel: string) {
+  const header = 'Дата,Тип,Монета,Цена,Плечо,Вход мин,Вход макс,SL,TP1,TP2,TP3,TP4,TP5,TP6,Статус,P&L %'
+  const rows = signals.map(s => {
+    const entry = (s.entryMin + s.entryMax) / 2
+    let pnl = ''
+    if (s.status === 'SL_HIT') {
+      const diff = s.type === 'LONG'
+        ? ((s.stopLoss - entry) / entry) * 100
+        : ((entry - s.stopLoss) / entry) * 100
+      pnl = (diff * s.leverage).toFixed(1)
+    } else if (s.status.startsWith('TP')) {
+      const tpIdx = parseInt(s.status.replace('TP', '').replace('_HIT', '')) - 1
+      const tp = s.takeProfits[tpIdx]
+      if (tp != null) {
+        const diff = s.type === 'LONG'
+          ? ((tp - entry) / entry) * 100
+          : ((entry - tp) / entry) * 100
+        pnl = '+' + (diff * s.leverage).toFixed(1)
+      }
+    }
+    const tps = Array.from({ length: 6 }, (_, i) => s.takeProfits[i] ?? '').join(',')
+    const price = prices[s.coin] != null ? prices[s.coin] : ''
+    const date = new Date(s.publishedAt).toLocaleString('ru-RU')
+    return `${date},${s.type},${s.coin},${price},${s.leverage}x,${s.entryMin},${s.entryMax},${s.stopLoss},${tps},${s.status},${pnl}`
+  })
+
+  const csv = '\uFEFF' + header + '\n' + rows.join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `signals_${channel}_${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 const CHANNELS = [
   { id: 'EveningTrader', name: 'Evening Trader' },
   { id: 'BitcoinBullets', name: 'Bitcoin Bullets' },
@@ -354,18 +390,29 @@ export default function Signals() {
     }
   }
 
-  // Stats summary
+  // Stats & analytics
   const stats = data ? (() => {
     let totalPnl = 0
     let closedCount = 0
+    const winPnls: number[] = []
+    const lossPnls: number[] = []
+    const leverageStats: Record<string, { wins: number; losses: number }> = {}
+    let tp2plus = 0
+
     for (const s of data.data) {
       const entry = (s.entryMin + s.entryMax) / 2
+      const levKey = s.leverage <= 5 ? '1-5x' : s.leverage <= 10 ? '6-10x' : '11x+'
+      if (!leverageStats[levKey]) leverageStats[levKey] = { wins: 0, losses: 0 }
+
       if (s.status === 'SL_HIT') {
         const diff = s.type === 'LONG'
           ? ((s.stopLoss - entry) / entry) * 100
           : ((entry - s.stopLoss) / entry) * 100
-        totalPnl += diff * s.leverage
+        const pnl = diff * s.leverage
+        totalPnl += pnl
         closedCount++
+        lossPnls.push(pnl)
+        leverageStats[levKey].losses++
       } else if (s.status.startsWith('TP')) {
         const tpIdx = parseInt(s.status.replace('TP', '').replace('_HIT', '')) - 1
         const tp = s.takeProfits[tpIdx]
@@ -373,11 +420,19 @@ export default function Signals() {
           const diff = s.type === 'LONG'
             ? ((tp - entry) / entry) * 100
             : ((entry - tp) / entry) * 100
-          totalPnl += diff * s.leverage
+          const pnl = diff * s.leverage
+          totalPnl += pnl
           closedCount++
+          winPnls.push(pnl)
+          leverageStats[levKey].wins++
+          if (tpIdx >= 1) tp2plus++
         }
       }
     }
+
+    const avgWin = winPnls.length > 0 ? winPnls.reduce((a, b) => a + b, 0) / winPnls.length : 0
+    const avgLoss = lossPnls.length > 0 ? lossPnls.reduce((a, b) => a + b, 0) / lossPnls.length : 0
+
     return {
       total: data.data.length,
       active: data.data.filter(s => s.status === 'ACTIVE' || s.status === 'ENTRY_WAIT').length,
@@ -385,6 +440,11 @@ export default function Signals() {
       sl: data.data.filter(s => s.status === 'SL_HIT').length,
       totalPnl,
       closedCount,
+      avgWin,
+      avgLoss,
+      leverageStats,
+      tp2plus,
+      winrate: closedCount > 0 ? (winPnls.length / closedCount) * 100 : 0,
     }
   })() : null
 
@@ -455,6 +515,12 @@ export default function Signals() {
             {new Date().toLocaleDateString('ru-RU')}
           </span>
           <span className="ml-2 text-xs">({data.data.length} сигналов)</span>
+          <button
+            onClick={() => exportCSV(data.data, prices, channel)}
+            className="ml-3 px-3 py-1 bg-input text-text-secondary rounded-lg text-xs hover:text-text-primary transition-colors"
+          >
+            CSV
+          </button>
         </div>
       )}
 
@@ -483,6 +549,57 @@ export default function Signals() {
               {stats.totalPnl >= 0 ? '+' : ''}{stats.totalPnl.toFixed(1)}%
             </div>
             <div className="text-xs text-text-secondary mt-0.5">{stats.closedCount} сделок</div>
+          </div>
+        </div>
+      )}
+
+      {/* Analytics */}
+      {stats && stats.closedCount > 0 && (
+        <div className="bg-card rounded-xl p-5 border border-card">
+          <h3 className="text-lg font-semibold mb-4">Аналитика</h3>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="bg-input rounded-lg p-3">
+              <div className="text-xs text-text-secondary mb-1">Средний P&L на победу</div>
+              <div className="font-mono text-lg font-bold text-long">+{stats.avgWin.toFixed(1)}%</div>
+            </div>
+            <div className="bg-input rounded-lg p-3">
+              <div className="text-xs text-text-secondary mb-1">Средний P&L на поражение</div>
+              <div className="font-mono text-lg font-bold text-short">{stats.avgLoss.toFixed(1)}%</div>
+            </div>
+            <div className="bg-input rounded-lg p-3">
+              <div className="text-xs text-text-secondary mb-1">Винрейт</div>
+              <div className="font-mono text-lg font-bold text-text-primary">{stats.winrate.toFixed(0)}%</div>
+            </div>
+            <div className="bg-input rounded-lg p-3">
+              <div className="text-xs text-text-secondary mb-1">Дошли до TP2+</div>
+              <div className="font-mono text-lg font-bold text-accent">
+                {stats.tp2plus} <span className="text-sm text-text-secondary">/ {stats.tp}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Leverage breakdown */}
+          <div className="mt-4">
+            <div className="text-xs text-text-secondary mb-2">Результат по плечам</div>
+            <div className="flex gap-3">
+              {Object.entries(stats.leverageStats)
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([lev, s]) => {
+                  const total = s.wins + s.losses
+                  const wr = total > 0 ? (s.wins / total) * 100 : 0
+                  return (
+                    <div key={lev} className="bg-input rounded-lg p-3 flex-1">
+                      <div className="text-xs text-text-secondary mb-1">{lev}</div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-mono font-bold text-text-primary">{wr.toFixed(0)}%</span>
+                        <span className="text-xs text-text-secondary">
+                          <span className="text-long">{s.wins}W</span> / <span className="text-short">{s.losses}L</span>
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })}
+            </div>
           </div>
         </div>
       )}
