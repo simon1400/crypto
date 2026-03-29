@@ -1,10 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   getTrades, getTradeStats, createTrade, closeTrade, hitStopLoss, deleteTrade,
-  Trade, TradeStats, TradeTP, TradeClose,
+  searchSymbols, Trade, TradeStats, TradeTP, TradeClose,
 } from '../api/client'
-
-const COINS = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOT', 'MATIC', 'LINK']
 
 function formatDate(d: string) {
   return new Date(d).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
@@ -30,6 +28,10 @@ function statusBadge(status: string) {
 function NewTradeForm({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false)
   const [coin, setCoin] = useState('BTC')
+  const [coinQuery, setCoinQuery] = useState('BTC')
+  const [coinSuggestions, setCoinSuggestions] = useState<string[]>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const coinRef = useRef<HTMLDivElement>(null)
   const [type, setType] = useState<'LONG' | 'SHORT'>('LONG')
   const [leverage, setLeverage] = useState('10')
   const [entryPrice, setEntryPrice] = useState('')
@@ -42,6 +44,25 @@ function NewTradeForm({ onCreated }: { onCreated: () => void }) {
   const [notes, setNotes] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  // Поиск монет с биржи
+  useEffect(() => {
+    if (!coinQuery || coinQuery.length < 1) { setCoinSuggestions([]); return }
+    const timer = setTimeout(async () => {
+      const results = await searchSymbols(coinQuery.toUpperCase())
+      setCoinSuggestions(results)
+    }, 200)
+    return () => clearTimeout(timer)
+  }, [coinQuery])
+
+  // Клик вне списка — закрыть
+  useEffect(() => {
+    function handle(e: MouseEvent) {
+      if (coinRef.current && !coinRef.current.contains(e.target as Node)) setShowSuggestions(false)
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [])
 
   function addTP() {
     setTps([...tps, { price: '', percent: '' }])
@@ -68,14 +89,15 @@ function NewTradeForm({ onCreated }: { onCreated: () => void }) {
 
     setLoading(true)
     try {
+      const finalCoin = coinQuery.toUpperCase() || coin
       await createTrade({
-        coin, type, leverage: Number(leverage),
+        coin: finalCoin, type, leverage: Number(leverage),
         entryPrice: Number(entryPrice), amount: Number(amount),
         stopLoss: Number(stopLoss), takeProfits,
         notes: notes || undefined,
       })
       setOpen(false)
-      setCoin('BTC'); setType('LONG'); setLeverage('10')
+      setCoin('BTC'); setCoinQuery('BTC'); setType('LONG'); setLeverage('10')
       setEntryPrice(''); setAmount(''); setStopLoss('')
       setTps([{ price: '', percent: '50' }, { price: '', percent: '50' }])
       setNotes('')
@@ -104,12 +126,24 @@ function NewTradeForm({ onCreated }: { onCreated: () => void }) {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div>
+        <div ref={coinRef} className="relative">
           <label className="text-xs text-text-secondary">Монета</label>
-          <select value={coin} onChange={e => setCoin(e.target.value)}
-            className="w-full bg-input rounded px-3 py-2 text-text-primary">
-            {COINS.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
+          <input type="text" value={coinQuery}
+            onChange={e => { setCoinQuery(e.target.value.toUpperCase()); setShowSuggestions(true) }}
+            onFocus={() => setShowSuggestions(true)}
+            placeholder="BTC, ETH, SOL..."
+            className="w-full bg-input rounded px-3 py-2 text-text-primary font-mono" required />
+          {showSuggestions && coinSuggestions.length > 0 && (
+            <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-input border border-card rounded-lg max-h-48 overflow-y-auto shadow-lg">
+              {coinSuggestions.map(s => (
+                <button key={s} type="button"
+                  onClick={() => { setCoin(s); setCoinQuery(s); setShowSuggestions(false) }}
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-card transition ${s === coin ? 'text-accent' : 'text-text-primary'}`}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div>
           <label className="text-xs text-text-secondary">Направление</label>

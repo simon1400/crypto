@@ -3,6 +3,50 @@ import { prisma } from '../db/prisma'
 
 const router = Router()
 
+// Кэш символов с биржи (обновляется раз в час)
+let symbolsCache: string[] = []
+let symbolsCacheTime = 0
+const CACHE_TTL = 60 * 60 * 1000
+
+async function loadSymbols(): Promise<string[]> {
+  if (symbolsCache.length && Date.now() - symbolsCacheTime < CACHE_TTL) return symbolsCache
+  try {
+    const res = await fetch('https://api.binance.com/api/v3/exchangeInfo')
+    const data = await res.json() as { symbols: { symbol: string; status: string; quoteAsset: string }[] }
+    symbolsCache = data.symbols
+      .filter(s => s.status === 'TRADING' && s.quoteAsset === 'USDT')
+      .map(s => s.symbol.replace('USDT', ''))
+      .sort()
+    symbolsCacheTime = Date.now()
+  } catch {
+    // fallback MEXC
+    try {
+      const res = await fetch('https://api.mexc.com/api/v3/exchangeInfo')
+      const data = await res.json() as { symbols: { symbol: string; status: string; quoteAsset: string }[] }
+      symbolsCache = data.symbols
+        .filter(s => s.status === 'ENABLED' && s.quoteAsset === 'USDT')
+        .map(s => s.symbol.replace('USDT', ''))
+        .sort()
+      symbolsCacheTime = Date.now()
+    } catch { /* keep old cache */ }
+  }
+  return symbolsCache
+}
+
+// GET /api/trades/symbols?q=BTC — поиск монет
+router.get('/symbols', async (req: Request, res: Response) => {
+  try {
+    const q = (String(req.query.q || '')).toUpperCase()
+    const symbols = await loadSymbols()
+    const filtered = q
+      ? symbols.filter(s => s.startsWith(q)).slice(0, 30)
+      : symbols.slice(0, 50)
+    res.json(filtered)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // GET /api/trades — список сделок с фильтрами
 router.get('/', async (req: Request, res: Response) => {
   try {

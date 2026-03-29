@@ -264,6 +264,12 @@ export interface TradeStats {
   byCoin: Record<string, { trades: number; pnl: number; wins: number }>
 }
 
+export async function searchSymbols(q = ''): Promise<string[]> {
+  const res = await fetch(`${BASE}/api/trades/symbols?q=${encodeURIComponent(q)}`, { headers: getHeaders() })
+  if (!res.ok) return []
+  return res.json()
+}
+
 export async function getTrades(params: { status?: string; coin?: string; page?: number } = {}): Promise<TradesResponse> {
   const q = new URLSearchParams()
   if (params.status) q.set('status', params.status)
