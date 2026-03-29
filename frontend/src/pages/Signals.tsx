@@ -344,7 +344,8 @@ function DepositSimulator({ signals }: { signals: Signal[] }) {
 function StrategyAnalysis({ stats }: { stats: {
   avgWin: number; avgLoss: number; winrate: number; tp2plus: number; tp: number;
   sl: number; closedCount: number;
-  leverageStats: Record<string, { wins: number; losses: number }>
+  leverageStats: Record<string, { wins: number; losses: number }>;
+  directionStats: { longWins: number; longLosses: number; shortWins: number; shortLosses: number }
 }}) {
   const rr = stats.avgLoss !== 0 ? Math.abs(stats.avgWin / stats.avgLoss) : 0
   const tp2pct = stats.tp > 0 ? (stats.tp2plus / stats.tp) * 100 : 0
@@ -375,6 +376,23 @@ function StrategyAnalysis({ stats }: { stats: {
     recs.push(`${tp2pct.toFixed(0)}% побед дошли до TP2+ — закрывать 50% на TP1, остальное держать до TP2-TP3`)
   } else {
     recs.push('Большинство побед на TP1 — закрывать 70-80% на TP1, остальное на TP2')
+  }
+
+  // Long vs Short advice
+  const longTotal = stats.directionStats.longWins + stats.directionStats.longLosses
+  const shortTotal = stats.directionStats.shortWins + stats.directionStats.shortLosses
+  const longWr = longTotal > 0 ? (stats.directionStats.longWins / longTotal) * 100 : 0
+  const shortWr = shortTotal > 0 ? (stats.directionStats.shortWins / shortTotal) * 100 : 0
+  if (longTotal >= 5 && shortTotal >= 5) {
+    if (Math.abs(longWr - shortWr) >= 15) {
+      const better = longWr > shortWr ? 'LONG' : 'SHORT'
+      const worse = longWr > shortWr ? 'SHORT' : 'LONG'
+      const betterPct = Math.max(longWr, shortWr)
+      const worsePct = Math.min(longWr, shortWr)
+      recs.push(`Канал значительно лучше в ${better} (${betterPct.toFixed(0)}%) чем в ${worse} (${worsePct.toFixed(0)}%) — можно фильтровать`)
+    } else {
+      recs.push(`LONG (${longWr.toFixed(0)}%) и SHORT (${shortWr.toFixed(0)}%) примерно одинаковы — торговать оба направления`)
+    }
   }
 
   // Position sizing
@@ -524,6 +542,7 @@ export default function Signals() {
     const winPnls: number[] = []
     const lossPnls: number[] = []
     const leverageStats: Record<string, { wins: number; losses: number }> = {}
+    const directionStats = { longWins: 0, longLosses: 0, shortWins: 0, shortLosses: 0 }
     let tp2plus = 0
 
     for (const s of data.data) {
@@ -540,6 +559,8 @@ export default function Signals() {
         closedCount++
         lossPnls.push(pnl)
         leverageStats[levKey].losses++
+        if (s.type === 'LONG') directionStats.longLosses++
+        else directionStats.shortLosses++
       } else if (s.status.startsWith('TP')) {
         const tpIdx = parseInt(s.status.replace('TP', '').replace('_HIT', '')) - 1
         const tp = s.takeProfits[tpIdx]
@@ -552,6 +573,8 @@ export default function Signals() {
           closedCount++
           winPnls.push(pnl)
           leverageStats[levKey].wins++
+          if (s.type === 'LONG') directionStats.longWins++
+          else directionStats.shortWins++
           if (tpIdx >= 1) tp2plus++
         }
       }
@@ -570,6 +593,7 @@ export default function Signals() {
       avgWin,
       avgLoss,
       leverageStats,
+      directionStats,
       tp2plus,
       winrate: closedCount > 0 ? (winPnls.length / closedCount) * 100 : 0,
     }
@@ -703,6 +727,38 @@ export default function Signals() {
                 {stats.tp2plus} <span className="text-sm text-text-secondary">/ {stats.tp}</span>
               </div>
             </div>
+          </div>
+
+          {/* Long vs Short */}
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            {(() => {
+              const lt = stats.directionStats.longWins + stats.directionStats.longLosses
+              const st = stats.directionStats.shortWins + stats.directionStats.shortLosses
+              const lwr = lt > 0 ? (stats.directionStats.longWins / lt) * 100 : 0
+              const swr = st > 0 ? (stats.directionStats.shortWins / st) * 100 : 0
+              return (<>
+                <div className="bg-input rounded-lg p-3">
+                  <div className="text-xs text-text-secondary mb-1">LONG</div>
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-mono text-lg font-bold text-long">{lwr.toFixed(0)}%</span>
+                    <span className="text-xs text-text-secondary">
+                      <span className="text-long">{stats.directionStats.longWins}W</span> / <span className="text-short">{stats.directionStats.longLosses}L</span>
+                      <span className="ml-1">({lt} сделок)</span>
+                    </span>
+                  </div>
+                </div>
+                <div className="bg-input rounded-lg p-3">
+                  <div className="text-xs text-text-secondary mb-1">SHORT</div>
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-mono text-lg font-bold text-short">{swr.toFixed(0)}%</span>
+                    <span className="text-xs text-text-secondary">
+                      <span className="text-long">{stats.directionStats.shortWins}W</span> / <span className="text-short">{stats.directionStats.shortLosses}L</span>
+                      <span className="ml-1">({st} сделок)</span>
+                    </span>
+                  </div>
+                </div>
+              </>)
+            })()}
           </div>
 
           {/* Leverage breakdown */}
