@@ -58,6 +58,7 @@ export async function getChannelMessages(
   const allMessages: TelegramMessage[] = []
   let offsetId = 0
   const batchSize = 100
+  let batchNum = 0
 
   while (true) {
     const result = await tg.invoke(
@@ -75,9 +76,13 @@ export async function getChannelMessages(
 
     if (!('messages' in result) || result.messages.length === 0) break
 
+    batchNum++
     let reachedOldest = false
+    let lastDate = 0
+
     for (const msg of result.messages) {
       if (msg instanceof Api.Message) {
+        lastDate = msg.date
         if (msg.date < sinceTimestamp) {
           reachedOldest = true
           break
@@ -93,9 +98,12 @@ export async function getChannelMessages(
       }
     }
 
+    console.log(`[Telegram] ${channelUsername} batch ${batchNum}: ${result.messages.length} msgs, last date: ${new Date(lastDate * 1000).toISOString()}, total collected: ${allMessages.length}`)
+
     if (reachedOldest || result.messages.length < batchSize) break
   }
 
+  console.log(`[Telegram] ${channelUsername} done: ${allMessages.length} messages in ${batchNum} batches`)
   return allMessages
 }
 

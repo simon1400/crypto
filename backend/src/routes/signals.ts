@@ -48,6 +48,9 @@ router.get('/:id', async (req, res) => {
 
 // POST /api/signals/sync — sync signals from Telegram channel
 router.post('/sync', async (req, res) => {
+  // Extend timeout for large syncs (3+ months of messages)
+  req.setTimeout(300000) // 5 min
+  res.setTimeout(300000)
   try {
     const channel = (req.body.channel as string) || 'EveningTrader'
     const username = CHANNELS[channel] || channel
