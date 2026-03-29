@@ -183,17 +183,17 @@ export interface SignalsResponse {
   skipped?: number
 }
 
-export async function getSignals(channel = 'EveningTrader'): Promise<SignalsResponse> {
-  const res = await fetch(`${BASE}/api/signals?channel=${channel}`, { headers: getHeaders() })
+export async function getSignals(channel = 'EveningTrader', days = 7): Promise<SignalsResponse> {
+  const res = await fetch(`${BASE}/api/signals?channel=${channel}&days=${days}`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch signals')
   return res.json()
 }
 
-export async function syncSignals(channel = 'EveningTrader'): Promise<SignalsResponse> {
+export async function syncSignals(channel = 'EveningTrader', days = 7): Promise<SignalsResponse> {
   const res = await fetch(`${BASE}/api/signals/sync`, {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ channel }),
+    body: JSON.stringify({ channel, days }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }))

@@ -114,6 +114,7 @@ function SignalModal({ signal, onClose }: { signal: Signal; onClose: () => void 
 
 export default function Signals() {
   const [channel, setChannel] = useState('EveningTrader')
+  const [days, setDays] = useState(7)
   const [data, setData] = useState<SignalsResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -124,7 +125,7 @@ export default function Signals() {
     setLoading(true)
     setError(null)
     try {
-      const result = await getSignals(channel)
+      const result = await getSignals(channel, days)
       setData(result)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка загрузки')
@@ -137,7 +138,7 @@ export default function Signals() {
     setSyncing(true)
     setError(null)
     try {
-      const result = await syncSignals(channel)
+      const result = await syncSignals(channel, days)
       setData(result)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка синхронизации')
@@ -172,6 +173,19 @@ export default function Signals() {
             {CHANNELS.map(ch => (
               <option key={ch.id} value={ch.id}>{ch.name}</option>
             ))}
+          </select>
+
+          {/* Period selector */}
+          <select
+            value={days}
+            onChange={e => setDays(Number(e.target.value))}
+            className="bg-input text-text-primary rounded-lg px-3 py-2.5 text-sm border border-card focus:border-accent outline-none"
+          >
+            <option value={3}>3 дня</option>
+            <option value={7}>Неделя</option>
+            <option value={14}>2 недели</option>
+            <option value={30}>Месяц</option>
+            <option value={90}>3 месяца</option>
           </select>
 
           <button

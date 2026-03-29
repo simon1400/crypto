@@ -10,21 +10,22 @@ const CHANNELS: Record<string, string> = {
   EveningTrader: 'EveningTrader',
 }
 
-// GET /api/signals?channel=EveningTrader
+// GET /api/signals?channel=EveningTrader&days=7
 router.get('/', async (req, res) => {
   try {
     const channel = (req.query.channel as string) || 'EveningTrader'
-    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    const days = Math.min(Math.max(parseInt(req.query.days as string) || 7, 1), 90)
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
 
     const signals = await prisma.signal.findMany({
       where: {
         channel,
-        publishedAt: { gte: weekAgo },
+        publishedAt: { gte: since },
       },
       orderBy: { publishedAt: 'desc' },
     })
 
-    res.json({ data: signals, channel })
+    res.json({ data: signals, channel, days })
   } catch (err: any) {
     console.error('[Signals] GET error:', err)
     res.status(500).json({ error: err.message })
@@ -49,15 +50,17 @@ router.post('/sync', async (req, res) => {
     const channel = (req.body.channel as string) || 'EveningTrader'
     const username = CHANNELS[channel] || channel
 
-    const messages = await getChannelMessages(username, 100)
-    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+    const days = Math.min(Math.max(parseInt(req.body.days as string) || 7, 1), 90)
+    const since = Date.now() - days * 24 * 60 * 60 * 1000
+    const limit = Math.min(days * 15, 500) // ~15 messages per day max
+
+    const messages = await getChannelMessages(username, limit)
 
     let imported = 0
     let skipped = 0
 
     for (const msg of messages) {
-      // Skip messages older than a week
-      if (msg.date * 1000 < weekAgo) continue
+      if (msg.date * 1000 < since) continue
 
       const parsed = parseSignalMessage(msg.text)
       if (!parsed) continue
@@ -94,7 +97,7 @@ router.post('/sync', async (req, res) => {
     const signals = await prisma.signal.findMany({
       where: {
         channel,
-        publishedAt: { gte: new Date(weekAgo) },
+        publishedAt: { gte: new Date(since) },
       },
       orderBy: { publishedAt: 'desc' },
     })
