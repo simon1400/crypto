@@ -51,37 +51,52 @@ export interface TelegramMessage {
 
 export async function getChannelMessages(
   channelUsername: string,
-  limit = 50
+  sinceTimestamp: number
 ): Promise<TelegramMessage[]> {
   const tg = await getTelegramClient()
 
-  const result = await tg.invoke(
-    new Api.messages.GetHistory({
-      peer: channelUsername,
-      limit,
-      offsetId: 0,
-      offsetDate: 0,
-      addOffset: 0,
-      maxId: 0,
-      minId: 0,
-      hash: BigInt(0) as any,
-    })
-  )
+  const allMessages: TelegramMessage[] = []
+  let offsetId = 0
+  const batchSize = 100
 
-  if (!('messages' in result)) return []
-
-  const messages: TelegramMessage[] = []
-  for (const msg of result.messages) {
-    if (msg instanceof Api.Message && msg.message) {
-      messages.push({
-        id: msg.id,
-        date: msg.date,
-        text: msg.message,
+  while (true) {
+    const result = await tg.invoke(
+      new Api.messages.GetHistory({
+        peer: channelUsername,
+        limit: batchSize,
+        offsetId,
+        offsetDate: 0,
+        addOffset: 0,
+        maxId: 0,
+        minId: 0,
+        hash: BigInt(0) as any,
       })
+    )
+
+    if (!('messages' in result) || result.messages.length === 0) break
+
+    let reachedOldest = false
+    for (const msg of result.messages) {
+      if (msg instanceof Api.Message) {
+        if (msg.date < sinceTimestamp) {
+          reachedOldest = true
+          break
+        }
+        if (msg.message) {
+          allMessages.push({
+            id: msg.id,
+            date: msg.date,
+            text: msg.message,
+          })
+        }
+        offsetId = msg.id
+      }
     }
+
+    if (reachedOldest || result.messages.length < batchSize) break
   }
 
-  return messages
+  return allMessages
 }
 
 export function saveTelegramSession(sessionString: string) {

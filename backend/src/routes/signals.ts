@@ -53,15 +53,14 @@ router.post('/sync', async (req, res) => {
 
     const days = Math.min(Math.max(parseInt(req.body.days as string) || 7, 1), 90)
     const since = Date.now() - days * 24 * 60 * 60 * 1000
-    const limit = Math.min(days * 15, 500) // ~15 messages per day max
+    const sinceUnix = Math.floor(since / 1000)
 
-    const messages = await getChannelMessages(username, limit)
+    const messages = await getChannelMessages(username, sinceUnix)
 
     let imported = 0
     let skipped = 0
 
     for (const msg of messages) {
-      if (msg.date * 1000 < since) continue
 
       const parsed = parseSignalMessage(msg.text)
       if (!parsed) continue

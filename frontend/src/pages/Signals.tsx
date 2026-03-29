@@ -121,6 +121,7 @@ export default function Signals() {
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Signal | null>(null)
   const [prices, setPrices] = useState<Record<string, number | null>>({})
+  const [syncedDays, setSyncedDays] = useState<number | null>(null)
 
   const fetchPrices = async (signals: Signal[]) => {
     const coins = [...new Set(signals.map(s => s.coin))]
@@ -136,6 +137,7 @@ export default function Signals() {
     try {
       const result = await getSignals(channel, days)
       setData(result)
+      setSyncedDays(days)
       fetchPrices(result.data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка загрузки')
@@ -150,6 +152,7 @@ export default function Signals() {
     try {
       const result = await syncSignals(channel, days)
       setData(result)
+      setSyncedDays(days)
       fetchPrices(result.data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка синхронизации')
@@ -247,6 +250,18 @@ export default function Signals() {
       {error && (
         <div className="bg-short/10 border border-short/30 rounded-lg px-4 py-3 text-short text-sm">
           {error}
+        </div>
+      )}
+
+      {/* Date range */}
+      {data && syncedDays && (
+        <div className="text-sm text-text-secondary">
+          Период: <span className="text-text-primary font-medium">
+            {new Date(Date.now() - syncedDays * 24 * 60 * 60 * 1000).toLocaleDateString('ru-RU')}
+          </span> — <span className="text-text-primary font-medium">
+            {new Date().toLocaleDateString('ru-RU')}
+          </span>
+          <span className="ml-2 text-xs">({data.data.length} сигналов)</span>
         </div>
       )}
 
