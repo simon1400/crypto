@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { prisma } from '../db/prisma'
 import { getChannelMessages } from '../services/telegram'
 import { parseSignalMessage } from '../services/signalParser'
-import { trackActiveSignals, resolveSymbol } from '../services/signalTracker'
+import { trackActiveSignals, resolveSymbolFromCache } from '../services/signalTracker'
 import { fetchCurrentPrice } from '../services/market'
 
 const router = Router()
@@ -118,7 +118,7 @@ router.post('/prices', async (req, res) => {
     const prices: Record<string, number | null> = {}
     await Promise.all(
       [...new Set(coins)].map(async (coin) => {
-        prices[coin] = await fetchCurrentPrice(resolveSymbol(coin))
+        prices[coin] = await fetchCurrentPrice(resolveSymbolFromCache(coin))
       })
     )
 

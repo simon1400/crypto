@@ -1,13 +1,54 @@
 import { prisma } from '../db/prisma'
-import { fetchOHLCV_MEXC } from './market'
+import { fetchOHLCV_MEXC, fetchCurrentPrice } from './market'
 
-// Some signal tickers don't match MEXC symbol names
-const SYMBOL_MAP: Record<string, string> = {
-  ARC: 'ARCSOLUSDT',
+// Cache resolved symbols to avoid repeated lookups
+const symbolCache: Record<string, string | null> = {}
+
+/**
+ * Auto-resolve the correct MEXC symbol for a coin ticker.
+ * Tries COINUSDT first, then common suffixes (SOL, ETH, BASE, etc.)
+ * Validates price is in the same ballpark as the signal entry.
+ */
+async function autoResolveSymbol(coin: string, entryPrice: number): Promise<string | null> {
+  // Check cache first
+  const cacheKey = coin
+  if (cacheKey in symbolCache) return symbolCache[cacheKey]
+
+  // Try direct symbol first
+  const direct = coin + 'USDT'
+  const directPrice = await fetchCurrentPrice(direct)
+  if (directPrice != null) {
+    const ratio = directPrice / entryPrice
+    if (ratio >= 0.2 && ratio <= 5) {
+      symbolCache[cacheKey] = direct
+      console.log(`[SymbolResolver] ${coin} → ${direct} (price ${directPrice})`)
+      return direct
+    }
+  }
+
+  // Try common suffixes
+  const suffixes = ['SOL', 'ETH', 'BASE', 'BNB', 'ARB', 'OP', 'AVAX', 'MATIC', 'SUI']
+  for (const suffix of suffixes) {
+    const candidate = coin + suffix + 'USDT'
+    const price = await fetchCurrentPrice(candidate)
+    if (price != null) {
+      const ratio = price / entryPrice
+      if (ratio >= 0.2 && ratio <= 5) {
+        symbolCache[cacheKey] = candidate
+        console.log(`[SymbolResolver] ${coin} → ${candidate} (price ${price})`)
+        return candidate
+      }
+    }
+  }
+
+  // Nothing found
+  symbolCache[cacheKey] = null
+  console.log(`[SymbolResolver] ${coin} → no matching symbol found on MEXC`)
+  return null
 }
 
-export function resolveSymbol(coin: string): string {
-  return SYMBOL_MAP[coin] || coin + 'USDT'
+export function resolveSymbolFromCache(coin: string): string {
+  return symbolCache[coin] || coin + 'USDT'
 }
 
 /**
@@ -45,7 +86,10 @@ async function updateSignalStatus(signal: {
   entryFilledAt: Date | null
   priceHistory: unknown
 }) {
-  const symbol = resolveSymbol(signal.coin)
+  const avgEntry = (signal.entryMin + signal.entryMax) / 2
+  const symbol = await autoResolveSymbol(signal.coin, avgEntry)
+  if (!symbol) return
+
   const takeProfits = signal.takeProfits as number[]
   const priceHistory = (signal.priceHistory as { time: number; price: number }[]) || []
 
@@ -71,13 +115,13 @@ async function updateSignalStatus(signal: {
 
   if (relevantCandles.length === 0) return
 
-  // Sanity check: verify MEXC prices are in the same ballpark as signal levels
-  // If prices differ by more than 5x, it's likely a different token or redenomination
-  const avgCandle = relevantCandles[0].close
-  const avgEntry = (signal.entryMin + signal.entryMax) / 2
-  const priceRatio = avgCandle / avgEntry
+  // Double-check price sanity with actual candle data
+  const candlePrice = relevantCandles[0].close
+  const priceRatio = candlePrice / avgEntry
   if (priceRatio > 5 || priceRatio < 0.2) {
-    console.log(`[SignalTracker] ${symbol} price mismatch: MEXC=${avgCandle}, signal entry=${avgEntry} (ratio ${priceRatio.toFixed(2)}), skipping`)
+    console.log(`[SignalTracker] ${symbol} candle price mismatch: ${candlePrice} vs entry ${avgEntry}, skipping`)
+    // Invalidate cache so it retries next time
+    delete symbolCache[signal.coin]
     return
   }
 
@@ -93,13 +137,10 @@ async function updateSignalStatus(signal: {
   let entryFilledAt = signal.entryFilledAt
 
   if (signal.status === 'ENTRY_WAIT') {
-    // Check if price entered the entry zone
     const entryCandle = relevantCandles.find(c => {
       if (signal.type === 'LONG') {
-        // For LONG: price dipped into entry zone (low <= entryMax)
         return c.low <= signal.entryMax
       } else {
-        // For SHORT: price rose into entry zone (high >= entryMin)
         return c.high >= signal.entryMin
       }
     })
@@ -117,7 +158,6 @@ async function updateSignalStatus(signal: {
     let maxTpHit = 0
     let slHitTime = Infinity
 
-    // Find when SL was first hit
     for (const candle of postEntryCandles) {
       const slTriggered = signal.type === 'LONG'
         ? candle.low <= signal.stopLoss
@@ -129,7 +169,6 @@ async function updateSignalStatus(signal: {
       }
     }
 
-    // Find max TP hit (only before SL was hit)
     for (const candle of postEntryCandles) {
       if (candle.time > slHitTime) break
 
