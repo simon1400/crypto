@@ -159,12 +159,38 @@ export default function Signals() {
   }
 
   // Stats summary
-  const stats = data ? {
-    total: data.data.length,
-    active: data.data.filter(s => s.status === 'ACTIVE' || s.status === 'ENTRY_WAIT').length,
-    tp: data.data.filter(s => s.status.startsWith('TP')).length,
-    sl: data.data.filter(s => s.status === 'SL_HIT').length,
-  } : null
+  const stats = data ? (() => {
+    let totalPnl = 0
+    let closedCount = 0
+    for (const s of data.data) {
+      const entry = (s.entryMin + s.entryMax) / 2
+      if (s.status === 'SL_HIT') {
+        const diff = s.type === 'LONG'
+          ? ((s.stopLoss - entry) / entry) * 100
+          : ((entry - s.stopLoss) / entry) * 100
+        totalPnl += diff * s.leverage
+        closedCount++
+      } else if (s.status.startsWith('TP')) {
+        const tpIdx = parseInt(s.status.replace('TP', '').replace('_HIT', '')) - 1
+        const tp = s.takeProfits[tpIdx]
+        if (tp != null) {
+          const diff = s.type === 'LONG'
+            ? ((tp - entry) / entry) * 100
+            : ((entry - tp) / entry) * 100
+          totalPnl += diff * s.leverage
+          closedCount++
+        }
+      }
+    }
+    return {
+      total: data.data.length,
+      active: data.data.filter(s => s.status === 'ACTIVE' || s.status === 'ENTRY_WAIT').length,
+      tp: data.data.filter(s => s.status.startsWith('TP')).length,
+      sl: data.data.filter(s => s.status === 'SL_HIT').length,
+      totalPnl,
+      closedCount,
+    }
+  })() : null
 
   return (
     <div className="space-y-6">
@@ -226,7 +252,7 @@ export default function Signals() {
 
       {/* Stats */}
       {stats && (
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-5 gap-3">
           <div className="bg-card rounded-lg p-4 text-center">
             <div className="text-xs text-text-secondary">Всего</div>
             <div className="font-mono text-2xl font-bold text-text-primary">{stats.total}</div>
@@ -242,6 +268,13 @@ export default function Signals() {
           <div className="bg-card rounded-lg p-4 text-center">
             <div className="text-xs text-text-secondary">Stop Loss</div>
             <div className="font-mono text-2xl font-bold text-short">{stats.sl}</div>
+          </div>
+          <div className={`rounded-lg p-4 text-center border ${stats.totalPnl >= 0 ? 'bg-long/10 border-long/30' : 'bg-short/10 border-short/30'}`}>
+            <div className="text-xs text-text-secondary">Общий P&L</div>
+            <div className={`font-mono text-2xl font-bold ${stats.totalPnl >= 0 ? 'text-long' : 'text-short'}`}>
+              {stats.totalPnl >= 0 ? '+' : ''}{stats.totalPnl.toFixed(1)}%
+            </div>
+            <div className="text-xs text-text-secondary mt-0.5">{stats.closedCount} сделок</div>
           </div>
         </div>
       )}
