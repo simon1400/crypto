@@ -439,7 +439,7 @@ export default function Scanner() {
         <div>
           <h1 className="text-2xl font-semibold text-text-primary">Сканер сигналов</h1>
           <p className="text-sm text-text-secondary mt-1">
-            Автоматический поиск торговых возможностей по 20 монетам
+            Автоматический поиск торговых возможностей по 80 монетам
           </p>
         </div>
 
