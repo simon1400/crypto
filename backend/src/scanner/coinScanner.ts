@@ -143,14 +143,26 @@ export async function runScan(
     const scoredSignals: ScoredSignal[] = []
 
     for (const [coin, indicators] of Object.entries(coinIndicators)) {
-      const rawSignal = runStrategies(coin, indicators, regime.regime)
-      if (!rawSignal) {
-        console.log(`[Scanner] ${coin}: no strategy matched`)
+      // Filter out coins with invalid/zero data
+      const p = indicators.tf1h.price
+      if (!p || p <= 0 || !isFinite(p) || indicators.tf1h.atr <= 0) {
+        console.log(`[Scanner] ${coin}: skipped — invalid price or ATR`)
         continue
       }
 
-      const scored = scoreSignal(rawSignal, regime, fundingMap[coin], newsMap[coin])
-      console.log(`[Scanner] ${coin}: ${rawSignal.strategy} ${rawSignal.type} confidence=${rawSignal.confidence}/${rawSignal.maxConfidence} score=${scored.score}`)
+      const rawSignal = runStrategies(coin, indicators, regime.regime)
+      if (!rawSignal) {
+        continue // don't log 100+ "no strategy" lines
+      }
+
+      const scored = scoreSignal(rawSignal, regime, fundingMap[coin], newsMap[coin], oiMap[coin])
+
+      if (scored.volumeKill) {
+        console.log(`[Scanner] ${coin}: KILLED by low volume (${indicators.tf1h.volRatio}x)`)
+        continue
+      }
+
+      console.log(`[Scanner] ${coin}: ${rawSignal.strategy} ${rawSignal.type} confidence=${rawSignal.confidence}/${rawSignal.maxConfidence} score=${scored.score} vol=${indicators.tf1h.volRatio}x`)
 
       if (scored.score >= minScore) {
         scoredSignals.push(scored)
@@ -165,10 +177,10 @@ export async function runScan(
     const topSignals = scoredSignals.slice(0, 10) // Max 10 signals
     const signalsWithRisk = topSignals.map(s => calculateRisk(s))
 
-    // Filter out signals with bad R:R
+    // Filter out signals with bad R:R — minimum 1:2 for alts
     const validSignals = signalsWithRisk.filter(s => {
-      if (s.riskReward < 1.0) {
-        console.log(`[Scanner] ${s.coin}: filtered out, R:R = ${s.riskReward}`)
+      if (s.riskReward < 1.8) {
+        console.log(`[Scanner] ${s.coin}: filtered out, R:R = ${s.riskReward} (min 1.8)`)
         return false
       }
       return true

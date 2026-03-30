@@ -29,35 +29,41 @@ export function calculateRisk(signal: ScoredSignal): SignalWithRisk {
   const price = tf1h.price
   const atr = tf1h.atr
 
-  // === Entry: limit order at a pullback level ===
+  // === Entry: depends on strategy ===
   let entry: number
-  if (type === 'LONG') {
-    // Entry below current price: EMA9, VWAP, or support zone
-    const pullbackTargets = [
-      tf1h.ema9,
-      tf1h.vwap,
-      tf1h.support * 1.005, // slightly above support
-    ].filter(p => p < price && p > price * 0.97) // within 3% below
+  const isBreakout = strategy === 'breakout'
 
-    if (pullbackTargets.length > 0) {
-      // Use the closest pullback level
-      entry = Math.max(...pullbackTargets)
+  if (type === 'LONG') {
+    if (isBreakout) {
+      // Breakout: entry at resistance level (breakout + retest)
+      entry = round(tf1h.resistance * 1.002) // slightly above resistance
     } else {
-      // Small offset from current price
-      entry = round(price - atr * 0.3)
+      // Pullback: entry below current price at EMA/VWAP/support
+      const pullbackTargets = [
+        tf1h.ema9,
+        tf1h.vwap,
+        tf1h.support * 1.005,
+      ].filter(p => p < price && p > price * 0.97)
+
+      entry = pullbackTargets.length > 0
+        ? round(Math.max(...pullbackTargets))
+        : round(price - atr * 0.3)
     }
   } else {
-    // SHORT: entry above current price
-    const bounceTargets = [
-      tf1h.ema9,
-      tf1h.vwap,
-      tf1h.resistance * 0.995, // slightly below resistance
-    ].filter(p => p > price && p < price * 1.03) // within 3% above
-
-    if (bounceTargets.length > 0) {
-      entry = Math.min(...bounceTargets)
+    if (isBreakout) {
+      // Breakout SHORT: entry at support level (breakdown + retest)
+      entry = round(tf1h.support * 0.998) // slightly below support
     } else {
-      entry = round(price + atr * 0.3)
+      // Pullback: entry above current price
+      const bounceTargets = [
+        tf1h.ema9,
+        tf1h.vwap,
+        tf1h.resistance * 0.995,
+      ].filter(p => p > price && p < price * 1.03)
+
+      entry = bounceTargets.length > 0
+        ? round(Math.min(...bounceTargets))
+        : round(price + atr * 0.3)
     }
   }
 
@@ -87,24 +93,24 @@ export function calculateRisk(signal: ScoredSignal): SignalWithRisk {
   const takeProfits: { price: number; rr: number }[] = []
 
   if (type === 'LONG') {
-    // TP1: 1.5R or nearest resistance/pivot
+    // TP1: minimum 2R, or nearest resistance/pivot if higher
     const tp1Candidates = [
-      entry + riskAmount * 1.5,
+      entry + riskAmount * 2,
       tf1h.resistance,
       tf1h.pivotR1,
-    ].filter(p => p > entry)
-    const tp1 = round(Math.min(...tp1Candidates))
+    ].filter(p => p >= entry + riskAmount * 2) // must be at least 2R
+    const tp1 = tp1Candidates.length > 0 ? round(Math.min(...tp1Candidates)) : round(entry + riskAmount * 2)
 
-    // TP2: 2.5R or next level
+    // TP2: 3.5R or next level
     const tp2Candidates = [
-      entry + riskAmount * 2.5,
+      entry + riskAmount * 3.5,
       tf1h.pivotR2,
       tf4h.resistance,
     ].filter(p => p > tp1)
-    const tp2 = tp2Candidates.length > 0 ? round(Math.min(...tp2Candidates)) : round(entry + riskAmount * 2.5)
+    const tp2 = tp2Candidates.length > 0 ? round(Math.min(...tp2Candidates)) : round(entry + riskAmount * 3.5)
 
-    // TP3: 4R extended
-    const tp3 = round(entry + riskAmount * 4)
+    // TP3: 5R extended
+    const tp3 = round(entry + riskAmount * 5)
 
     takeProfits.push(
       { price: tp1, rr: round((tp1 - entry) / riskAmount) },
@@ -112,22 +118,22 @@ export function calculateRisk(signal: ScoredSignal): SignalWithRisk {
       { price: tp3, rr: round((tp3 - entry) / riskAmount) },
     )
   } else {
-    // SHORT TPs
+    // SHORT TPs — minimum 2R
     const tp1Candidates = [
-      entry - riskAmount * 1.5,
+      entry - riskAmount * 2,
       tf1h.support,
       tf1h.pivotS1,
-    ].filter(p => p < entry && p > 0)
-    const tp1 = round(Math.max(...tp1Candidates))
+    ].filter(p => p <= entry - riskAmount * 2 && p > 0) // must be at least 2R
+    const tp1 = tp1Candidates.length > 0 ? round(Math.max(...tp1Candidates)) : round(entry - riskAmount * 2)
 
     const tp2Candidates = [
-      entry - riskAmount * 2.5,
+      entry - riskAmount * 3.5,
       tf1h.pivotS2,
       tf4h.support,
     ].filter(p => p < tp1 && p > 0)
-    const tp2 = tp2Candidates.length > 0 ? round(Math.max(...tp2Candidates)) : round(entry - riskAmount * 2.5)
+    const tp2 = tp2Candidates.length > 0 ? round(Math.max(...tp2Candidates)) : round(entry - riskAmount * 3.5)
 
-    const tp3 = round(Math.max(entry - riskAmount * 4, 0.0001))
+    const tp3 = round(Math.max(entry - riskAmount * 5, 0.0001))
 
     takeProfits.push(
       { price: tp1, rr: round((entry - tp1) / riskAmount) },

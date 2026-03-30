@@ -304,9 +304,9 @@ function ScanResultCard({ result }: { result: ScanResponse['signals'][0] }) {
 
       {/* Score breakdown */}
       <div className="flex gap-2 mb-3 text-xs text-text-secondary">
-        <span>Tech: {result.scoreBreakdown.technical}/35</span>
-        <span>Multi-TF: {result.scoreBreakdown.multiTF}/20</span>
-        <span>Vol: {result.scoreBreakdown.volume}/15</span>
+        <span>Tech: {result.scoreBreakdown.technical}/25</span>
+        <span>Multi-TF: {result.scoreBreakdown.multiTF}/15</span>
+        <span>Vol: {result.scoreBreakdown.volume}/30</span>
         <span>Market: {result.scoreBreakdown.marketContext}/15</span>
         <span>Patterns: {result.scoreBreakdown.patterns}/15</span>
       </div>

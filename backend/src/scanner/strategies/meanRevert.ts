@@ -14,13 +14,16 @@ export function meanRevert(
 ): RawSignal | null {
   const { tf15m, tf1h, tf4h } = ind
 
-  // Works best in ranging, but can work in volatile too
-  if (regime === 'TRENDING_UP' || regime === 'TRENDING_DOWN') {
-    // In strong trends, mean reversion is risky — need higher threshold
-  }
+  // Hard filter: block mean reversion in strong trends
+  if (regime === 'TRENDING_UP' || regime === 'TRENDING_DOWN') return null
 
-  const longConditions = checkLong(tf15m, tf1h, tf4h)
-  const shortConditions = checkShort(tf15m, tf1h, tf4h)
+  // Block LONG mean reversion when BTC bearish (checked via 4h trend)
+  // Block SHORT mean reversion when BTC bullish
+  const btcBearish = ind.tf4h.trend === 'BEARISH'
+  const btcBullish = ind.tf4h.trend === 'BULLISH'
+
+  const longConditions = btcBearish ? { score: 0, reasons: [] } : checkLong(tf15m, tf1h, tf4h)
+  const shortConditions = btcBullish ? { score: 0, reasons: [] } : checkShort(tf15m, tf1h, tf4h)
 
   if (longConditions.score > shortConditions.score && longConditions.score >= 3) {
     return {

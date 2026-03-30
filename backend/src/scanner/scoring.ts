@@ -1,16 +1,19 @@
 import { RawSignal } from './strategies/index'
 import { RegimeContext } from './marketRegime'
 import { FundingData } from '../services/fundingRate'
+import { OIData } from '../services/openInterest'
 import { NewsSentiment } from '../services/news'
 
 // Score a raw signal from 0-100 across 5 dimensions
+// Volume is MANDATORY — if < 1.0x, signal is killed
 
 export interface ScoredSignal extends RawSignal {
   score: number
+  volumeKill: boolean // true = killed by low volume
   scoreBreakdown: {
-    technical: number     // 0-35
-    multiTF: number       // 0-20
-    volume: number        // 0-15
+    technical: number     // 0-25
+    multiTF: number       // 0-15
+    volume: number        // 0-30 (doubled from 15)
     marketContext: number  // 0-15
     patterns: number      // 0-15
   }
@@ -21,55 +24,77 @@ export function scoreSignal(
   regime: RegimeContext,
   funding?: FundingData | null,
   news?: NewsSentiment | null,
+  oi?: OIData | null,
 ): ScoredSignal {
   const { indicators: ind, type } = raw
 
-  // === 1. Technical score (max 35) ===
-  // Normalized confidence from strategy
-  const techRaw = (raw.confidence / raw.maxConfidence) * 25
-  // Bonus: strategy matches regime
-  let regimeBonus = 0
-  if (raw.strategy === 'trend_follow' && (regime.regime === 'TRENDING_UP' || regime.regime === 'TRENDING_DOWN')) regimeBonus = 10
-  if (raw.strategy === 'mean_revert' && regime.regime === 'RANGING') regimeBonus = 10
-  if (raw.strategy === 'breakout' && regime.regime === 'VOLATILE') regimeBonus = 8
-  const technical = Math.min(35, Math.round(techRaw + regimeBonus))
+  // === VOLUME GATE: mandatory filter ===
+  const volRatio = ind.tf1h.volRatio
+  if (volRatio < 1.0) {
+    return {
+      ...raw,
+      score: 0,
+      volumeKill: true,
+      scoreBreakdown: { technical: 0, multiTF: 0, volume: 0, marketContext: 0, patterns: 0 },
+    }
+  }
 
-  // === 2. Multi-timeframe alignment (max 20) ===
+  // === 1. Technical score (max 25) ===
+  const techRaw = (raw.confidence / raw.maxConfidence) * 18
+  let regimeBonus = 0
+  if (raw.strategy === 'trend_follow' && (regime.regime === 'TRENDING_UP' || regime.regime === 'TRENDING_DOWN')) regimeBonus = 7
+  if (raw.strategy === 'mean_revert' && regime.regime === 'RANGING') regimeBonus = 7
+  if (raw.strategy === 'breakout' && regime.regime === 'VOLATILE') regimeBonus = 6
+  const technical = Math.min(25, Math.round(techRaw + regimeBonus))
+
+  // === 2. Multi-timeframe alignment (max 15) ===
   let multiTF = 0
   const { tf15m, tf1h, tf4h } = ind
   const expectedTrend = type === 'LONG' ? 'BULLISH' : 'BEARISH'
 
-  if (tf4h.trend === expectedTrend) multiTF += 8
-  if (tf1h.trend === expectedTrend) multiTF += 7
-  if (tf15m.trend === expectedTrend) multiTF += 5
-  multiTF = Math.min(20, multiTF)
+  if (tf4h.trend === expectedTrend) multiTF += 6
+  if (tf1h.trend === expectedTrend) multiTF += 5
+  if (tf15m.trend === expectedTrend) multiTF += 4
+  multiTF = Math.min(15, multiTF)
 
-  // === 3. Volume (max 15) ===
+  // === 3. Volume (max 30) — critical in crypto ===
   let volume = 0
-  if (tf1h.volRatio > 2.0) volume = 15
-  else if (tf1h.volRatio > 1.5) volume = 12
-  else if (tf1h.volRatio > 1.2) volume = 9
-  else if (tf1h.volRatio > 1.0) volume = 6
-  else if (tf1h.volRatio > 0.8) volume = 3
-  // Penalty for very low volume
-  if (tf1h.volRatio < 0.5) volume = 0
+  if (volRatio > 3.0) volume = 30
+  else if (volRatio > 2.5) volume = 27
+  else if (volRatio > 2.0) volume = 24
+  else if (volRatio > 1.5) volume = 20
+  else if (volRatio > 1.2) volume = 15
+  else if (volRatio > 1.0) volume = 10
+  // Below 1.0 is already killed above
 
   // === 4. Market context (max 15) ===
-  let marketContext = 5 // base
+  let marketContext = 3 // base
 
-  // Funding rate: positive funding + LONG = crowded (bad), negative funding + LONG = contrarian (good)
+  // Funding rate — stronger contrarian signal
   if (funding) {
-    if (type === 'LONG' && funding.fundingRate < -0.001) marketContext += 3  // shorts paying longs
-    if (type === 'SHORT' && funding.fundingRate > 0.001) marketContext += 3  // longs paying shorts
-    if (type === 'LONG' && funding.fundingRate > 0.005) marketContext -= 2   // too many longs
-    if (type === 'SHORT' && funding.fundingRate < -0.005) marketContext -= 2 // too many shorts
+    // Strong contrarian: funding heavily positive → SHORT is smart
+    if (type === 'SHORT' && funding.fundingRate > 0.003) marketContext += 4
+    if (type === 'LONG' && funding.fundingRate < -0.003) marketContext += 4
+    // Moderate contrarian
+    if (type === 'SHORT' && funding.fundingRate > 0.001) marketContext += 2
+    if (type === 'LONG' && funding.fundingRate < -0.001) marketContext += 2
+    // Crowded trade penalty
+    if (type === 'LONG' && funding.fundingRate > 0.005) marketContext -= 3
+    if (type === 'SHORT' && funding.fundingRate < -0.005) marketContext -= 3
+  }
+
+  // OI confirmation
+  if (oi && oi.openInterest > 0) {
+    // OI rising + price direction = trend confirmed
+    // (we don't have OI change yet, but if OI is high it means active market)
+    marketContext += 1
   }
 
   // Fear & Greed
-  if (type === 'LONG' && regime.fearGreedZone === 'EXTREME_FEAR') marketContext += 3  // contrarian buy
-  if (type === 'SHORT' && regime.fearGreedZone === 'EXTREME_GREED') marketContext += 3 // contrarian sell
-  if (type === 'LONG' && regime.fearGreedZone === 'EXTREME_GREED') marketContext -= 2  // buying at top
-  if (type === 'SHORT' && regime.fearGreedZone === 'EXTREME_FEAR') marketContext -= 2  // selling at bottom
+  if (type === 'LONG' && regime.fearGreedZone === 'EXTREME_FEAR') marketContext += 2
+  if (type === 'SHORT' && regime.fearGreedZone === 'EXTREME_GREED') marketContext += 2
+  if (type === 'LONG' && regime.fearGreedZone === 'EXTREME_GREED') marketContext -= 2
+  if (type === 'SHORT' && regime.fearGreedZone === 'EXTREME_FEAR') marketContext -= 2
 
   // News sentiment
   if (news && news.total > 0) {
@@ -101,6 +126,7 @@ export function scoreSignal(
   return {
     ...raw,
     score,
+    volumeKill: false,
     scoreBreakdown: { technical, multiTF, volume, marketContext, patterns },
   }
 }

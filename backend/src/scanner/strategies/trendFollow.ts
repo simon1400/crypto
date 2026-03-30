@@ -14,8 +14,8 @@ export function trendFollow(
 ): RawSignal | null {
   const { tf15m, tf1h, tf4h } = ind
 
-  // Only works well in trending markets
-  if (regime === 'RANGING') return null
+  // Only works in trending markets — hard filter
+  if (regime === 'RANGING' || regime === 'VOLATILE') return null
 
   // === LONG conditions ===
   const longConditions = checkLong(tf15m, tf1h, tf4h)
