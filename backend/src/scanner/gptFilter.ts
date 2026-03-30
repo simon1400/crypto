@@ -52,9 +52,8 @@ export async function gptFilterSignal(
   news?: NewsSentiment | null,
   oi?: OIData | null,
 ): Promise<GPTReview> {
-  const { indicators: ind } = signal as any
-  const tf1h = ind?.tf1h
-  const tf4h = ind?.tf4h
+  const tf1h = signal.indicators.tf1h
+  const tf4h = signal.indicators.tf4h
 
   const prompt = `СИГНАЛ ДЛЯ ПРОВЕРКИ:
 

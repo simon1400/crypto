@@ -1,3 +1,4 @@
+import { MultiTFIndicators } from '../services/indicators'
 import { ScoredSignal } from './scoring'
 
 // Calculate entry, stop loss, take profits, leverage, and position size
@@ -9,6 +10,7 @@ export interface SignalWithRisk {
   score: number
   scoreBreakdown: ScoredSignal['scoreBreakdown']
   reasons: string[]
+  indicators: MultiTFIndicators
   entry: number
   stopLoss: number
   takeProfits: { price: number; rr: number }[]
@@ -60,18 +62,22 @@ export function calculateRisk(signal: ScoredSignal): SignalWithRisk {
   }
 
   // === Stop Loss: ATR-based, beyond support/resistance ===
+  // Minimum SL distance: 1% of entry price (prevents SL == entry for small ATR)
+  const minSLDistance = entry * 0.01
+  const slDistance = Math.max(atr * 1.5, minSLDistance)
+
   let stopLoss: number
   if (type === 'LONG') {
-    const atrStop = entry - atr * 1.5
-    const supportStop = tf1h.support - atr * 0.3
+    const atrStop = entry - slDistance
+    const supportStop = tf1h.support - Math.max(atr * 0.3, minSLDistance * 0.3)
     stopLoss = round(Math.min(atrStop, supportStop))
     // Ensure SL is below entry
-    if (stopLoss >= entry) stopLoss = round(entry - atr * 1.5)
+    if (stopLoss >= entry) stopLoss = round(entry - slDistance)
   } else {
-    const atrStop = entry + atr * 1.5
-    const resistanceStop = tf1h.resistance + atr * 0.3
+    const atrStop = entry + slDistance
+    const resistanceStop = tf1h.resistance + Math.max(atr * 0.3, minSLDistance * 0.3)
     stopLoss = round(Math.max(atrStop, resistanceStop))
-    if (stopLoss <= entry) stopLoss = round(entry + atr * 1.5)
+    if (stopLoss <= entry) stopLoss = round(entry + slDistance)
   }
 
   const slPercent = round(Math.abs((stopLoss - entry) / entry) * 100)
@@ -165,6 +171,7 @@ export function calculateRisk(signal: ScoredSignal): SignalWithRisk {
     score,
     scoreBreakdown,
     reasons,
+    indicators: ind,
     entry,
     stopLoss,
     takeProfits,
