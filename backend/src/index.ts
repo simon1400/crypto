@@ -10,7 +10,7 @@ import signalsRouter from './routes/signals'
 import tradesRouter from './routes/trades'
 import { trackActiveSignals } from './services/signalTracker'
 import scannerRouter from './routes/scanner'
-import { expireOldSignals } from './scanner/coinScanner'
+import { expireOldSignals, runScan } from './scanner/coinScanner'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -50,4 +50,20 @@ app.listen(PORT, () => {
   setInterval(() => {
     expireOldSignals().catch(err => console.error('[Scanner] Expire error:', err))
   }, 30 * 60 * 1000)
+
+  // Auto-scan every 15 minutes (all 20 coins, minScore 60, GPT filter on)
+  async function autoScan() {
+    try {
+      console.log('[AutoScan] Starting scheduled scan...')
+      const results = await runScan(undefined, 60, true)
+      const confirmed = results.filter(r => r.gptReview.verdict === 'CONFIRM')
+      console.log(`[AutoScan] Done. ${confirmed.length} confirmed signals saved.`)
+    } catch (err) {
+      console.error('[AutoScan] Error:', err)
+    }
+  }
+
+  // First scan 30 seconds after startup, then every 15 minutes
+  setTimeout(autoScan, 30 * 1000)
+  setInterval(autoScan, 15 * 60 * 1000)
 })
