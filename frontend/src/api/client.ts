@@ -353,6 +353,15 @@ export async function getSignalPrices(coins: string[]): Promise<Record<string, n
 
 // ===================== Scanner (Auto-Signals) =====================
 
+export interface SignalClose {
+  price: number
+  percent: number
+  pnl: number
+  pnlPercent: number
+  closedAt: string
+  isSL?: boolean
+}
+
 export interface ScannerSignal {
   id: number
   coin: string
@@ -364,12 +373,18 @@ export interface ScannerSignal {
   takeProfits: { price: number; rr: number }[]
   leverage: number
   positionPct: number
+  amount: number
   indicators: any
   marketContext: any
   aiAnalysis: string | null
+  closes: SignalClose[]
+  closedPct: number
+  realizedPnl: number
   status: string
   expiresAt: string
   createdAt: string
+  takenAt: string | null
+  closedAt: string | null
 }
 
 export interface ScanResponse {
@@ -429,13 +444,42 @@ export async function getScannerSignals(page = 1, status?: string): Promise<{ da
   return res.json()
 }
 
-export async function updateSignalStatus(id: number, status: string): Promise<ScannerSignal> {
+export async function takeSignal(id: number, amount: number): Promise<ScannerSignal> {
+  const res = await fetch(`${BASE}/api/scanner/signals/${id}/take`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ amount }),
+  })
+  if (!res.ok) throw new Error('Failed to take signal')
+  return res.json()
+}
+
+export async function closeSignal(id: number, price: number, percent: number): Promise<ScannerSignal> {
+  const res = await fetch(`${BASE}/api/scanner/signals/${id}/close`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ price, percent }),
+  })
+  if (!res.ok) throw new Error('Failed to close signal')
+  return res.json()
+}
+
+export async function slHitSignal(id: number): Promise<ScannerSignal> {
+  const res = await fetch(`${BASE}/api/scanner/signals/${id}/sl-hit`, {
+    method: 'POST',
+    headers: getHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to record SL hit')
+  return res.json()
+}
+
+export async function skipSignal(id: number): Promise<ScannerSignal> {
   const res = await fetch(`${BASE}/api/scanner/signals/${id}/status`, {
     method: 'PUT',
     headers: getHeaders(),
-    body: JSON.stringify({ status }),
+    body: JSON.stringify({ status: 'EXPIRED' }),
   })
-  if (!res.ok) throw new Error('Failed to update signal status')
+  if (!res.ok) throw new Error('Failed to skip signal')
   return res.json()
 }
 

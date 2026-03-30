@@ -48,12 +48,18 @@ model GeneratedSignal {
   takeProfits   Json                             // [{price: number, rr: number}]
   leverage      Int
   positionPct   Float                            // % of deposit to risk
+  amount        Float    @default(0)             // actual position size in USDT (set when TAKEN)
   indicators    Json                             // snapshot of multi-TF indicators
   marketContext Json                             // fear&greed, regime, funding, OI, news
   aiAnalysis    String?                          // GPT review text
-  status        String   @default("NEW")         // NEW, TAKEN, EXPIRED, HIT_TP, HIT_SL
+  closes        Json     @default("[]")          // [{price, percent, pnl, pnlPercent, closedAt}]
+  closedPct     Float    @default(0)             // total % closed (0-100)
+  realizedPnl   Float    @default(0)             // realized P&L in USDT
+  status        String   @default("NEW")         // NEW, TAKEN, PARTIALLY_CLOSED, CLOSED, SL_HIT, EXPIRED
   expiresAt     DateTime
   createdAt     DateTime @default(now())
+  takenAt       DateTime?
+  closedAt      DateTime?
 }
 
 model Trade {

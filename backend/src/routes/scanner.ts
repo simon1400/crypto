@@ -96,22 +96,136 @@ router.get('/signals', async (req, res) => {
   }
 })
 
-// PUT /api/scanner/signals/:id/status — update signal status (TAKEN, etc.)
+// POST /api/scanner/signals/:id/take — take signal (start tracking)
+router.post('/signals/:id/take', async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    const { amount } = req.body as { amount?: number }
+
+    const signal = await prisma.generatedSignal.findUnique({ where: { id } })
+    if (!signal) return res.status(404).json({ error: 'Signal not found' })
+    if (signal.status !== 'NEW') return res.status(400).json({ error: 'Signal already taken or closed' })
+
+    const updated = await prisma.generatedSignal.update({
+      where: { id },
+      data: {
+        status: 'TAKEN',
+        amount: amount || 0,
+        takenAt: new Date(),
+      },
+    })
+    res.json(updated)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/scanner/signals/:id/close — partial/full close at price
+router.post('/signals/:id/close', async (req, res) => {
+  try {
+    const { price, percent } = req.body as { price: number; percent: number }
+    if (!price || !percent) return res.status(400).json({ error: 'price and percent required' })
+
+    const signal = await prisma.generatedSignal.findUnique({ where: { id: Number(req.params.id) } })
+    if (!signal) return res.status(404).json({ error: 'Signal not found' })
+    if (['CLOSED', 'SL_HIT', 'EXPIRED', 'NEW'].includes(signal.status)) {
+      return res.status(400).json({ error: 'Signal cannot be closed in current status' })
+    }
+
+    const closePrice = Number(price)
+    const closePct = Number(percent)
+    const newClosedPct = Math.min(100, signal.closedPct + closePct)
+
+    // P&L calculation
+    const direction = signal.type === 'LONG' ? 1 : -1
+    const priceDiff = (closePrice - signal.entry) * direction
+    const pnlPercent = (priceDiff / signal.entry) * 100 * signal.leverage
+    const portionAmount = signal.amount * (closePct / 100)
+    const pnlUsdt = portionAmount * (pnlPercent / 100)
+
+    const closes = Array.isArray(signal.closes) ? [...(signal.closes as any[])] : []
+    closes.push({
+      price: closePrice,
+      percent: closePct,
+      pnl: Math.round(pnlUsdt * 100) / 100,
+      pnlPercent: Math.round(pnlPercent * 100) / 100,
+      closedAt: new Date().toISOString(),
+    })
+
+    const newRealizedPnl = Math.round((signal.realizedPnl + pnlUsdt) * 100) / 100
+    const isFull = newClosedPct >= 100
+    const newStatus = isFull ? 'CLOSED' : 'PARTIALLY_CLOSED'
+
+    const updated = await prisma.generatedSignal.update({
+      where: { id: signal.id },
+      data: {
+        closes,
+        closedPct: newClosedPct,
+        realizedPnl: newRealizedPnl,
+        status: newStatus,
+        closedAt: isFull ? new Date() : null,
+      },
+    })
+    res.json(updated)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/scanner/signals/:id/sl-hit — stop loss hit
+router.post('/signals/:id/sl-hit', async (req, res) => {
+  try {
+    const signal = await prisma.generatedSignal.findUnique({ where: { id: Number(req.params.id) } })
+    if (!signal) return res.status(404).json({ error: 'Signal not found' })
+
+    const remainingPct = 100 - signal.closedPct
+    const direction = signal.type === 'LONG' ? 1 : -1
+    const priceDiff = (signal.stopLoss - signal.entry) * direction
+    const pnlPercent = (priceDiff / signal.entry) * 100 * signal.leverage
+    const portionAmount = signal.amount * (remainingPct / 100)
+    const pnlUsdt = portionAmount * (pnlPercent / 100)
+
+    const closes = Array.isArray(signal.closes) ? [...(signal.closes as any[])] : []
+    closes.push({
+      price: signal.stopLoss,
+      percent: remainingPct,
+      pnl: Math.round(pnlUsdt * 100) / 100,
+      pnlPercent: Math.round(pnlPercent * 100) / 100,
+      closedAt: new Date().toISOString(),
+      isSL: true,
+    })
+
+    const updated = await prisma.generatedSignal.update({
+      where: { id: signal.id },
+      data: {
+        closes,
+        closedPct: 100,
+        realizedPnl: Math.round((signal.realizedPnl + pnlUsdt) * 100) / 100,
+        status: 'SL_HIT',
+        closedAt: new Date(),
+      },
+    })
+    res.json(updated)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PUT /api/scanner/signals/:id/status — update signal status (skip/expire)
 router.put('/signals/:id/status', async (req, res) => {
   try {
     const id = Number(req.params.id)
     const { status } = req.body as { status: string }
 
-    const valid = ['NEW', 'TAKEN', 'EXPIRED', 'HIT_TP', 'HIT_SL']
+    const valid = ['EXPIRED']
     if (!valid.includes(status)) {
-      return res.status(400).json({ error: `Status must be one of: ${valid.join(', ')}` })
+      return res.status(400).json({ error: 'Use /take, /close, or /sl-hit endpoints instead' })
     }
 
     const signal = await prisma.generatedSignal.update({
       where: { id },
       data: { status },
     })
-
     res.json(signal)
   } catch (err: any) {
     res.status(500).json({ error: err.message })

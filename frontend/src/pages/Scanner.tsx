@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
-  getScannerSignals, triggerScan, updateSignalStatus, getScannerCoins, getScannerStatus,
-  ScannerSignal, ScanResponse,
+  getScannerSignals, triggerScan, takeSignal, closeSignal, slHitSignal, skipSignal,
+  ScannerSignal, ScanResponse, SignalClose,
 } from '../api/client'
 
 function formatDate(d: string) {
@@ -37,10 +37,11 @@ function StrategyBadge({ strategy }: { strategy: string }) {
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, { label: string; color: string }> = {
     NEW: { label: 'Новый', color: 'text-accent bg-accent/10' },
-    TAKEN: { label: 'Взят', color: 'text-long bg-long/10' },
-    EXPIRED: { label: 'Истёк', color: 'text-neutral bg-neutral/10' },
-    HIT_TP: { label: 'TP Hit', color: 'text-long bg-long/10' },
-    HIT_SL: { label: 'SL Hit', color: 'text-short bg-short/10' },
+    TAKEN: { label: 'Открыт', color: 'text-blue-400 bg-blue-400/10' },
+    PARTIALLY_CLOSED: { label: 'Частично', color: 'text-purple-400 bg-purple-400/10' },
+    CLOSED: { label: 'Закрыт', color: 'text-long bg-long/10' },
+    SL_HIT: { label: 'Стоп-лосс', color: 'text-short bg-short/10' },
+    EXPIRED: { label: 'Пропущен', color: 'text-neutral bg-neutral/10' },
   }
   const s = map[status] || { label: status, color: 'text-neutral bg-neutral/10' }
   return <span className={`px-2 py-0.5 rounded text-xs font-medium ${s.color}`}>{s.label}</span>
@@ -52,12 +53,50 @@ function SignalCard({ signal, onStatusChange }: {
   onStatusChange: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
+  const [showTakeForm, setShowTakeForm] = useState(false)
+  const [showCloseForm, setShowCloseForm] = useState(false)
+  const [amount, setAmount] = useState('')
+  const [closePrice, setClosePrice] = useState('')
+  const [closePercent, setClosePercent] = useState('100')
+  const [loading, setLoading] = useState(false)
   const isLong = signal.type === 'LONG'
   const tps = (signal.takeProfits as { price: number; rr: number }[]) || []
+  const closes = (signal.closes as SignalClose[]) || []
+  const hasPnl = signal.closedPct > 0
 
-  async function handleStatus(status: string) {
+  async function handleTake() {
+    if (!amount) return
+    setLoading(true)
     try {
-      await updateSignalStatus(signal.id, status)
+      await takeSignal(signal.id, Number(amount))
+      setShowTakeForm(false)
+      onStatusChange()
+    } catch {} finally { setLoading(false) }
+  }
+
+  async function handleClose() {
+    if (!closePrice || !closePercent) return
+    setLoading(true)
+    try {
+      await closeSignal(signal.id, Number(closePrice), Number(closePercent))
+      setShowCloseForm(false)
+      setClosePrice('')
+      setClosePercent('100')
+      onStatusChange()
+    } catch {} finally { setLoading(false) }
+  }
+
+  async function handleSLHit() {
+    setLoading(true)
+    try {
+      await slHitSignal(signal.id)
+      onStatusChange()
+    } catch {} finally { setLoading(false) }
+  }
+
+  async function handleSkip() {
+    try {
+      await skipSignal(signal.id)
       onStatusChange()
     } catch {}
   }
@@ -74,19 +113,15 @@ function SignalCard({ signal, onStatusChange }: {
           <StrategyBadge strategy={signal.strategy} />
           <StatusBadge status={signal.status} />
         </div>
-        <ScoreBadge score={signal.score} />
-      </div>
-
-      {/* Score breakdown bar */}
-      {signal.marketContext && (
-        <div className="flex gap-0.5 h-1.5 rounded-full overflow-hidden mb-3">
-          <div className="bg-blue-500" style={{ width: `${((signal.marketContext as any)?.scoreBreakdown?.technical || 0) / 100 * 100}%` }} title="Technical" />
-          <div className="bg-purple-500" style={{ width: `${((signal.marketContext as any)?.scoreBreakdown?.multiTF || 0) / 100 * 100}%` }} title="Multi-TF" />
-          <div className="bg-green-500" style={{ width: `${((signal.marketContext as any)?.scoreBreakdown?.volume || 0) / 100 * 100}%` }} title="Volume" />
-          <div className="bg-yellow-500" style={{ width: `${((signal.marketContext as any)?.scoreBreakdown?.marketContext || 0) / 100 * 100}%` }} title="Market" />
-          <div className="bg-orange-500" style={{ width: `${((signal.marketContext as any)?.scoreBreakdown?.patterns || 0) / 100 * 100}%` }} title="Patterns" />
+        <div className="flex items-center gap-2">
+          {hasPnl && (
+            <span className={`font-mono font-bold text-sm ${signal.realizedPnl > 0 ? 'text-long' : signal.realizedPnl < 0 ? 'text-short' : 'text-text-secondary'}`}>
+              {signal.realizedPnl > 0 ? '+' : ''}{signal.realizedPnl}$
+            </span>
+          )}
+          <ScoreBadge score={signal.score} />
         </div>
-      )}
+      </div>
 
       {/* Key levels grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
@@ -112,36 +147,111 @@ function SignalCard({ signal, onStatusChange }: {
         )}
       </div>
 
-      {/* Leverage + Position + R:R */}
-      <div className="flex items-center gap-3 mb-3 text-sm">
+      {/* Info row */}
+      <div className="flex items-center gap-3 mb-3 text-sm flex-wrap">
         <span className="text-text-secondary">Leverage: <span className="text-text-primary font-mono">{signal.leverage}x</span></span>
-        <span className="text-text-secondary">Позиция: <span className="text-text-primary font-mono">{signal.positionPct}%</span></span>
+        {signal.amount > 0 && (
+          <span className="text-text-secondary">Размер: <span className="text-text-primary font-mono">${signal.amount}</span></span>
+        )}
+        {signal.closedPct > 0 && (
+          <span className="text-text-secondary">Закрыто: <span className="text-text-primary font-mono">{signal.closedPct}%</span></span>
+        )}
         {signal.marketContext && (
           <span className="text-text-secondary">Режим: <span className="text-text-primary">{(signal.marketContext as any)?.regime}</span></span>
         )}
       </div>
 
-      {/* AI Analysis */}
-      {signal.aiAnalysis && (
-        <div className="bg-input rounded-lg p-3 mb-3 text-sm text-text-secondary">
-          <div className="text-xs text-accent mb-1 font-medium">GPT-5.4 анализ:</div>
-          <div className="whitespace-pre-wrap">{signal.aiAnalysis}</div>
+      {/* Closes history */}
+      {closes.length > 0 && (
+        <div className="mb-3 space-y-1">
+          <div className="text-xs text-text-secondary mb-1">Закрытия:</div>
+          {closes.map((c, i) => (
+            <div key={i} className="flex items-center gap-3 text-xs bg-input rounded-lg px-3 py-1.5">
+              <span className="font-mono text-text-primary">${c.price}</span>
+              <span className="text-text-secondary">{c.percent}%</span>
+              <span className={`font-mono font-bold ${c.pnl > 0 ? 'text-long' : c.pnl < 0 ? 'text-short' : 'text-text-secondary'}`}>
+                {c.pnl > 0 ? '+' : ''}{c.pnl}$ ({c.pnlPercent > 0 ? '+' : ''}{c.pnlPercent}%)
+              </span>
+              {c.isSL && <span className="text-short">SL</span>}
+              <span className="text-text-secondary ml-auto">{formatDate(c.closedAt)}</span>
+            </div>
+          ))}
         </div>
       )}
 
-      {/* Expandable details */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="text-xs text-text-secondary hover:text-accent transition-colors mb-2"
-      >
-        {expanded ? '▾ Скрыть детали' : '▸ Показать детали'}
-      </button>
+      {/* AI Analysis */}
+      {signal.aiAnalysis && signal.aiAnalysis !== 'GPT фильтр отключен\n\nРиски: \nУровни: ' && (
+        <button onClick={() => setExpanded(!expanded)} className="text-xs text-text-secondary hover:text-accent transition-colors mb-2">
+          {expanded ? '▾ Скрыть GPT анализ' : '▸ GPT-5.4 анализ'}
+        </button>
+      )}
+      {expanded && signal.aiAnalysis && (
+        <div className="bg-input rounded-lg p-3 mb-3 text-sm text-text-secondary whitespace-pre-wrap">
+          {signal.aiAnalysis}
+        </div>
+      )}
 
-      {expanded && tps.length > 2 && (
-        <div className="mb-3">
-          <div className="bg-input rounded-lg p-2 inline-block">
-            <div className="text-xs text-text-secondary">TP3 (R:R {tps[2].rr})</div>
-            <div className="font-mono font-bold text-long">${tps[2].price}</div>
+      {/* === Take Form === */}
+      {showTakeForm && (
+        <div className="bg-input rounded-lg p-3 mb-3 space-y-2">
+          <div className="text-xs text-text-secondary">Размер позиции (USDT):</div>
+          <div className="flex gap-2">
+            <input
+              type="number"
+              value={amount}
+              onChange={e => setAmount(e.target.value)}
+              placeholder="100"
+              className="flex-1 bg-bg-primary text-text-primary rounded px-3 py-1.5 text-sm font-mono"
+            />
+            <button onClick={handleTake} disabled={loading || !amount} className="px-3 py-1.5 text-sm rounded bg-long/20 text-long hover:bg-long/30 disabled:opacity-50">
+              {loading ? '...' : 'Подтвердить'}
+            </button>
+            <button onClick={() => setShowTakeForm(false)} className="px-3 py-1.5 text-sm rounded bg-neutral/10 text-neutral">Отмена</button>
+          </div>
+        </div>
+      )}
+
+      {/* === Close Form === */}
+      {showCloseForm && (
+        <div className="bg-input rounded-lg p-3 mb-3 space-y-2">
+          <div className="text-xs text-text-secondary">Закрыть часть позиции:</div>
+          <div className="flex gap-2 flex-wrap">
+            <div className="flex-1 min-w-[120px]">
+              <label className="text-xs text-text-secondary">Цена закрытия</label>
+              <input
+                type="number"
+                value={closePrice}
+                onChange={e => setClosePrice(e.target.value)}
+                placeholder={String(tps[0]?.price || signal.entry)}
+                className="w-full bg-bg-primary text-text-primary rounded px-3 py-1.5 text-sm font-mono mt-0.5"
+                step="any"
+              />
+            </div>
+            <div className="w-24">
+              <label className="text-xs text-text-secondary">% позиции</label>
+              <input
+                type="number"
+                value={closePercent}
+                onChange={e => setClosePercent(e.target.value)}
+                className="w-full bg-bg-primary text-text-primary rounded px-3 py-1.5 text-sm font-mono mt-0.5"
+                min={1} max={100 - signal.closedPct}
+              />
+            </div>
+          </div>
+          {/* Quick TP buttons */}
+          <div className="flex gap-1 flex-wrap">
+            {tps.map((tp, i) => (
+              <button key={i} onClick={() => setClosePrice(String(tp.price))}
+                className="px-2 py-0.5 text-xs rounded bg-long/10 text-long hover:bg-long/20">
+                TP{i + 1}: ${tp.price}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={handleClose} disabled={loading || !closePrice} className="px-3 py-1.5 text-sm rounded bg-accent/20 text-accent hover:bg-accent/30 disabled:opacity-50">
+              {loading ? '...' : 'Закрыть'}
+            </button>
+            <button onClick={() => setShowCloseForm(false)} className="px-3 py-1.5 text-sm rounded bg-neutral/10 text-neutral">Отмена</button>
           </div>
         </div>
       )}
@@ -150,29 +260,20 @@ function SignalCard({ signal, onStatusChange }: {
       <div className="flex items-center justify-between border-t border-card pt-2">
         <span className="text-xs text-text-secondary">
           {formatDate(signal.createdAt)}
-          {signal.expiresAt && <span> · истекает {formatDate(signal.expiresAt)}</span>}
+          {signal.takenAt && <span> · взят {formatDate(signal.takenAt)}</span>}
         </span>
 
-        {signal.status === 'NEW' && (
+        {signal.status === 'NEW' && !showTakeForm && (
           <div className="flex gap-1">
-            <button
-              onClick={() => handleStatus('TAKEN')}
-              className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20 transition-colors"
-            >
-              Взять
-            </button>
-            <button
-              onClick={() => handleStatus('EXPIRED')}
-              className="px-2 py-1 text-xs rounded bg-neutral/10 text-neutral hover:bg-neutral/20 transition-colors"
-            >
-              Пропустить
-            </button>
+            <button onClick={() => setShowTakeForm(true)} className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20">Взять</button>
+            <button onClick={handleSkip} className="px-2 py-1 text-xs rounded bg-neutral/10 text-neutral hover:bg-neutral/20">Пропустить</button>
           </div>
         )}
-        {signal.status === 'TAKEN' && (
+
+        {(signal.status === 'TAKEN' || signal.status === 'PARTIALLY_CLOSED') && !showCloseForm && (
           <div className="flex gap-1">
-            <button onClick={() => handleStatus('HIT_TP')} className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20">TP Hit</button>
-            <button onClick={() => handleStatus('HIT_SL')} className="px-2 py-1 text-xs rounded bg-short/10 text-short hover:bg-short/20">SL Hit</button>
+            <button onClick={() => setShowCloseForm(true)} className="px-2 py-1 text-xs rounded bg-accent/10 text-accent hover:bg-accent/20">Закрыть</button>
+            <button onClick={handleSLHit} disabled={loading} className="px-2 py-1 text-xs rounded bg-short/10 text-short hover:bg-short/20">SL Hit</button>
           </div>
         )}
       </div>
@@ -411,7 +512,7 @@ export default function Scanner() {
         <>
           {/* Status filter */}
           <div className="flex gap-1">
-            {['', 'NEW', 'TAKEN', 'HIT_TP', 'HIT_SL', 'EXPIRED'].map(s => (
+            {['', 'NEW', 'TAKEN', 'PARTIALLY_CLOSED', 'CLOSED', 'SL_HIT', 'EXPIRED'].map(s => (
               <button
                 key={s}
                 onClick={() => { setStatusFilter(s); setPage(1) }}
