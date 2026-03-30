@@ -43,6 +43,7 @@ function exportCSV(signals: Signal[], prices: Record<string, number | null>, cha
 const CHANNELS = [
   { id: 'EveningTrader', name: 'Evening Trader' },
   { id: 'BitcoinBullets', name: 'Bitcoin Bullets' },
+  { id: 'FedRussianInsiders', name: 'Fed. Russian Insiders' },
 ]
 
 function formatPrice(n: number): string {

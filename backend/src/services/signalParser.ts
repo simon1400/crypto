@@ -21,17 +21,69 @@ export interface ParsedSignal {
  *   "ENTRY: 0.2433 - 0.2439"
  *   "TARGETS: 0.2409 - 0.2389 - 0.2359"
  *   "STOP LOSS: 0.2476"
+ *
+ * Fed. Russian Insiders:
+ *   "SIGNAL ID: #G46"
+ *   "COIN: $ADA/USDT"
+ *   "Direction: SHORT"
+ *   "Leverage: 3-5x"
+ *   "ENTRY: 0.2506 - 0.2514"
+ *   "Target 1: 0.2493" (numbered individually)
+ *   "STOP LOSS: 0.2598"
  */
 export function parseSignalMessage(text: string): ParsedSignal | null {
   // Normalize whitespace
   const clean = text.replace(/\s+/g, ' ').trim()
 
-  // Try Bitcoin Bullets format first (more structured)
+  // Try Fed Russian Insiders format first (has SIGNAL ID + $COIN)
+  const friResult = parseFedRussianInsiders(clean)
+  if (friResult) return friResult
+
+  // Try Bitcoin Bullets format (has SIGNAL ID + #COIN)
   const bbResult = parseBitcoinBullets(clean)
   if (bbResult) return bbResult
 
   // Try Evening Trader format
   return parseEveningTrader(clean)
+}
+
+function parseFedRussianInsiders(text: string): ParsedSignal | null {
+  // Must have "SIGNAL ID" and "$COIN/USDT" ($ prefix distinguishes from Bitcoin Bullets' #)
+  if (!/SIGNAL ID/i.test(text)) return null
+  if (!/\$[A-Z0-9]+\/USDT/i.test(text)) return null
+
+  // Extract coin: "COIN: $ADA/USDT"
+  const coinMatch = text.match(/COIN:\s*\$([A-Z0-9]+)\/USDT/i)
+  if (!coinMatch) return null
+  const coin = coinMatch[1].toUpperCase()
+
+  // Extract direction
+  const dirMatch = text.match(/Direction:\s*[^\w]*(LONG|SHORT)/i)
+  if (!dirMatch) return null
+  const type = dirMatch[1].toUpperCase() as 'LONG' | 'SHORT'
+
+  // Extract leverage: "Leverage: 3-5x" or "Leverage: 10x"
+  const levMatch = text.match(/Leverage:\s*(\d+)(?:\s*-\s*(\d+))?x/i)
+  const leverage = levMatch ? parseInt(levMatch[2] || levMatch[1]) : 1
+
+  // Extract entry: "ENTRY: 0.2506 - 0.2514" or "ENTRY: 0.2506"
+  const entryMatch = text.match(/ENTRY:\s*([\d.]+)\s*-\s*([\d.]+)/i)
+    || text.match(/ENTRY:\s*([\d.]+)/i)
+  if (!entryMatch) return null
+  const entryMin = parseFloat(entryMatch[1])
+  const entryMax = entryMatch[2] ? parseFloat(entryMatch[2]) : entryMin
+
+  // Extract targets: "Target 1: 0.2493", "Target 2: 0.2447", etc.
+  const targetMatches = [...text.matchAll(/Target\s*\d+:\s*([\d.]+)/gi)]
+  const takeProfits = targetMatches.map(m => parseFloat(m[1])).filter(n => !isNaN(n))
+  if (takeProfits.length === 0) return null
+
+  // Extract stop loss
+  const slMatch = text.match(/STOP\s*LOSS:\s*([\d.]+)/i)
+  if (!slMatch) return null
+  const stopLoss = parseFloat(slMatch[1])
+
+  return { type, coin, leverage, entryMin, entryMax, stopLoss, takeProfits }
 }
 
 function parseBitcoinBullets(text: string): ParsedSignal | null {
