@@ -37,6 +37,25 @@ model Signal {
   @@unique([channel, messageId])
 }
 
+model GeneratedSignal {
+  id            Int      @id @default(autoincrement())
+  coin          String
+  type          String                           // LONG or SHORT
+  strategy      String                           // trend_follow / mean_revert / breakout
+  score         Int                              // 0-100
+  entry         Float
+  stopLoss      Float
+  takeProfits   Json                             // [{price: number, rr: number}]
+  leverage      Int
+  positionPct   Float                            // % of deposit to risk
+  indicators    Json                             // snapshot of multi-TF indicators
+  marketContext Json                             // fear&greed, regime, funding, OI, news
+  aiAnalysis    String?                          // GPT review text
+  status        String   @default("NEW")         // NEW, TAKEN, EXPIRED, HIT_TP, HIT_SL
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+}
+
 model Trade {
   id          Int      @id @default(autoincrement())
   coin        String                           // BTCUSDT, ETHUSDT...

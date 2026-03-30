@@ -6,6 +6,7 @@ import History from './pages/History'
 import Whales from './pages/Whales'
 import Signals from './pages/Signals'
 import Trades from './pages/Trades'
+import Scanner from './pages/Scanner'
 import Login from './pages/Login'
 import { setAuthToken } from './api/client'
 
@@ -42,6 +43,7 @@ export default function App() {
             <Route path="/whales" element={<Whales />} />
             <Route path="/signals" element={<Signals />} />
             <Route path="/trades" element={<Trades />} />
+            <Route path="/scanner" element={<Scanner />} />
             <Route path="/history" element={<History />} />
           </Routes>
         </main>

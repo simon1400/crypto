@@ -350,3 +350,104 @@ export async function getSignalPrices(coins: string[]): Promise<Record<string, n
   const data = await res.json()
   return data.prices
 }
+
+// ===================== Scanner (Auto-Signals) =====================
+
+export interface ScannerSignal {
+  id: number
+  coin: string
+  type: string
+  strategy: string
+  score: number
+  entry: number
+  stopLoss: number
+  takeProfits: { price: number; rr: number }[]
+  leverage: number
+  positionPct: number
+  indicators: any
+  marketContext: any
+  aiAnalysis: string | null
+  status: string
+  expiresAt: string
+  createdAt: string
+}
+
+export interface ScanResponse {
+  total: number
+  confirmed: number
+  rejected: number
+  regime: {
+    regime: string
+    confidence: number
+    btcTrend: string
+    fearGreedZone: string
+    volatility: string
+  } | null
+  signals: {
+    coin: string
+    type: string
+    strategy: string
+    score: number
+    scoreBreakdown: { technical: number; multiTF: number; volume: number; marketContext: number; patterns: number }
+    entry: number
+    stopLoss: number
+    slPercent: number
+    takeProfits: { price: number; rr: number }[]
+    tp1Percent: number
+    tp2Percent: number
+    tp3Percent: number
+    leverage: number
+    positionPct: number
+    riskReward: number
+    reasons: string[]
+    gptVerdict: string
+    gptConfidence: number
+    gptReasoning: string
+    gptRisks: string[]
+    gptKeyLevels: string[]
+  }[]
+}
+
+export async function triggerScan(coins?: string[], minScore?: number, useGPT?: boolean): Promise<ScanResponse> {
+  const res = await fetch(`${BASE}/api/scanner/scan`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ coins, minScore, useGPT }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Scan failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function getScannerSignals(page = 1, status?: string): Promise<{ data: ScannerSignal[]; total: number; page: number; totalPages: number }> {
+  const q = new URLSearchParams({ page: String(page), limit: '20' })
+  if (status) q.set('status', status)
+  const res = await fetch(`${BASE}/api/scanner/signals?${q}`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch scanner signals')
+  return res.json()
+}
+
+export async function updateSignalStatus(id: number, status: string): Promise<ScannerSignal> {
+  const res = await fetch(`${BASE}/api/scanner/signals/${id}/status`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ status }),
+  })
+  if (!res.ok) throw new Error('Failed to update signal status')
+  return res.json()
+}
+
+export async function getScannerCoins(): Promise<string[]> {
+  const res = await fetch(`${BASE}/api/scanner/coins`, { headers: getHeaders() })
+  if (!res.ok) return []
+  const data = await res.json()
+  return data.coins
+}
+
+export async function getScannerStatus(): Promise<{ running: boolean }> {
+  const res = await fetch(`${BASE}/api/scanner/status`, { headers: getHeaders() })
+  if (!res.ok) return { running: false }
+  return res.json()
+}

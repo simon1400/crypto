@@ -9,6 +9,8 @@ import whalesRouter from './routes/whales'
 import signalsRouter from './routes/signals'
 import tradesRouter from './routes/trades'
 import { trackActiveSignals } from './services/signalTracker'
+import scannerRouter from './routes/scanner'
+import { expireOldSignals } from './scanner/coinScanner'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -34,6 +36,7 @@ app.use('/api/history', historyRouter)
 app.use('/api/whales', whalesRouter)
 app.use('/api/signals', signalsRouter)
 app.use('/api/trades', tradesRouter)
+app.use('/api/scanner', scannerRouter)
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
@@ -42,4 +45,9 @@ app.listen(PORT, () => {
   setInterval(() => {
     trackActiveSignals().catch(err => console.error('[SignalTracker] Interval error:', err))
   }, 60 * 60 * 1000)
+
+  // Expire old scanner signals every 30 minutes
+  setInterval(() => {
+    expireOldSignals().catch(err => console.error('[Scanner] Expire error:', err))
+  }, 30 * 60 * 1000)
 })
