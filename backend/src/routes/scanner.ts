@@ -136,10 +136,10 @@ router.post('/signals/:id/close', async (req, res) => {
     const closePct = Number(percent)
     const newClosedPct = Math.min(100, signal.closedPct + closePct)
 
-    // P&L calculation — amount is notional (leveraged), don't multiply by leverage again
+    // P&L calculation — amount is margin, leverage applied
     const direction = signal.type === 'LONG' ? 1 : -1
     const priceDiff = (closePrice - signal.entry) * direction
-    const pnlPercent = (priceDiff / signal.entry) * 100
+    const pnlPercent = (priceDiff / signal.entry) * 100 * signal.leverage
     const portionAmount = signal.amount * (closePct / 100)
     const pnlUsdt = portionAmount * (pnlPercent / 100)
 
@@ -181,7 +181,7 @@ router.post('/signals/:id/sl-hit', async (req, res) => {
     const remainingPct = 100 - signal.closedPct
     const direction = signal.type === 'LONG' ? 1 : -1
     const priceDiff = (signal.stopLoss - signal.entry) * direction
-    const pnlPercent = (priceDiff / signal.entry) * 100
+    const pnlPercent = (priceDiff / signal.entry) * 100 * signal.leverage
     const portionAmount = signal.amount * (remainingPct / 100)
     const pnlUsdt = portionAmount * (pnlPercent / 100)
 

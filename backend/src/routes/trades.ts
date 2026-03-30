@@ -172,10 +172,10 @@ router.post('/:id/close', async (req: Request, res: Response) => {
     const newClosedPct = Math.min(100, trade.closedPct + closePct)
 
     // Считаем P&L для этого закрытия
-    // amount = notional (leveraged position size), leverage NOT applied again
+    // amount = margin (what user put in), leverage is applied
     const direction = trade.type === 'LONG' ? 1 : -1
     const priceDiff = (closePrice - trade.entryPrice) * direction
-    const pnlPercent = (priceDiff / trade.entryPrice) * 100
+    const pnlPercent = (priceDiff / trade.entryPrice) * 100 * trade.leverage
     const portionAmount = trade.amount * (closePct / 100)
     const pnlUsdt = portionAmount * (pnlPercent / 100)
 
@@ -218,7 +218,7 @@ router.post('/:id/sl-hit', async (req: Request, res: Response) => {
     const remainingPct = 100 - trade.closedPct
     const direction = trade.type === 'LONG' ? 1 : -1
     const priceDiff = (trade.stopLoss - trade.entryPrice) * direction
-    const pnlPercent = (priceDiff / trade.entryPrice) * 100
+    const pnlPercent = (priceDiff / trade.entryPrice) * 100 * trade.leverage
     const portionAmount = trade.amount * (remainingPct / 100)
     const pnlUsdt = portionAmount * (pnlPercent / 100)
 
@@ -278,7 +278,7 @@ router.put('/:id', async (req: Request, res: Response) => {
       let totalPnl = 0
       const recalculated = closes.map((c: any) => {
         const priceDiff = (c.price - newEntry) * direction
-        const pnlPercent = (priceDiff / newEntry) * 100
+        const pnlPercent = (priceDiff / newEntry) * 100 * newLeverage
         const portionAmount = newAmount * (c.percent / 100)
         const pnl = Math.round(portionAmount * (pnlPercent / 100) * 100) / 100
         totalPnl += pnl
