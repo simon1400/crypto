@@ -51,7 +51,8 @@ app.listen(PORT, () => {
     expireOldSignals().catch(err => console.error('[Scanner] Expire error:', err))
   }, 30 * 60 * 1000)
 
-  // Auto-scan every 15 minutes (all 20 coins, minScore 60, GPT filter on)
+  // Auto-scan every 2 hours (all 20 coins, minScore 60, GPT filter on)
+  // ~12 scans/day, ~$0.5-1/day GPT cost
   async function autoScan() {
     try {
       console.log('[AutoScan] Starting scheduled scan...')
@@ -63,7 +64,7 @@ app.listen(PORT, () => {
     }
   }
 
-  // First scan 30 seconds after startup, then every 15 minutes
-  setTimeout(autoScan, 30 * 1000)
-  setInterval(autoScan, 15 * 60 * 1000)
+  // First scan 1 min after startup, then every 2 hours
+  setTimeout(autoScan, 60 * 1000)
+  setInterval(autoScan, 2 * 60 * 60 * 1000)
 })
