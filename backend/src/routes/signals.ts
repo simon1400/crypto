@@ -10,7 +10,7 @@ const router = Router()
 const CHANNELS: Record<string, string> = {
   EveningTrader: 'EveningTrader',
   BitcoinBullets: 'BitcoinBullets',
-  FedRussianInsiders: 'FedRussianInsiders_Vip',
+
 }
 
 // GET /api/signals?channel=EveningTrader&days=7
