@@ -107,9 +107,14 @@ export async function runScan(
 
     for (const [coin, indicators] of Object.entries(coinIndicators)) {
       const rawSignal = runStrategies(coin, indicators, regime.regime)
-      if (!rawSignal) continue
+      if (!rawSignal) {
+        console.log(`[Scanner] ${coin}: no strategy matched`)
+        continue
+      }
 
       const scored = scoreSignal(rawSignal, regime, fundingMap[coin], newsMap[coin])
+      console.log(`[Scanner] ${coin}: ${rawSignal.strategy} ${rawSignal.type} confidence=${rawSignal.confidence}/${rawSignal.maxConfidence} score=${scored.score}`)
+
       if (scored.score >= minScore) {
         scoredSignals.push(scored)
       }
@@ -124,7 +129,13 @@ export async function runScan(
     const signalsWithRisk = topSignals.map(s => calculateRisk(s))
 
     // Filter out signals with bad R:R
-    const validSignals = signalsWithRisk.filter(s => s.riskReward >= 1.3)
+    const validSignals = signalsWithRisk.filter(s => {
+      if (s.riskReward < 1.0) {
+        console.log(`[Scanner] ${s.coin}: filtered out, R:R = ${s.riskReward}`)
+        return false
+      }
+      return true
+    })
 
     // === Phase 6: GPT filter (optional) ===
     const results: ScanResult[] = []

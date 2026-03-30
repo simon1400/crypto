@@ -21,7 +21,7 @@ export function trendFollow(
   const longConditions = checkLong(tf15m, tf1h, tf4h)
   const shortConditions = checkShort(tf15m, tf1h, tf4h)
 
-  if (longConditions.score > shortConditions.score && longConditions.score >= 4) {
+  if (longConditions.score > shortConditions.score && longConditions.score >= 3) {
     return {
       coin,
       type: 'LONG',
@@ -33,7 +33,7 @@ export function trendFollow(
     }
   }
 
-  if (shortConditions.score > longConditions.score && shortConditions.score >= 4) {
+  if (shortConditions.score > longConditions.score && shortConditions.score >= 3) {
     return {
       coin,
       type: 'SHORT',
