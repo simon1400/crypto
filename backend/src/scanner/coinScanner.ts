@@ -12,10 +12,19 @@ import { prisma } from '../db/prisma'
 
 // Default coins to scan
 export const SCAN_COINS = [
-  'BTC', 'ETH', 'SOL', 'BNB', 'XRP',
-  'ADA', 'AVAX', 'DOT', 'LINK', 'DOGE',
-  'SUI', 'PEPE', 'WIF', 'ARB', 'OP',
-  'NEAR', 'FET', 'RENDER', 'INJ', 'TIA',
+  // Layer 1 alts
+  'SOL', 'BNB', 'XRP', 'ADA', 'AVAX',
+  'DOT', 'NEAR', 'SUI', 'SEI', 'TIA',
+  'INJ', 'APT', 'FTM', 'ATOM', 'ALGO',
+  // Memes & high volatility
+  'DOGE', 'PEPE', 'WIF', 'FLOKI', 'BONK',
+  'SHIB', 'TURBO', 'MEME',
+  // DeFi & AI
+  'LINK', 'FET', 'RENDER', 'ARB', 'OP',
+  'GRT', 'IMX', 'ONDO', 'JUP', 'PENDLE',
+  // Mid-cap volatile
+  'DYDX', 'STX', 'AAVE', 'CRV', 'LDO',
+  'RUNE', 'ENS', 'JASMY', 'GALA', 'SAND',
 ]
 
 export interface ScanResult {
@@ -94,8 +103,17 @@ export async function runScan(
       console.warn(`[Scanner] Failed to fetch: ${fetchErrors.join(', ')}`)
     }
 
-    // === Phase 3: Detect market regime from BTC ===
-    const btcInd = coinIndicators['BTC']
+    // === Phase 3: Detect market regime from BTC (always fetch BTC for context) ===
+    let btcInd = coinIndicators['BTC']
+    if (!btcInd) {
+      try {
+        const [btc1h, btc4h] = await Promise.all([
+          fetchOHLCV('BTCUSDT', '1h', 60),
+          fetchOHLCV('BTCUSDT', '4h', 60),
+        ])
+        btcInd = { tf15m: computeIndicators(btc1h), tf1h: computeIndicators(btc1h), tf4h: computeIndicators(btc4h) }
+      } catch {}
+    }
     const regime = btcInd
       ? detectMarketRegime({ tf1h: btcInd.tf1h, tf4h: btcInd.tf4h }, market)
       : { regime: 'RANGING' as const, confidence: 50, btcTrend: 'SIDEWAYS' as const, fearGreedZone: 'NEUTRAL' as const, volatility: 'NORMAL' as const }
