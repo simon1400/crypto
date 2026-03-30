@@ -12,19 +12,31 @@ import { prisma } from '../db/prisma'
 
 // Default coins to scan
 export const SCAN_COINS = [
-  // Layer 1 alts
+  // Layer 1
   'SOL', 'BNB', 'XRP', 'ADA', 'AVAX',
   'DOT', 'NEAR', 'SUI', 'SEI', 'TIA',
   'INJ', 'APT', 'FTM', 'ATOM', 'ALGO',
+  'HBAR', 'ICP', 'FIL', 'VET', 'EGLD',
   // Memes & high volatility
   'DOGE', 'PEPE', 'WIF', 'FLOKI', 'BONK',
-  'SHIB', 'TURBO', 'MEME',
-  // DeFi & AI
-  'LINK', 'FET', 'RENDER', 'ARB', 'OP',
-  'GRT', 'IMX', 'ONDO', 'JUP', 'PENDLE',
+  'SHIB', 'TURBO', 'MEME', 'NEIRO', 'PEOPLE',
+  'ACT', 'PNUT', 'BOME', 'MYRO', 'MEW',
+  // AI & DePIN
+  'FET', 'RENDER', 'GRT', 'TAO', 'RNDR',
+  'AKT', 'AR', 'AIOZ', 'IO', 'GLM',
+  // DeFi
+  'LINK', 'AAVE', 'CRV', 'LDO', 'PENDLE',
+  'JUP', 'ONDO', 'RUNE', 'UNI', 'MKR',
+  'COMP', 'SNX', 'SUSHI', 'CAKE', 'RAY',
+  // Layer 2 & Infra
+  'ARB', 'OP', 'STRK', 'MANTA', 'BLAST',
+  'IMX', 'MATIC', 'ZK', 'METIS', 'CELO',
+  // Gaming & Metaverse
+  'GALA', 'SAND', 'AXS', 'ENJ', 'PIXEL',
+  'PORTAL', 'SUPER', 'YGG', 'BIGTIME',
   // Mid-cap volatile
-  'DYDX', 'STX', 'AAVE', 'CRV', 'LDO',
-  'RUNE', 'ENS', 'JASMY', 'GALA', 'SAND',
+  'DYDX', 'STX', 'ENS', 'JASMY', 'CHZ',
+  'MASK', 'TRB', 'ORDI', 'WLD', 'PYTH',
 ]
 
 export interface ScanResult {
