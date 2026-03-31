@@ -156,22 +156,35 @@ async function updateSignalStatus(signal: {
     const postEntryCandles = relevantCandles.filter(c => c.time >= entryTime)
 
     let maxTpHit = 0
-    let slHitTime = Infinity
+    let trailingStopped = false
 
+    // Trailing SL logic:
+    // Before any TP → original SL
+    // After TP1 → SL moves to entry (breakeven)
+    // After TP2 → SL moves to TP1
+    // After TPn → SL moves to TP(n-1)
     for (const candle of postEntryCandles) {
+      // Determine current effective SL based on TPs already hit
+      let effectiveSL: number
+      if (maxTpHit === 0) {
+        effectiveSL = signal.stopLoss
+      } else if (maxTpHit === 1) {
+        effectiveSL = avgEntry // breakeven after TP1
+      } else {
+        effectiveSL = takeProfits[maxTpHit - 2] // after TPn, SL = TP(n-1)
+      }
+
+      // Check SL (or trailing SL) hit
       const slTriggered = signal.type === 'LONG'
-        ? candle.low <= signal.stopLoss
-        : candle.high >= signal.stopLoss
+        ? candle.low <= effectiveSL
+        : candle.high >= effectiveSL
 
       if (slTriggered) {
-        slHitTime = candle.time
+        trailingStopped = maxTpHit > 0
         break
       }
-    }
 
-    for (const candle of postEntryCandles) {
-      if (candle.time > slHitTime) break
-
+      // Check next TPs in order
       for (let i = maxTpHit; i < takeProfits.length; i++) {
         const tpTriggered = signal.type === 'LONG'
           ? candle.high >= takeProfits[i]
@@ -187,8 +200,15 @@ async function updateSignalStatus(signal: {
 
     if (maxTpHit > 0) {
       newStatus = `TP${maxTpHit}_HIT`
-    } else if (slHitTime < Infinity) {
+    } else if (trailingStopped) {
+      // Should not happen (trailingStopped only when maxTpHit > 0)
       newStatus = 'SL_HIT'
+    } else {
+      // Original SL hit with no TPs
+      const slHit = postEntryCandles.some(c =>
+        signal.type === 'LONG' ? c.low <= signal.stopLoss : c.high >= signal.stopLoss
+      )
+      if (slHit) newStatus = 'SL_HIT'
     }
   }
 
