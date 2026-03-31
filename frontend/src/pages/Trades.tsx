@@ -761,8 +761,8 @@ export default function Trades() {
                   <td className="py-3 px-2 text-right font-mono text-short">${t.stopLoss}</td>
                   <td className="py-3 px-2 text-right font-mono text-text-primary">${t.amount}</td>
                   <td className="py-3 px-2 text-center text-text-secondary">{t.closedPct}%</td>
-                  <td className={`py-3 px-2 text-right font-mono font-semibold ${pnlColor(t.realizedPnl)}`}>
-                    {t.realizedPnl > 0 ? '+' : ''}{t.realizedPnl}$
+                  <td className={`py-3 px-2 text-right font-mono font-semibold ${pnlColor(t.realizedPnl - (t.fees || 0))}`}>
+                    {(t.realizedPnl - (t.fees || 0)) > 0 ? '+' : ''}{Math.round((t.realizedPnl - (t.fees || 0)) * 100) / 100}$
                   </td>
                   <td className="py-3 px-2 text-center">{statusBadge(t.status)}</td>
                   <td className="py-3 px-2 text-right">
