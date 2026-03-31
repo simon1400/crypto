@@ -2,10 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import { authMiddleware } from './middleware/auth'
-import analyzeRouter from './routes/analyze'
 import marketRouter from './routes/market'
-import historyRouter from './routes/history'
-import whalesRouter from './routes/whales'
 import signalsRouter from './routes/signals'
 import tradesRouter from './routes/trades'
 import { trackActiveSignals } from './services/signalTracker'
@@ -30,10 +27,7 @@ app.post('/api/login', (req, res) => {
 
 app.use('/api', authMiddleware)
 
-app.use('/api/analyze', analyzeRouter)
 app.use('/api/market', marketRouter)
-app.use('/api/history', historyRouter)
-app.use('/api/whales', whalesRouter)
 app.use('/api/signals', signalsRouter)
 app.use('/api/trades', tradesRouter)
 app.use('/api/scanner', scannerRouter)

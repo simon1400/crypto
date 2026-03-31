@@ -7,15 +7,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Analysis {
-  id         Int      @id @default(autoincrement())
-  createdAt  DateTime @default(now())
-  coins      String
-  marketData Json
-  coinsData  Json
-  result     String
-}
-
 model Signal {
   id              Int      @id @default(autoincrement())
   channel         String

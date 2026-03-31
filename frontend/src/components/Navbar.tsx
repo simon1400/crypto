@@ -19,12 +19,9 @@ export default function Navbar({ onLogout }: Props) {
       <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
         <span className="text-accent font-semibold text-lg">Crypto Dashboard</span>
         <div className="flex items-center gap-1">
-          <Link to="/" className={linkClass('/')}>Анализ</Link>
-          <Link to="/whales" className={linkClass('/whales')}>Киты</Link>
           <Link to="/signals" className={linkClass('/signals')}>Сигналы</Link>
           <Link to="/scanner" className={linkClass('/scanner')}>Сканер</Link>
           <Link to="/trades" className={linkClass('/trades')}>Сделки</Link>
-          <Link to="/history" className={linkClass('/history')}>История</Link>
           {onLogout && (
             <button
               onClick={onLogout}

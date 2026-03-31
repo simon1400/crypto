@@ -1,9 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import Navbar from './components/Navbar'
-import Dashboard from './pages/Dashboard'
-import History from './pages/History'
-import Whales from './pages/Whales'
 import Signals from './pages/Signals'
 import Trades from './pages/Trades'
 import Scanner from './pages/Scanner'
@@ -39,12 +36,10 @@ export default function App() {
         <Navbar onLogout={handleLogout} />
         <main className="max-w-7xl mx-auto px-4 py-6">
           <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/whales" element={<Whales />} />
+            <Route path="/" element={<Signals />} />
             <Route path="/signals" element={<Signals />} />
             <Route path="/trades" element={<Trades />} />
             <Route path="/scanner" element={<Scanner />} />
-            <Route path="/history" element={<History />} />
           </Routes>
         </main>
       </div>
