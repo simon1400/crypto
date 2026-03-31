@@ -3,12 +3,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // Set env before imports
 process.env.ENCRYPTION_SECRET = 'test-secret-key-for-unit-tests'
 
-// Mock bybit-api
-vi.mock('bybit-api', () => ({
-  RestClientV5: vi.fn().mockImplementation(() => ({
-    getWalletBalance: vi.fn(),
-  })),
-}))
+const mockGetWalletBalance = vi.fn()
+
+// Mock bybit-api with a real constructor function
+vi.mock('bybit-api', () => {
+  const MockClient = vi.fn(function (this: any) {
+    this.getWalletBalance = mockGetWalletBalance
+  })
+  return { RestClientV5: MockClient }
+})
 
 // Mock prisma
 vi.mock('../../src/db/prisma', () => ({
@@ -87,7 +90,7 @@ describe('bybit service', () => {
 
   describe('validateBybitKeys', () => {
     it('returns valid true with balance on success', async () => {
-      const mockGetBalance = vi.fn().mockResolvedValue({
+      mockGetWalletBalance.mockResolvedValue({
         retCode: 0,
         retMsg: 'OK',
         result: {
@@ -96,10 +99,6 @@ describe('bybit service', () => {
           }],
         },
       })
-
-      MockRestClientV5.mockImplementation(() => ({
-        getWalletBalance: mockGetBalance,
-      }) as any)
 
       const result = await validateBybitKeys('key', 'secret', true)
       expect(result).toEqual({ valid: true, balance: '1234.56' })
@@ -111,30 +110,22 @@ describe('bybit service', () => {
     })
 
     it('returns valid false with error on auth failure', async () => {
-      const mockGetBalance = vi.fn().mockResolvedValue({
+      mockGetWalletBalance.mockResolvedValue({
         retCode: 10003,
         retMsg: 'Invalid api key',
         result: { list: [] },
       })
-
-      MockRestClientV5.mockImplementation(() => ({
-        getWalletBalance: mockGetBalance,
-      }) as any)
 
       const result = await validateBybitKeys('bad-key', 'bad-secret', false)
       expect(result).toEqual({ valid: false, error: 'Invalid api key' })
     })
 
     it('passes testnet flag to RestClientV5 constructor', async () => {
-      const mockGetBalance = vi.fn().mockResolvedValue({
+      mockGetWalletBalance.mockResolvedValue({
         retCode: 0,
         retMsg: 'OK',
         result: { list: [{ coin: [{ coin: 'USDT', walletBalance: '0' }] }] },
       })
-
-      MockRestClientV5.mockImplementation(() => ({
-        getWalletBalance: mockGetBalance,
-      }) as any)
 
       await validateBybitKeys('key', 'secret', false)
       expect(MockRestClientV5).toHaveBeenCalledWith({
@@ -145,9 +136,7 @@ describe('bybit service', () => {
     })
 
     it('returns valid false on connection error', async () => {
-      MockRestClientV5.mockImplementation(() => ({
-        getWalletBalance: vi.fn().mockRejectedValue(new Error('Connection failed')),
-      }) as any)
+      mockGetWalletBalance.mockRejectedValue(new Error('Connection failed'))
 
       const result = await validateBybitKeys('key', 'secret', true)
       expect(result).toEqual({ valid: false, error: 'Connection failed' })
