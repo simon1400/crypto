@@ -42,8 +42,10 @@ function exportCSV(signals: Signal[], prices: Record<string, number | null>, cha
 
 const CHANNELS = [
   { id: 'EveningTrader', name: 'Evening Trader' },
-  { id: 'BitcoinBullets', name: 'Bitcoin Bullets' },
-  { id: 'Near512', name: 'Near512 Private' },
+  { id: 'Near512-All', name: 'Near512 All', group: 'Near512' },
+  { id: 'Near512-LowCap', name: 'Near512 Low-Cap', group: 'Near512' },
+  { id: 'Near512-MidHigh', name: 'Near512 Mid-High', group: 'Near512' },
+  { id: 'Near512-Spot', name: 'Near512 Spot', group: 'Near512' },
 ]
 
 function formatPrice(n: number): string {
@@ -615,9 +617,14 @@ export default function Signals() {
             onChange={e => setChannel(e.target.value)}
             className="bg-input text-text-primary rounded-lg px-3 py-2.5 text-sm border border-card focus:border-accent outline-none"
           >
-            {CHANNELS.map(ch => (
+            {CHANNELS.filter(ch => !ch.group).map(ch => (
               <option key={ch.id} value={ch.id}>{ch.name}</option>
             ))}
+            <optgroup label="Near512 Private">
+              {CHANNELS.filter(ch => ch.group === 'Near512').map(ch => (
+                <option key={ch.id} value={ch.id}>{ch.name}</option>
+              ))}
+            </optgroup>
           </select>
 
           {/* Period selector */}
@@ -811,7 +818,7 @@ export default function Signals() {
       {/* Table */}
       {data && !loading && !syncing && (
         <div className="bg-card rounded-xl overflow-hidden">
-          <SignalTable signals={data.data} prices={prices} onSelect={setSelected} />
+          <SignalTable signals={data.data} prices={prices} onSelect={setSelected} showChannel={channel === 'Near512-All'} />
         </div>
       )}
 

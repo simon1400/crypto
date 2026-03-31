@@ -49,17 +49,18 @@ export interface TelegramMessage {
   text: string
 }
 
+function resolvePeer(channelUsername: string): string | number {
+  if (/^-?\d+$/.test(channelUsername)) return Number(channelUsername)
+  return channelUsername
+}
+
 export async function getChannelMessages(
   channelUsername: string,
-  sinceTimestamp: number
+  sinceTimestamp: number,
+  topicId?: number
 ): Promise<TelegramMessage[]> {
   const tg = await getTelegramClient()
-
-  // For private channels (numeric ID like -1002726338238), pass as number
-  let peer: string | number = channelUsername
-  if (/^-?\d+$/.test(channelUsername)) {
-    peer = Number(channelUsername)
-  }
+  const peer = resolvePeer(channelUsername)
 
   const allMessages: TelegramMessage[] = []
   let offsetId = 0
@@ -67,18 +68,36 @@ export async function getChannelMessages(
   let batchNum = 0
 
   while (true) {
-    const result = await tg.invoke(
-      new Api.messages.GetHistory({
-        peer,
-        limit: batchSize,
-        offsetId,
-        offsetDate: 0,
-        addOffset: 0,
-        maxId: 0,
-        minId: 0,
-        hash: BigInt(0) as any,
-      })
-    )
+    let result: any
+
+    if (topicId) {
+      // Forum topic — use GetReplies to fetch messages from specific topic
+      result = await tg.invoke(
+        new Api.messages.GetReplies({
+          peer,
+          msgId: topicId,
+          offsetId,
+          limit: batchSize,
+          addOffset: 0,
+          maxId: 0,
+          minId: 0,
+          hash: BigInt(0) as any,
+        })
+      )
+    } else {
+      result = await tg.invoke(
+        new Api.messages.GetHistory({
+          peer,
+          limit: batchSize,
+          offsetId,
+          offsetDate: 0,
+          addOffset: 0,
+          maxId: 0,
+          minId: 0,
+          hash: BigInt(0) as any,
+        })
+      )
+    }
 
     if (!('messages' in result) || result.messages.length === 0) break
 
@@ -106,12 +125,12 @@ export async function getChannelMessages(
       }
     }
 
-    console.log(`[Telegram] ${channelUsername} batch ${batchNum}: ${result.messages.length} msgs, last date: ${new Date(lastDate * 1000).toISOString()}, total collected: ${allMessages.length}`)
+    console.log(`[Telegram] ${channelUsername}${topicId ? ':topic' + topicId : ''} batch ${batchNum}: ${result.messages.length} msgs, last date: ${new Date(lastDate * 1000).toISOString()}, total collected: ${allMessages.length}`)
 
     if (reachedOldest || result.messages.length < batchSize) break
   }
 
-  console.log(`[Telegram] ${channelUsername} done: ${allMessages.length} messages in ${batchNum} batches`)
+  console.log(`[Telegram] ${channelUsername}${topicId ? ':topic' + topicId : ''} done: ${allMessages.length} messages in ${batchNum} batches`)
   return allMessages
 }
 

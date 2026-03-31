@@ -5,6 +5,13 @@ interface Props {
   signals: Signal[]
   prices: Record<string, number | null>
   onSelect: (signal: Signal) => void
+  showChannel?: boolean
+}
+
+const CHANNEL_LABELS: Record<string, string> = {
+  'Near512-LowCap': 'Low-Cap',
+  'Near512-MidHigh': 'Mid-High',
+  'Near512-Spot': 'Spot',
 }
 
 function formatPrice(n: number): string {
@@ -48,7 +55,7 @@ function pnl(signal: Signal): { text: string; color: string } | null {
   return null
 }
 
-export default function SignalTable({ signals, prices, onSelect }: Props) {
+export default function SignalTable({ signals, prices, onSelect, showChannel }: Props) {
   if (signals.length === 0) {
     return (
       <div className="text-center py-12 text-text-secondary">
@@ -63,6 +70,7 @@ export default function SignalTable({ signals, prices, onSelect }: Props) {
         <thead>
           <tr className="text-text-secondary text-xs border-b border-card">
             <th className="text-left py-3 px-3 font-medium">Дата</th>
+            {showChannel && <th className="text-left py-3 px-3 font-medium">Топик</th>}
             <th className="text-left py-3 px-3 font-medium">Тип</th>
             <th className="text-left py-3 px-3 font-medium">Монета</th>
             <th className="text-right py-3 px-3 font-medium">Цена</th>
@@ -86,6 +94,13 @@ export default function SignalTable({ signals, prices, onSelect }: Props) {
                 <td className="py-3 px-3 text-text-secondary text-xs whitespace-nowrap">
                   {formatDate(signal.publishedAt)}
                 </td>
+                {showChannel && (
+                  <td className="py-3 px-3">
+                    <span className="text-xs text-accent bg-accent/10 px-2 py-0.5 rounded">
+                      {CHANNEL_LABELS[signal.channel] || signal.channel}
+                    </span>
+                  </td>
+                )}
                 <td className="py-3 px-3">
                   <span className={`font-bold text-xs ${signal.type === 'LONG' ? 'text-long' : 'text-short'}`}>
                     {signal.type}
