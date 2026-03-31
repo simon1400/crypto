@@ -7,6 +7,7 @@ import signalsRouter from './routes/signals'
 import tradesRouter from './routes/trades'
 import { trackActiveSignals } from './services/signalTracker'
 import scannerRouter from './routes/scanner'
+import settingsRouter from './routes/settings'
 import { expireOldSignals } from './scanner/coinScanner'
 
 const app = express()
@@ -31,6 +32,7 @@ app.use('/api/market', marketRouter)
 app.use('/api/signals', signalsRouter)
 app.use('/api/trades', tradesRouter)
 app.use('/api/scanner', scannerRouter)
+app.use('/api/settings', settingsRouter)
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
