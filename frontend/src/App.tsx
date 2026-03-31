@@ -4,6 +4,7 @@ import Navbar from './components/Navbar'
 import Signals from './pages/Signals'
 import Trades from './pages/Trades'
 import Scanner from './pages/Scanner'
+import Settings from './pages/Settings'
 import Login from './pages/Login'
 import { setAuthToken } from './api/client'
 
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="/signals" element={<Signals />} />
             <Route path="/trades" element={<Trades />} />
             <Route path="/scanner" element={<Scanner />} />
+            <Route path="/settings" element={<Settings />} />
           </Routes>
         </main>
       </div>
