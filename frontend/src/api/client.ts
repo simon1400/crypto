@@ -235,6 +235,7 @@ export interface Trade {
   closes: TradeClose[]
   closedPct: number
   realizedPnl: number
+  fees: number
   status: string
   notes: string | null
   openedAt: string
@@ -288,7 +289,7 @@ export async function getTradeStats(): Promise<TradeStats> {
 
 export async function createTrade(data: {
   coin: string; type: string; leverage: number; entryPrice: number;
-  amount: number; stopLoss: number; takeProfits: TradeTP[]; notes?: string
+  amount: number; stopLoss: number; takeProfits: TradeTP[]; fees?: number; notes?: string
 }): Promise<Trade> {
   const res = await fetch(`${BASE}/api/trades`, {
     method: 'POST', headers: getHeaders(), body: JSON.stringify(data),
@@ -324,7 +325,7 @@ export async function hitStopLoss(id: number): Promise<Trade> {
 
 export async function updateTrade(id: number, data: {
   coin?: string; type?: string; leverage?: number; entryPrice?: number;
-  amount?: number; stopLoss?: number; takeProfits?: TradeTP[]; notes?: string
+  amount?: number; stopLoss?: number; takeProfits?: TradeTP[]; fees?: number; notes?: string
 }): Promise<Trade> {
   const res = await fetch(`${BASE}/api/trades/${id}`, {
     method: 'PUT', headers: getHeaders(), body: JSON.stringify(data),

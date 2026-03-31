@@ -41,6 +41,7 @@ function NewTradeForm({ onCreated }: { onCreated: () => void }) {
     { price: '', percent: '50' },
     { price: '', percent: '50' },
   ])
+  const [fees, setFees] = useState('')
   const [notes, setNotes] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -94,12 +95,14 @@ function NewTradeForm({ onCreated }: { onCreated: () => void }) {
         coin: finalCoin, type, leverage: Number(leverage),
         entryPrice: Number(entryPrice), amount: Number(amount),
         stopLoss: Number(stopLoss), takeProfits,
+        fees: fees ? Number(fees) : undefined,
         notes: notes || undefined,
       })
       setOpen(false)
       setCoin('BTC'); setCoinQuery('BTC'); setType('LONG'); setLeverage('10')
       setEntryPrice(''); setAmount(''); setStopLoss('')
       setTps([{ price: '', percent: '50' }, { price: '', percent: '50' }])
+      setFees('')
       setNotes('')
       onCreated()
     } catch (err: any) {
@@ -196,10 +199,17 @@ function NewTradeForm({ onCreated }: { onCreated: () => void }) {
         </div>
       </div>
 
-      <div>
-        <label className="text-xs text-text-secondary">Заметки (опционально)</label>
-        <textarea value={notes} onChange={e => setNotes(e.target.value)}
-          rows={2} className="w-full bg-input rounded px-3 py-2 text-text-primary text-sm" />
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs text-text-secondary">Комиссии USDT (опционально)</label>
+          <input type="number" value={fees} onChange={e => setFees(e.target.value)}
+            step="0.01" placeholder="0.00" className="w-full bg-input rounded px-3 py-2 text-text-primary font-mono" />
+        </div>
+        <div>
+          <label className="text-xs text-text-secondary">Заметки (опционально)</label>
+          <input type="text" value={notes} onChange={e => setNotes(e.target.value)}
+            placeholder="" className="w-full bg-input rounded px-3 py-2 text-text-primary text-sm" />
+        </div>
       </div>
 
       {error && <div className="text-short text-sm">{error}</div>}
@@ -319,6 +329,7 @@ function TradeDetail({ trade, onClose, onRefresh }: { trade: Trade; onClose: () 
   const [eTps, setETps] = useState<{ price: string; percent: string }[]>(
     (trade.takeProfits as TradeTP[]).map(tp => ({ price: String(tp.price), percent: String(tp.percent) }))
   )
+  const [eFees, setEFees] = useState(String(trade.fees || ''))
   const [eNotes, setENotes] = useState(trade.notes || '')
   const [eError, setEError] = useState('')
 
@@ -359,7 +370,7 @@ function TradeDetail({ trade, onClose, onRefresh }: { trade: Trade; onClose: () 
         coin: (eCoinQuery || eCoin).toUpperCase(),
         type: eType, leverage: Number(eLeverage),
         entryPrice: Number(eEntry), amount: Number(eAmount),
-        stopLoss: Number(eSL), takeProfits, notes: eNotes,
+        stopLoss: Number(eSL), takeProfits, fees: eFees ? Number(eFees) : undefined, notes: eNotes,
       })
       setEditing(false)
       onRefresh()
@@ -468,10 +479,17 @@ function TradeDetail({ trade, onClose, onRefresh }: { trade: Trade; onClose: () 
               ))}
             </div>
 
-            <div>
-              <label className="text-xs text-text-secondary">Заметки</label>
-              <textarea value={eNotes} onChange={e => setENotes(e.target.value)}
-                rows={2} className="w-full bg-input rounded px-3 py-2 text-text-primary text-sm" />
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-text-secondary">Комиссии USDT</label>
+                <input type="number" value={eFees} onChange={e => setEFees(e.target.value)}
+                  step="0.01" placeholder="0.00" className="w-full bg-input rounded px-3 py-2 text-text-primary font-mono text-sm" />
+              </div>
+              <div>
+                <label className="text-xs text-text-secondary">Заметки</label>
+                <input type="text" value={eNotes} onChange={e => setENotes(e.target.value)}
+                  className="w-full bg-input rounded px-3 py-2 text-text-primary text-sm" />
+              </div>
             </div>
 
             {eError && <div className="text-short text-sm">{eError}</div>}
@@ -547,9 +565,16 @@ function TradeDetail({ trade, onClose, onRefresh }: { trade: Trade; onClose: () 
             {/* Итого */}
             <div className="flex items-center justify-between px-3 py-3 bg-input rounded-lg">
               <span className="text-text-secondary text-sm">Реализовано ({trade.closedPct}%)</span>
-              <span className={`font-mono font-bold text-lg ${pnlColor(trade.realizedPnl)}`}>
-                {trade.realizedPnl > 0 ? '+' : ''}{trade.realizedPnl}$
-              </span>
+              <div className="text-right">
+                <span className={`font-mono font-bold text-lg ${pnlColor(trade.realizedPnl - (trade.fees || 0))}`}>
+                  {(trade.realizedPnl - (trade.fees || 0)) > 0 ? '+' : ''}{Math.round((trade.realizedPnl - (trade.fees || 0)) * 100) / 100}$
+                </span>
+                {trade.fees > 0 && (
+                  <div className="text-xs text-text-secondary font-mono">
+                    P&L: {trade.realizedPnl > 0 ? '+' : ''}{trade.realizedPnl}$ · Комиссии: -{trade.fees}$
+                  </div>
+                )}
+              </div>
             </div>
 
             {trade.notes && (

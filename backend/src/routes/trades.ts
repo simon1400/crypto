@@ -76,7 +76,8 @@ router.get('/stats', async (_req: Request, res: Response) => {
     const wins = closed.filter(t => t.realizedPnl > 0)
     const losses = closed.filter(t => t.realizedPnl < 0)
 
-    const totalPnl = closed.reduce((sum, t) => sum + t.realizedPnl, 0)
+    const totalFees = closed.reduce((sum, t) => sum + t.fees, 0)
+    const totalPnl = closed.reduce((sum, t) => sum + t.realizedPnl, 0) - totalFees
     const avgWin = wins.length ? wins.reduce((s, t) => s + t.realizedPnl, 0) / wins.length : 0
     const avgLoss = losses.length ? losses.reduce((s, t) => s + t.realizedPnl, 0) / losses.length : 0
     const winRate = closed.length ? (wins.length / closed.length) * 100 : 0
@@ -130,7 +131,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 // POST /api/trades — создать сделку
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { coin, type, leverage, entryPrice, amount, stopLoss, takeProfits, notes } = req.body
+    const { coin, type, leverage, entryPrice, amount, stopLoss, takeProfits, notes, fees } = req.body
 
     if (!coin || !type || !entryPrice || !amount || !stopLoss || !takeProfits?.length) {
       return res.status(400).json({ error: 'Missing required fields' })
@@ -145,6 +146,7 @@ router.post('/', async (req: Request, res: Response) => {
         amount: Number(amount),
         stopLoss: Number(stopLoss),
         takeProfits,
+        fees: Number(fees) || 0,
         notes: notes || null,
       },
     })
@@ -255,7 +257,7 @@ router.put('/:id', async (req: Request, res: Response) => {
     const trade = await prisma.trade.findUnique({ where: { id: Number(req.params.id) } })
     if (!trade) return res.status(404).json({ error: 'Trade not found' })
 
-    const { coin, type, leverage, entryPrice, amount, stopLoss, takeProfits, notes } = req.body
+    const { coin, type, leverage, entryPrice, amount, stopLoss, takeProfits, notes, fees } = req.body
     const data: any = {}
     if (coin !== undefined) data.coin = coin.toUpperCase().replace('USDT', '') + 'USDT'
     if (type !== undefined) data.type = type.toUpperCase()
@@ -264,6 +266,7 @@ router.put('/:id', async (req: Request, res: Response) => {
     if (amount !== undefined) data.amount = Number(amount)
     if (stopLoss !== undefined) data.stopLoss = Number(stopLoss)
     if (takeProfits !== undefined) data.takeProfits = takeProfits
+    if (fees !== undefined) data.fees = Number(fees) || 0
     if (notes !== undefined) data.notes = notes || null
 
     // Пересчитать P&L закрытий если изменились ключевые параметры

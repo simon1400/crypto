@@ -75,6 +75,7 @@ model Trade {
   closedPct   Float    @default(0)             // суммарно закрыто % позиции (0-100)
   realizedPnl Float    @default(0)             // реализованный P&L в USDT
   status      String   @default("OPEN")        // OPEN, PARTIALLY_CLOSED, CLOSED, SL_HIT, CANCELLED
+  fees        Float    @default(0)             // trading fees (open + close)
   notes       String?                          // заметки
   openedAt    DateTime @default(now())
   closedAt    DateTime?
