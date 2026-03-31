@@ -470,3 +470,325 @@ curl -X POST http://localhost:3001/api/analyze \
   -H "X-Api-Secret: YOUR_SECRET" \
   -d '{"coins":["BTC","ETH"]}'
 ```
+
+<!-- GSD:project-start source:PROJECT.md -->
+## Project
+
+**Crypto Auto-Trading**
+
+Модуль автоматического трейдинга для существующего Crypto Dashboard. Подключается к бирже Bybit и автоматически (или по кнопке) открывает позиции на основе торговых сигналов из Telegram-каналов (EveningTrader, Near512). Управление через веб-интерфейс.
+
+**Core Value:** Сигнал из Telegram-канала превращается в реальный ордер на Bybit без ручного копирования — быстро, с контролем рисков и прозрачностью через UI.
+
+### Constraints
+
+- **Биржа**: Только Bybit — API ключи хранятся в БД (зашифрованные) или .env
+- **Безопасность**: API ключи никогда не отдаются на фронтенд, все торговые операции через backend
+- **Стек**: TypeScript, Express, React, Prisma — как в остальном проекте
+- **Деплой**: Ubuntu VPS, PM2, тот же сервер что и основное приложение
+<!-- GSD:project-end -->
+
+<!-- GSD:stack-start source:codebase/STACK.md -->
+## Technology Stack
+
+## Languages
+- TypeScript 5.7.3 - Used across both frontend and backend
+- JavaScript - PM2 config (`backend/ecosystem.config.js`), PostCSS/Tailwind configs
+- SQL - Prisma migrations (auto-generated)
+## Runtime
+- Node.js (version not pinned; no `.nvmrc` or `engines` field)
+- Target: ES2022 in both `backend/tsconfig.json` and `frontend/tsconfig.json`
+- npm
+- Lockfiles: `backend/package-lock.json` and `frontend/package-lock.json` (both present)
+## Frameworks
+- Express 4.21.2 - Backend HTTP server (`backend/src/index.ts`)
+- React 18.3.1 - Frontend SPA (`frontend/src/main.tsx`)
+- React Router DOM 7.3.0 - Client-side routing (`frontend/src/App.tsx`)
+- Not detected - no test framework installed in either package.json
+- Vite 6.2.2 - Frontend build tool (`frontend/vite.config.ts`)
+- `@vitejs/plugin-react` 4.3.4 - React Fast Refresh for dev
+- `tsc` (TypeScript compiler) - Backend build (`backend/package.json` scripts)
+- `tsx` 4.19.3 - Backend dev mode with watch (`tsx watch src/index.ts`)
+## Key Dependencies
+- `@prisma/client` 6.4.1 - PostgreSQL ORM, all database access (`backend/src/db/prisma.ts`)
+- `prisma` 6.4.1 (dev) - Schema management and migrations
+- `openai` 4.85.0 - AI signal filtering via GPT-5.4 model (`backend/src/scanner/gptFilter.ts`)
+- `telegram` 2.26.22 - GramJS client for reading Telegram channels (`backend/src/services/telegram.ts`)
+- `@cryptography/aes` 0.1.1 - Required by telegram library for MTProto encryption
+- `react` 18.3.1 / `react-dom` 18.3.1 - UI framework
+- `react-router-dom` 7.3.0 - Page routing
+- `lightweight-charts` 5.1.0 - TradingView charting library for price display
+- `express` 4.21.2 - HTTP server
+- `cors` 2.8.5 - Cross-origin resource sharing
+- `dotenv` 16.6.1 - Environment variable loading
+- `tailwindcss` 3.4.17 - Utility-first CSS
+- `postcss` 8.5.3 - CSS processing pipeline
+- `autoprefixer` 10.4.20 - Vendor prefix automation
+## Configuration
+- Target: ES2022, Module: CommonJS
+- Strict mode enabled
+- Output: `backend/dist/`
+- Root: `backend/src/`
+- Target: ES2022, Module: ESNext, JSX: react-jsx
+- Module resolution: bundler
+- Strict mode enabled, noEmit (Vite handles bundling)
+- Dev server port: 5173
+- API proxy: `/api` -> `http://localhost:3001`
+- Custom color palette: trading terminal dark theme
+- Custom fonts: IBM Plex Sans (UI), JetBrains Mono (numbers/prices)
+- Content paths: `./index.html`, `./src/**/*.{js,ts,jsx,tsx}`
+- Plugins: tailwindcss, autoprefixer
+- `.env` files present in both `backend/` and `frontend/` (with `.env.example` templates)
+- Backend env vars: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `API_SECRET`, `PORT`, `APP_PASSWORD`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `OPENAI_API_KEY`
+- Frontend env vars: `VITE_API_URL`, `VITE_API_SECRET`
+## Database
+- ORM: Prisma 6.4.1
+- Schema: `backend/prisma/schema.prisma`
+- Client singleton: `backend/src/db/prisma.ts`
+- `Signal` - Telegram-sourced trading signals with price tracking
+- `GeneratedSignal` - AI scanner-generated signals with P&L tracking
+- `Trade` - Manual trade journal entries with partial close support
+## Process Management
+- PM2 (`backend/ecosystem.config.js`)
+- Single instance, auto-restart, no file watching
+- Production port: 3001
+- Backend: `tsx watch src/index.ts` (auto-reload on file changes)
+- Frontend: `vite` dev server on port 5173 with HMR
+## Platform Requirements
+- Node.js with ES2022 support (v18+)
+- PostgreSQL database
+- Telegram API credentials (API ID + Hash + authenticated session)
+- OpenAI API key (for scanner GPT filter)
+- Ubuntu VPS
+- Nginx as reverse proxy (serves frontend static, proxies `/api` to backend)
+- PM2 for backend process management
+- PostgreSQL instance
+- SSL via Let's Encrypt (per deploy docs)
+<!-- GSD:stack-end -->
+
+<!-- GSD:conventions-start source:CONVENTIONS.md -->
+## Conventions
+
+## TypeScript Configuration
+- Target: ES2022, Module: CommonJS
+- `strict: true` enabled
+- `esModuleInterop: true`, `skipLibCheck: true`
+- `forceConsistentCasingInFileNames: true`
+- Output: `backend/dist/`
+- Target: ES2022, Module: ESNext, JSX: react-jsx
+- `strict: true` enabled
+- `isolatedModules: true`, `noEmit: true` (Vite handles bundling)
+- `moduleResolution: bundler`
+## Naming Patterns
+- Backend: camelCase for all `.ts` files (`signalParser.ts`, `coinScanner.ts`, `signalTracker.ts`)
+- Frontend pages: PascalCase (`Signals.tsx`, `Scanner.tsx`, `Trades.tsx`, `Login.tsx`)
+- Frontend components: PascalCase (`SignalTable.tsx`, `SignalBadge.tsx`, `SignalChart.tsx`, `Navbar.tsx`)
+- Frontend API: camelCase (`client.ts`)
+- camelCase for all functions: `fetchOHLCV()`, `computeIndicators()`, `parseSignalMessage()`
+- Export functions directly with `export function` or `export async function`
+- React components: PascalCase function names (`SignalModal`, `ScoreBadge`, `StatusBadge`)
+- Private/internal helpers: camelCase, not exported (`round2()`, `computeMACD()`)
+- camelCase: `isScanning`, `symbolsCache`, `authToken`
+- Constants (module-level arrays/objects): UPPER_SNAKE_CASE (`SCAN_COINS`, `CHANNELS`, `NEAR512_CHANNELS`, `CACHE_TTL`)
+- PascalCase, no `I` prefix: `CoinIndicators`, `ParsedSignal`, `MarketOverview`, `ScanResult`
+- Use `interface` (not `type`) for object shapes
+- Use `type` only for union types in function parameters (e.g., `'LONG' | 'SHORT'`)
+- PascalCase model names: `Signal`, `GeneratedSignal`, `Trade`
+- camelCase field names: `entryMin`, `stopLoss`, `takeProfits`, `closedPct`
+## Code Style
+- No Prettier or ESLint configured in the project
+- Indent: 2 spaces
+- Semicolons: omitted in most backend code, omitted in frontend code (no-semicolons style)
+- Quotes: single quotes for strings
+- Trailing commas: used in multi-line objects and arrays
+- Line length: no enforced limit, generally kept under ~120 chars
+- No ESLint, Prettier, Biome, or any linting tool configured
+- TypeScript compiler (`tsc`) is the sole quality gate
+## Import Organization
+- Relative paths throughout: `../db/prisma`, `./market`, `../services/fundingRate`
+- No path aliases configured (no `@/` or `~/`)
+- Backend uses CommonJS output (`module: commonjs` in tsconfig)
+- Frontend uses ES modules (`module: ESNext`, Vite bundler)
+- Backend routes: `export default router` (default export for Express routers)
+- Backend services: Named exports for functions and interfaces (`export function`, `export interface`)
+- Frontend API: Named exports for all functions and interfaces in `frontend/src/api/client.ts`
+- Frontend components: `export default function ComponentName()` (default export)
+- Frontend pages: `export default function PageName()` (default export)
+## Error Handling
+- All route handlers wrapped in try/catch
+- Errors typed as `any` (not `unknown`)
+- Error response: `{ error: string }` consistently
+- Logging with module prefix: `[Signals]`, `[Scanner]`, `[SignalTracker]`
+- Services throw errors (not caught internally): `throw new Error('Symbol not found')`
+- External API calls use fallback defaults on failure (e.g., `fetchMarketOverview()` returns safe defaults)
+- Empty `catch` blocks used for non-critical failures (e.g., exchange fallbacks)
+- Check `res.ok`, parse error body, throw Error
+- Some functions silently return empty/default on failure (e.g., `searchSymbols` returns `[]`)
+## API Response Formats
+- `200` for all successful responses (no 201 for creation)
+- `400` for invalid input
+- `401` for unauthorized
+- `404` for not found
+- `409` for conflict (scanner already running)
+- `500` for server errors
+## State Management (Frontend)
+- `useState` for data, loading, and error states
+- `useEffect` for initial data loading
+- Manual refetch by calling fetch functions again
+- No caching layer, no SWR/React Query
+- Token stored in `localStorage` key `auth_token`
+- Module-level `authToken` variable in `frontend/src/api/client.ts`
+- `setAuthToken()` called on login/mount to sync
+- Local state within components (no lifting except auth in `App.tsx`)
+- Forms use individual `useState` for each field
+- Modal visibility controlled by `useState<boolean>` or `useState<Item | null>`
+## Database Access Patterns
+- Single instance exported from `backend/src/db/prisma.ts`
+- Imported as `import { prisma } from '../db/prisma'`
+- `prisma.model.findMany({ where, orderBy, skip, take })` for paginated lists
+- `prisma.model.findUnique({ where: { id } })` for single item
+- `prisma.model.upsert({ where, create, update: {} })` for idempotent inserts
+- `prisma.model.update({ where, data })` for mutations
+- `prisma.model.count({ where })` alongside findMany for pagination totals
+- `Promise.all([findMany, count])` pattern for parallel data + count
+- Dynamic where built as `any` object (not typed)
+## Authentication Pattern
+- Middleware checks `X-Api-Secret` header against `process.env.API_SECRET`
+- Applied to all `/api/*` routes except `/api/login`
+- Login endpoint: POST `/api/login` with `{ password }` body, returns `{ token }` which is the API_SECRET itself
+- All requests include `X-Api-Secret` header via `getHeaders()` helper
+- Token set via `setAuthToken()` on login and page load
+## Tailwind CSS Usage
+- Custom colors: `primary`, `card`, `input`, `accent`, `long`, `short`, `neutral`, `text-primary`, `text-secondary`
+- Custom fonts: `font-sans` (IBM Plex Sans), `font-mono` (JetBrains Mono)
+- Inline Tailwind classes directly on JSX elements
+- No CSS modules or styled-components
+- Dynamic classes via template literals: `` `text-${signal.type === 'LONG' ? 'long' : 'short'}` ``
+- Color mapping objects for status badges (defined inline in components)
+## Logging
+- Module-prefixed messages: `console.log('[Scanner] Starting scan...')`
+- Error logging: `console.error('[ModuleName] Error:', err)`
+- Warning for degraded service: `console.warn('Fear&Greed API unavailable, using defaults')`
+## Comments
+- Block comments for section headers in large files: `// === Phase 1: Gather market data ===`
+- Inline comments for non-obvious logic: `// 4h candles: 6 = 24h`
+- JSDoc-style on some functions (rare): `/** Auto-resolve the correct MEXC symbol */`
+- Russian language used in comments: `// Кэш символов с биржи`
+## Localization
+- Date format: `ru-RU` locale consistently
+- Status labels defined inline in components as Russian strings
+- Comments: Mix of English and Russian
+<!-- GSD:conventions-end -->
+
+<!-- GSD:architecture-start source:ARCHITECTURE.md -->
+## Architecture
+
+## Pattern Overview
+- Express REST API backend with route-service-DB layering
+- React SPA frontend with page-level state management (no global store)
+- PostgreSQL via Prisma ORM for persistence
+- Three functional modules: Signals, Scanner, Trades
+- Background timers for signal tracking and signal expiration (in-process, not external scheduler)
+- Password-based auth returning API secret token; all API routes protected by `X-Api-Secret` header
+## Layers
+- Purpose: HTTP endpoint definitions, request validation, response formatting
+- Location: `backend/src/routes/`
+- Contains: Express Router definitions for each module
+- Depends on: Services, Prisma client, Scanner module
+- Used by: Frontend via REST API
+- Key files:
+- Purpose: External API calls, data transformation, business logic
+- Location: `backend/src/services/`
+- Contains: Market data fetching, technical indicators computation, Telegram integration, signal parsing/tracking
+- Depends on: External APIs (Binance, MEXC, CoinGecko, CryptoPanic, Alternative.me), Telegram MTProto
+- Used by: Routes, Scanner module
+- Key files:
+- Purpose: Automated market scanning, strategy execution, scoring, risk calculation, GPT filtering
+- Location: `backend/src/scanner/`
+- Contains: Multi-phase pipeline that scans 125 coins across 3 timeframes
+- Depends on: Services (market, indicators), OpenAI API, Prisma
+- Used by: Scanner routes
+- Key files:
+- Purpose: Prisma client singleton
+- Location: `backend/src/db/prisma.ts`
+- Contains: Single `PrismaClient` instance export
+- Used by: All routes and scanner
+- Purpose: Authentication
+- Location: `backend/src/middleware/auth.ts`
+- Contains: `X-Api-Secret` header check against `API_SECRET` env var
+- Applied to: All `/api/*` routes (except `/api/login`)
+- Purpose: UI views, each page manages its own state
+- Location: `frontend/src/pages/`
+- Contains: Full page components with inline sub-components
+- Depends on: API client, shared components
+- Key files:
+- Purpose: Reusable UI elements
+- Location: `frontend/src/components/`
+- Key files:
+- Purpose: Centralized HTTP layer
+- Location: `frontend/src/api/client.ts`
+- Contains: All API call functions, TypeScript interfaces for API responses, auth token management
+- Pattern: Plain `fetch()` calls with shared `getHeaders()` for auth. No axios or query library.
+## Data Flow
+- No global state store (no Redux, Zustand, or Context providers)
+- Each page manages its own state via `useState`/`useEffect`
+- Auth token stored in `localStorage`, managed in `App.tsx` with `setAuthToken()` propagated to API client module-level variable
+## Key Abstractions
+- Purpose: Tracks trading signals parsed from Telegram channels
+- Model: `Signal` in `backend/prisma/schema.prisma`
+- Status lifecycle: `ENTRY_WAIT` -> `ACTIVE` -> `TP1_HIT`/`TP2_HIT`/.../`SL_HIT`
+- Tracking: Automated via `signalTracker.ts` with trailing SL (after TP1: SL moves to entry; after TPn: SL moves to TP(n-1))
+- Purpose: AI-generated trading signals from automated scanner
+- Model: `GeneratedSignal` in `backend/prisma/schema.prisma`
+- Status lifecycle: `NEW` -> `TAKEN` -> `PARTIALLY_CLOSED`/`CLOSED`/`SL_HIT` or `NEW` -> `EXPIRED`
+- Manual tracking: User records closes/SL hits via UI
+- Purpose: User's manual trade log with P&L tracking
+- Model: `Trade` in `backend/prisma/schema.prisma`
+- Status lifecycle: `OPEN` -> `PARTIALLY_CLOSED`/`CLOSED`/`SL_HIT`/`CANCELLED`
+- P&L: `amount` = margin, leverage applied to P&L calculation
+- Purpose: Technical indicators across 3 timeframes (15m, 1h, 4h)
+- Defined in: `backend/src/services/indicators.ts`
+- Contains: ~30 indicators per timeframe (EMA, RSI, MACD, BB, Stoch, ADX, ATR, VWAP, Fibonacci, Pivots, candlestick patterns)
+## Entry Points
+- Location: `backend/src/index.ts`
+- Starts Express server on `PORT` (default 3001)
+- Registers routes, auth middleware, login endpoint
+- Sets up two `setInterval` timers: signal tracking (1h), signal expiration (30m)
+- Production: `backend/dist/index.js` run via PM2
+- Location: `frontend/src/main.tsx` -> `frontend/src/App.tsx`
+- React 18 with `createRoot`, wrapped in `StrictMode`
+- `App.tsx` handles auth gate: shows `Login` if no token, otherwise renders `BrowserRouter` with routes
+- Routes: `/` and `/signals` -> Signals, `/scanner` -> Scanner, `/trades` -> Trades
+- Location: `backend/src/telegram-auth.ts`
+- Interactive script: `npx tsx src/telegram-auth.ts`
+- Saves session to `backend/.telegram-session`
+## Error Handling
+- Routes: `try/catch` wrapping entire handler, returns `{ error: err.message }` with 500 status
+- External API calls: `try/catch` with fallback values (e.g., `fetchMarketOverview` uses defaults if APIs fail)
+- Market data: Binance-first with MEXC fallback in `fetchOHLCV()`
+- Scanner: Continues on per-coin errors, logs warnings, collects `fetchErrors` array
+- GPT filter: On failure, passes signal through with neutral review (`CONFIRM` with confidence 5)
+- Signal tracker: Per-signal `try/catch`, logs error, continues to next signal
+- Frontend: Silent `catch {}` in many places (no user-facing error for non-critical operations)
+## Cross-Cutting Concerns
+<!-- GSD:architecture-end -->
+
+<!-- GSD:workflow-start source:GSD defaults -->
+## GSD Workflow Enforcement
+
+Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
+
+Use these entry points:
+- `/gsd:quick` for small fixes, doc updates, and ad-hoc tasks
+- `/gsd:debug` for investigation and bug fixing
+- `/gsd:execute-phase` for planned phase work
+
+Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
+<!-- GSD:workflow-end -->
+
+<!-- GSD:profile-start -->
+## Developer Profile
+
+> Profile not yet configured. Run `/gsd:profile-user` to generate your developer profile.
+> This section is managed by `generate-claude-profile` -- do not edit manually.
+<!-- GSD:profile-end -->
