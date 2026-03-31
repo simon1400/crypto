@@ -11,10 +11,12 @@ export interface ParsedSignal {
 /**
  * Parse a trading signal message.
  *
- * Evening Trader / Near512:
+ * Evening Trader / Near512 Futures:
  *   "Risk Scalp Long $BEAT (Max 3x)"
  *   "Scalp Short $MIRA (Leverage 10x)"
- *   "Limit Scalp Short Risk $BTC (Leverage 30x)"
+ *
+ * Near512 Spot:
+ *   "SPOT $CLANKER"
  */
 export function parseSignalMessage(text: string): ParsedSignal | null {
   const clean = text.replace(/\s+/g, ' ').trim()
@@ -22,17 +24,25 @@ export function parseSignalMessage(text: string): ParsedSignal | null {
 }
 
 function parseEveningTrader(text: string): ParsedSignal | null {
-  // Extract type (Long/Short)
-  const typeMatch = text.match(/\b(Long|Short)\b/i)
-  if (!typeMatch) return null
-  const type = typeMatch[1].toUpperCase() as 'LONG' | 'SHORT'
-
   // Extract coin ticker: $TICKER
   const coinMatch = text.match(/\$([A-Z0-9]+)/i)
   if (!coinMatch) return null
   const coin = coinMatch[1].toUpperCase()
 
-  // Extract leverage: (Max 3x) or (Leverage 10x)
+  // Spot signals: "SPOT $TICKER" — always LONG, leverage 1
+  const isSpot = /\bSPOT\b/i.test(text)
+
+  // Extract type (Long/Short) or default to LONG for spot
+  let type: 'LONG' | 'SHORT'
+  if (isSpot) {
+    type = 'LONG'
+  } else {
+    const typeMatch = text.match(/\b(Long|Short)\b/i)
+    if (!typeMatch) return null
+    type = typeMatch[1].toUpperCase() as 'LONG' | 'SHORT'
+  }
+
+  // Extract leverage: (Max 3x) or (Leverage 10x), default 1 for spot
   const leverageMatch = text.match(/(?:Max|Leverage)\s+(\d+)x/i)
   const leverage = leverageMatch ? parseInt(leverageMatch[1]) : 1
 
