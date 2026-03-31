@@ -72,3 +72,18 @@ model Trade {
   closedAt    DateTime?
   createdAt   DateTime @default(now())
 }
+
+model BotConfig {
+  id                      Int      @id @default(1)
+  apiKey                  String?
+  apiSecret               String?
+  useTestnet              Boolean  @default(true)
+  positionSizePct         Float    @default(10)
+  dailyLossLimitPct       Float    @default(5)
+  orderTtlMinutes         Int      @default(60)
+  tradingMode             String   @default("manual")
+  near512Topics           Json     @default("[]")
+  eveningTraderCategories Json     @default("[]")
+  updatedAt               DateTime @updatedAt
+  createdAt               DateTime @default(now())
+}
