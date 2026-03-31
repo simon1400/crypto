@@ -2,11 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock p-queue before imports
 vi.mock('p-queue', () => {
-  return {
-    default: vi.fn().mockImplementation(() => ({
-      add: vi.fn((fn: () => Promise<any>) => fn()),
-    })),
+  class MockPQueue {
+    add(fn: () => Promise<any>) {
+      return fn()
+    }
   }
+  return { default: MockPQueue }
 })
 
 // Mock orderLogger
