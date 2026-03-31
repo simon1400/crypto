@@ -55,6 +55,12 @@ export async function getChannelMessages(
 ): Promise<TelegramMessage[]> {
   const tg = await getTelegramClient()
 
+  // For private channels (numeric ID like -1002726338238), pass as number
+  let peer: string | number = channelUsername
+  if (/^-?\d+$/.test(channelUsername)) {
+    peer = Number(channelUsername)
+  }
+
   const allMessages: TelegramMessage[] = []
   let offsetId = 0
   const batchSize = 100
@@ -63,7 +69,7 @@ export async function getChannelMessages(
   while (true) {
     const result = await tg.invoke(
       new Api.messages.GetHistory({
-        peer: channelUsername,
+        peer,
         limit: batchSize,
         offsetId,
         offsetDate: 0,
