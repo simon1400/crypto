@@ -4,6 +4,7 @@ import { executeSignalOrder } from '../trading/tradingService'
 import { createBybitClient } from '../services/bybit'
 import { logOrderAction } from '../trading/orderLogger'
 import { getInstrumentInfo } from '../trading/instrumentCache'
+import { createOrderExecutor } from '../trading/orderExecutor'
 import { stopAutoListener } from '../trading/autoListener'
 
 const router = Router()
@@ -352,6 +353,148 @@ router.get('/stats', async (req: Request, res: Response) => {
     return res.json({ totalPnl, tradesCount, wins, winRate, byChannel, dailySeries })
   } catch (err: any) {
     console.error('[Trading] Stats error:', err.message)
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+/**
+ * POST /api/trading/positions/:id/market-entry
+ * Cancel existing limit order and enter at market price.
+ * Only works for PENDING_ENTRY positions.
+ */
+router.post('/positions/:id/market-entry', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string)
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid position ID' })
+    }
+
+    const position = await prisma.position.findUnique({ where: { id } })
+    if (!position) {
+      return res.status(404).json({ error: 'Position not found' })
+    }
+    if (position.status !== 'PENDING_ENTRY') {
+      return res.status(400).json({ error: 'Position must be PENDING_ENTRY' })
+    }
+
+    const client = await createBybitClient()
+    const executor = createOrderExecutor(client)
+
+    await executor.executeInQueue(async () => {
+      // Cancel existing limit order
+      try {
+        await client.cancelOrder({
+          category: 'linear',
+          symbol: position.symbol,
+          orderId: position.entryOrderId!,
+        })
+      } catch (cancelErr: any) {
+        console.warn('[Trading] Cancel limit order warning:', cancelErr.message)
+      }
+
+      // Place market order
+      const side = position.type === 'LONG' ? 'Buy' : 'Sell'
+      await client.submitOrder({
+        category: 'linear',
+        symbol: position.symbol,
+        side,
+        orderType: 'Market',
+        qty: String(position.qty),
+        positionIdx: 0,
+      })
+
+      // Update position in DB
+      await prisma.position.update({
+        where: { id },
+        data: {
+          status: 'OPEN',
+          filledAt: new Date(),
+        },
+      })
+
+      // Place TP orders
+      const instrument = await getInstrumentInfo(client, position.symbol)
+      const takeProfits = (position.takeProfits as number[]) || []
+      if (takeProfits.length > 0) {
+        const tpSide = position.type === 'LONG' ? 'Sell' : 'Buy'
+        const tpOrderIds = await executor.placeTpOrders({
+          symbol: position.symbol,
+          side: tpSide,
+          totalQty: String(position.qty),
+          takeProfits,
+          signalId: position.signalId || 0,
+          qtyStep: instrument.qtyStep,
+          tickSize: instrument.tickSize,
+        })
+
+        await prisma.position.update({
+          where: { id },
+          data: { tpOrderIds },
+        })
+      }
+
+      await logOrderAction('MARKET_ENTRY', {
+        positionId: id,
+        signalId: position.signalId || undefined,
+        details: { method: 'manual_market_entry', symbol: position.symbol },
+      })
+    })
+
+    return res.json({ success: true })
+  } catch (err: any) {
+    console.error('[Trading] Market entry error:', err.message)
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+/**
+ * POST /api/trading/positions/:id/cancel
+ * Cancel the limit order and mark position as CANCELLED.
+ * Only works for PENDING_ENTRY positions.
+ */
+router.post('/positions/:id/cancel', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string)
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid position ID' })
+    }
+
+    const position = await prisma.position.findUnique({ where: { id } })
+    if (!position) {
+      return res.status(404).json({ error: 'Position not found' })
+    }
+    if (position.status !== 'PENDING_ENTRY') {
+      return res.status(400).json({ error: 'Position must be PENDING_ENTRY' })
+    }
+
+    const client = await createBybitClient()
+
+    // Cancel limit order on Bybit
+    try {
+      await client.cancelOrder({
+        category: 'linear',
+        symbol: position.symbol,
+        orderId: position.entryOrderId!,
+      })
+    } catch (cancelErr: any) {
+      console.warn('[Trading] Cancel order warning:', cancelErr.message)
+    }
+
+    // Mark position as CANCELLED
+    await prisma.position.update({
+      where: { id },
+      data: { status: 'CANCELLED', closedAt: new Date() },
+    })
+
+    await logOrderAction('ORDER_CANCELLED', {
+      positionId: id,
+      signalId: position.signalId || undefined,
+      details: { method: 'manual_cancel', symbol: position.symbol },
+    })
+
+    return res.json({ success: true })
+  } catch (err: any) {
+    console.error('[Trading] Cancel position error:', err.message)
     return res.status(500).json({ error: err.message })
   }
 })
