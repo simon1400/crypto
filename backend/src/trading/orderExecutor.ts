@@ -209,38 +209,64 @@ export class OrderExecutor {
       const tpDirection = side === 'Sell' ? 'ceil' : 'floor'
       const alignedPrice = alignToTickSize(takeProfits[i], tickSize, tpDirection)
 
-      const response = await this.client.submitOrder({
-        category: 'linear',
-        symbol,
-        side,
-        orderType: 'Limit',
-        qty,
-        price: alignedPrice,
-        timeInForce: 'GTC',
-        positionIdx: 0,
-        reduceOnly: true,
-        orderLinkId: `sig-${signalId}-tp${i + 1}`,
-      })
+      let lastError: Error | null = null
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const response = await this.client.submitOrder({
+            category: 'linear',
+            symbol,
+            side,
+            orderType: 'Limit',
+            qty,
+            price: alignedPrice,
+            timeInForce: 'GTC',
+            positionIdx: 0,
+            reduceOnly: true,
+            orderLinkId: `sig-${signalId}-tp${i + 1}`,
+          })
 
-      if (response.retCode !== 0) {
-        throw new Error(
-          `Failed to place TP${i + 1} order for ${symbol}: ${response.retMsg}`
-        )
+          if (response.retCode !== 0) {
+            throw new Error(`TP${i + 1}: ${response.retMsg}`)
+          }
+
+          orderIds.push(response.result.orderId)
+
+          await logOrderAction('TP_ORDER_PLACED', {
+            signalId,
+            details: {
+              symbol,
+              tpLevel: i + 1,
+              price: alignedPrice,
+              qty,
+              orderId: response.result.orderId,
+              orderLinkId: `sig-${signalId}-tp${i + 1}`,
+            },
+          })
+
+          lastError = null
+          break
+        } catch (err: any) {
+          lastError = err
+          console.error(`[OrderExecutor] TP${i + 1} attempt ${attempt}/3 failed: ${err.message}`)
+          if (attempt < 3) {
+            await new Promise(r => setTimeout(r, 500 * attempt))
+          }
+        }
       }
 
-      orderIds.push(response.result.orderId)
-
-      await logOrderAction('TP_ORDER_PLACED', {
-        signalId,
-        details: {
-          symbol,
-          tpLevel: i + 1,
-          price: alignedPrice,
-          qty,
-          orderId: response.result.orderId,
-          orderLinkId: `sig-${signalId}-tp${i + 1}`,
-        },
-      })
+      if (lastError) {
+        await logOrderAction('ERROR', {
+          signalId,
+          details: {
+            error: lastError.message,
+            action: `place_tp${i + 1}_failed_after_3_attempts`,
+            symbol,
+            price: alignedPrice,
+            qty,
+          },
+        })
+        // Continue to next TP -- do not throw
+      }
     }
 
     return orderIds
