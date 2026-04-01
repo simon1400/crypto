@@ -358,6 +358,52 @@ router.get('/stats', async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /api/trading/stats/coins
+ * Per-coin aggregated win rate and P&L statistics.
+ */
+router.get('/stats/coins', async (req: Request, res: Response) => {
+  try {
+    // Get all closed positions (win = realizedPnl > 0)
+    const positions = await prisma.position.findMany({
+      where: {
+        status: { in: ['CLOSED', 'SL_HIT', 'CLOSED_EXTERNAL'] },
+      },
+      select: {
+        symbol: true,
+        realizedPnl: true,
+      },
+    })
+
+    // Group by symbol
+    const byCoin: Record<string, { trades: number; wins: number; totalPnl: number }> = {}
+    for (const pos of positions) {
+      const coin = pos.symbol.replace('USDT', '')
+      if (!byCoin[coin]) byCoin[coin] = { trades: 0, wins: 0, totalPnl: 0 }
+      byCoin[coin].trades++
+      if (pos.realizedPnl > 0) byCoin[coin].wins++
+      byCoin[coin].totalPnl += pos.realizedPnl
+    }
+
+    // Format response
+    const data = Object.entries(byCoin)
+      .map(([coin, stats]) => ({
+        coin,
+        trades: stats.trades,
+        wins: stats.wins,
+        winRate: stats.trades > 0 ? parseFloat(((stats.wins / stats.trades) * 100).toFixed(1)) : 0,
+        avgPnl: stats.trades > 0 ? parseFloat((stats.totalPnl / stats.trades).toFixed(2)) : 0,
+        totalPnl: parseFloat(stats.totalPnl.toFixed(2)),
+      }))
+      .sort((a, b) => b.trades - a.trades) // Sort by most traded
+
+    return res.json({ data })
+  } catch (err: any) {
+    console.error('[Trading] Coin stats error:', err.message)
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+/**
  * POST /api/trading/positions/:id/market-entry
  * Cancel existing limit order and enter at market price.
  * Only works for PENDING_ENTRY positions.

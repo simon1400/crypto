@@ -604,3 +604,18 @@ export async function activateKillSwitch(): Promise<KillSwitchResponse> {
   }
   return res.json()
 }
+
+export interface CoinStat {
+  coin: string
+  trades: number
+  wins: number
+  winRate: number
+  avgPnl: number
+  totalPnl: number
+}
+
+export async function getCoinStats(): Promise<{ data: CoinStat[] }> {
+  const res = await fetch(`${BASE}/api/trading/stats/coins`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch coin stats')
+  return res.json()
+}

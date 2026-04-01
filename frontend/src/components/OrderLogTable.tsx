@@ -34,10 +34,9 @@ const ACTION_OPTIONS = [
 ]
 
 function actionBadgeColor(action: string): string {
-  if (action.includes('FILLED') || action.startsWith('TP')) return 'text-long bg-long/10'
-  if (action.includes('SL') || action.includes('CANCEL')) return 'text-short bg-short/10'
-  if (action === 'ERROR') return 'text-accent bg-accent/10'
-  if (action === 'KILL_SWITCH') return 'text-short bg-short/10'
+  if (action.startsWith('TP') || action === 'ORDER_FILLED') return 'text-long bg-long/10'
+  if (action === 'SL_TRIGGERED' || action === 'KILL_SWITCH' || action === 'ERROR') return 'text-short bg-short/10'
+  if (action === 'ORDER_CANCELLED') return 'text-accent bg-accent/10'
   return 'text-text-secondary bg-input'
 }
 
@@ -52,10 +51,40 @@ function formatDate(dateStr: string): string {
   })
 }
 
-function truncateDetails(details: any): string {
-  if (!details) return '-'
-  const str = typeof details === 'string' ? details : JSON.stringify(details)
-  return str.length > 60 ? str.slice(0, 60) + '...' : str
+function extractCoin(log: OrderLogEntry): string {
+  const d = log.details as any
+  if (!d) return '-'
+  if (d.symbol) return (d.symbol as string).replace('USDT', '')
+  return '-'
+}
+
+function extractSide(log: OrderLogEntry): string | null {
+  const d = log.details as any
+  if (!d?.side) return null
+  return d.side === 'Buy' ? 'LONG' : 'SHORT'
+}
+
+function extractPrice(log: OrderLogEntry): string {
+  const d = log.details as any
+  if (!d?.price) return '-'
+  const p = parseFloat(d.price)
+  if (p >= 1000) return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  if (p >= 1) return p.toFixed(4)
+  return p.toFixed(6)
+}
+
+function extractQty(log: OrderLogEntry): string {
+  const d = log.details as any
+  if (!d?.qty) return '-'
+  return String(d.qty)
+}
+
+function extractPnl(log: OrderLogEntry): { value: number; display: string } | null {
+  const d = log.details as any
+  if (d?.pnl === undefined || d?.pnl === null) return null
+  if (typeof d?.pnl !== 'number') return null
+  const prefix = d.pnl >= 0 ? '+' : ''
+  return { value: d.pnl, display: `${prefix}$${Math.abs(d.pnl).toFixed(2)}` }
 }
 
 export default function OrderLogTable({
@@ -130,9 +159,12 @@ export default function OrderLogTable({
               <tr className="text-text-secondary text-xs border-b border-input">
                 <th className="text-left py-2 px-3 font-medium">Date/Time</th>
                 <th className="text-left py-2 px-3 font-medium">Action</th>
-                <th className="text-left py-2 px-3 font-medium">Position</th>
-                <th className="text-left py-2 px-3 font-medium">Signal</th>
-                <th className="text-left py-2 px-3 font-medium">Details</th>
+                <th className="text-left py-2 px-3 font-medium">Coin</th>
+                <th className="text-left py-2 px-3 font-medium">Side</th>
+                <th className="text-right py-2 px-3 font-medium">Price</th>
+                <th className="text-right py-2 px-3 font-medium">Qty</th>
+                <th className="text-right py-2 px-3 font-medium">P&L</th>
+                <th className="text-right py-2 px-3 font-medium">Signal</th>
               </tr>
             </thead>
             <tbody>
@@ -146,14 +178,31 @@ export default function OrderLogTable({
                       {log.action}
                     </span>
                   </td>
-                  <td className="py-2 px-3 font-mono text-text-primary">
-                    {log.positionId ?? '-'}
+                  <td className="py-2 px-3 font-mono text-text-primary text-sm">
+                    {extractCoin(log)}
                   </td>
-                  <td className="py-2 px-3 font-mono text-text-primary">
+                  <td className="py-2 px-3">
+                    {(() => {
+                      const side = extractSide(log)
+                      if (!side) return <span className="text-text-secondary">-</span>
+                      return <span className={side === 'LONG' ? 'text-long' : 'text-short'}>{side}</span>
+                    })()}
+                  </td>
+                  <td className="py-2 px-3 font-mono text-text-primary text-sm text-right">
+                    {extractPrice(log)}
+                  </td>
+                  <td className="py-2 px-3 font-mono text-text-secondary text-sm text-right">
+                    {extractQty(log)}
+                  </td>
+                  <td className="py-2 px-3 font-mono text-sm text-right">
+                    {(() => {
+                      const pnl = extractPnl(log)
+                      if (!pnl) return <span className="text-text-secondary">-</span>
+                      return <span className={pnl.value >= 0 ? 'text-long' : 'text-short'}>{pnl.display}</span>
+                    })()}
+                  </td>
+                  <td className="py-2 px-3 font-mono text-text-secondary text-sm text-right">
                     {log.signalId ?? '-'}
-                  </td>
-                  <td className="py-2 px-3 text-text-secondary text-xs max-w-xs truncate">
-                    {truncateDetails(log.details)}
                   </td>
                 </tr>
               ))}
