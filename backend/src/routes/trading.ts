@@ -186,6 +186,27 @@ router.get('/positions/live', async (req: Request, res: Response) => {
         }
       }
 
+      // For external positions, find TP/SL from conditional orders
+      let resolvedTPs: number[] = []
+      let resolvedSL = parseFloat(bp.stopLoss || '0')
+      if (!dbPos) {
+        const tpOrders = allOpenOrders.filter(
+          (o: any) => o.symbol === symbol && (o.stopOrderType === 'TakeProfit' || o.stopOrderType === 'PartialTakeProfit')
+        )
+        const slOrder = allOpenOrders.find(
+          (o: any) => o.symbol === symbol && o.stopOrderType === 'StopLoss'
+        )
+        if (slOrder) resolvedSL = parseFloat(slOrder.triggerPrice || '0')
+        if (tpOrders.length > 0) {
+          resolvedTPs = tpOrders
+            .map((o: any) => parseFloat(o.triggerPrice || o.price || '0'))
+            .filter((p: number) => p > 0)
+            .sort((a: number, b: number) => type === 'LONG' ? a - b : b - a)
+        } else if (parseFloat(bp.takeProfit || '0') > 0) {
+          resolvedTPs = [parseFloat(bp.takeProfit)]
+        }
+      }
+
       // Build response object — Bybit data for dynamic fields per D-04
       result.push({
         id: dbPos ? dbPos.id : -(result.length + 1),
@@ -195,20 +216,8 @@ router.get('/positions/live', async (req: Request, res: Response) => {
         entryPrice: parseFloat(bp.avgPrice || bp.entryPrice || '0'),
         qty: parseFloat(bp.size || '0'),
         margin: parseFloat(bp.positionIM || '0'),
-        stopLoss: dbPos ? dbPos.stopLoss : parseFloat(bp.stopLoss || '0'),
-        takeProfits: dbPos ? dbPos.takeProfits : (() => {
-          // For external positions, find reduceOnly limit orders as TP levels
-          const tpOrders = allOpenOrders.filter(
-            (o: any) => o.symbol === symbol && String(o.reduceOnly) === 'true' && o.orderType === 'Limit'
-          )
-          if (tpOrders.length > 0) {
-            return tpOrders
-              .map((o: any) => parseFloat(o.price || '0'))
-              .sort((a: number, b: number) => type === 'LONG' ? a - b : b - a)
-          }
-          // Fallback to single TP from position
-          return parseFloat(bp.takeProfit || '0') > 0 ? [parseFloat(bp.takeProfit)] : []
-        })(),
+        stopLoss: dbPos ? dbPos.stopLoss : resolvedSL,
+        takeProfits: dbPos ? dbPos.takeProfits : resolvedTPs,
         tpOrderIds: dbPos ? dbPos.tpOrderIds : [],
         closedPct: dbPos ? dbPos.closedPct : 0,
         realizedPnl: dbPos ? dbPos.realizedPnl : 0,
