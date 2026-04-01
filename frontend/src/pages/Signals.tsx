@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Signal, SignalsResponse, getSignals, syncSignals, getSignalPrices } from '../api/client'
+import { useState, useEffect } from 'react'
+import { Signal, SignalsResponse, getSignals, syncSignals, getSignalPrices, getSettings, saveSettings, executeSignal } from '../api/client'
 import SignalTable from '../components/SignalTable'
 import SignalBadge from '../components/SignalBadge'
 import SignalChart from '../components/SignalChart'
@@ -499,6 +499,29 @@ export default function Signals() {
   const [selected, setSelected] = useState<Signal | null>(null)
   const [prices, setPrices] = useState<Record<string, number | null>>({})
   const [syncedDays, setSyncedDays] = useState<number | null>(null)
+  const [tradingMode, setTradingMode] = useState<'manual' | 'auto'>('manual')
+
+  useEffect(() => {
+    getSettings().then(s => setTradingMode(s.tradingMode)).catch(() => {})
+  }, [])
+
+  const handleModeToggle = async (mode: 'manual' | 'auto') => {
+    try {
+      await saveSettings({ tradingMode: mode })
+      setTradingMode(mode)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update mode')
+    }
+  }
+
+  const handleExecuteSignal = async (signal: Signal) => {
+    try {
+      await executeSignal(signal.id)
+      alert(`Сделка по ${signal.coin} отправлена на Bybit`)
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Execution failed')
+    }
+  }
 
   const fetchPrices = async (signals: Signal[]) => {
     const coins = [...new Set(signals.map(s => s.coin))]
@@ -818,7 +841,15 @@ export default function Signals() {
       {/* Table */}
       {data && !loading && !syncing && (
         <div className="bg-card rounded-xl overflow-hidden">
-          <SignalTable signals={data.data} prices={prices} onSelect={setSelected} showChannel={channel === 'Near512-All'} />
+          <SignalTable
+            signals={data.data}
+            prices={prices}
+            onSelect={setSelected}
+            showChannel={channel === 'Near512-All'}
+            tradingMode={tradingMode}
+            onModeToggle={handleModeToggle}
+            onExecuteSignal={handleExecuteSignal}
+          />
         </div>
       )}
 
