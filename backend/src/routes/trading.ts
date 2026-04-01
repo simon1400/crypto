@@ -199,7 +199,7 @@ router.get('/positions/live', async (req: Request, res: Response) => {
         takeProfits: dbPos ? dbPos.takeProfits : (() => {
           // For external positions, find reduceOnly limit orders as TP levels
           const tpOrders = allOpenOrders.filter(
-            (o: any) => o.symbol === symbol && o.reduceOnly === true && o.orderType === 'Limit'
+            (o: any) => o.symbol === symbol && String(o.reduceOnly) === 'true' && o.orderType === 'Limit'
           )
           if (tpOrders.length > 0) {
             return tpOrders
