@@ -1,0 +1,185 @@
+import { NewMessage, type NewMessageEvent } from 'telegram/events'
+import { prisma } from '../db/prisma'
+import { getTelegramClient } from '../services/telegram'
+import { parseSignalMessage, extractCategory } from '../services/signalParser'
+import { checkDailyLoss } from './dailyLossGuard'
+import { executeSignalOrder } from './tradingService'
+import { logOrderAction } from './orderLogger'
+
+const EVENING_TRADER_PEER = 'EveningTrader'
+const NEAR512_PEER = '-1002726338238'
+const NEAR512_TOPIC_MAP: Record<number, string> = {
+  6: 'Near512-LowCap',
+  8: 'Near512-MidHigh',
+  18: 'Near512-Spot',
+}
+
+let isListenerActive = false
+let handlerRef: ((event: NewMessageEvent) => Promise<void>) | null = null
+let isDailyLimitPaused = false
+
+/**
+ * Handle an incoming Telegram message for auto-trading.
+ * Exported for testability.
+ */
+export async function handleAutoMessage(event: NewMessageEvent): Promise<void> {
+  try {
+    const msg = event.message
+    const text = msg.message
+    if (!text) return
+
+    const chatId = msg.chatId?.toString() ?? ''
+    const messageId = msg.id
+    const topicId = (msg as any).replyTo?.replyToMsgId as number | undefined
+
+    // Determine channel name
+    let channel: string | null = null
+    if (chatId === NEAR512_PEER || chatId === `-${NEAR512_PEER.replace('-', '')}`) {
+      // Near512 group - resolve topic
+      if (topicId && NEAR512_TOPIC_MAP[topicId]) {
+        channel = NEAR512_TOPIC_MAP[topicId]
+      } else {
+        return // Unknown topic in Near512 group
+      }
+    } else {
+      // Check if it's EveningTrader (peer name won't match chatId directly,
+      // but the event handler filters to the correct chats, so if it's not Near512,
+      // it must be EveningTrader)
+      channel = 'EveningTrader'
+    }
+
+    if (!channel) return
+
+    // Parse signal
+    const parsed = parseSignalMessage(text)
+    if (!parsed) return
+
+    // Load BotConfig
+    const config = await prisma.botConfig.findUnique({ where: { id: 1 } })
+    if (!config || config.tradingMode !== 'auto') return
+
+    // Channel/topic filter
+    if (channel.startsWith('Near512')) {
+      const enabledTopics = (config.near512Topics as string[]) || []
+      if (!enabledTopics.includes(channel)) {
+        await logOrderAction('AUTO_SKIPPED', {
+          details: { channel, reason: 'topic_not_enabled' },
+        })
+        return
+      }
+    } else if (channel === 'EveningTrader') {
+      const category = extractCategory(text)
+      const enabledCategories = (config.eveningTraderCategories as string[]) || []
+      if (category && enabledCategories.length > 0 && !enabledCategories.includes(category)) {
+        await logOrderAction('AUTO_SKIPPED', {
+          details: { channel, category, reason: 'category_not_enabled' },
+        })
+        return
+      }
+    }
+
+    // Daily loss check
+    if (isDailyLimitPaused) {
+      const recheck = await checkDailyLoss()
+      if (recheck.allowed) {
+        isDailyLimitPaused = false
+      } else {
+        return
+      }
+    } else {
+      const lossCheck = await checkDailyLoss()
+      if (!lossCheck.allowed) {
+        isDailyLimitPaused = true
+        await logOrderAction('DAILY_LIMIT_HIT', {
+          details: {
+            realizedLossToday: lossCheck.realizedLossToday,
+            prospectiveWorstCase: lossCheck.prospectiveWorstCase,
+            totalWorstCase: lossCheck.totalWorstCase,
+            limitAmount: lossCheck.limitAmount,
+            reason: lossCheck.reason,
+          },
+        })
+        return
+      }
+    }
+
+    // Save signal to DB
+    let signal: any
+    try {
+      signal = await prisma.signal.create({
+        data: {
+          channel,
+          messageId,
+          publishedAt: new Date(),
+          type: parsed.type,
+          coin: parsed.coin,
+          leverage: parsed.leverage,
+          entryMin: parsed.entryMin,
+          entryMax: parsed.entryMax,
+          stopLoss: parsed.stopLoss,
+          takeProfits: parsed.takeProfits,
+          category: parsed.category ?? null,
+        },
+      })
+    } catch (err: any) {
+      // Unique constraint violation (duplicate signal)
+      if (err.code === 'P2002') return
+      throw err
+    }
+
+    // Execute order
+    await executeSignalOrder(signal.id)
+    await logOrderAction('AUTO_EXECUTED', {
+      signalId: signal.id,
+      details: { channel, coin: parsed.coin, type: parsed.type },
+    })
+  } catch (err: any) {
+    console.error('[AutoListener] Error:', err.message)
+    await logOrderAction('ERROR', {
+      details: { error: err.message, context: 'auto_listener' },
+    }).catch(() => {})
+  }
+}
+
+/**
+ * Start the auto listener for Telegram signals.
+ * Subscribes to EveningTrader and Near512 channels.
+ */
+export async function startAutoListener(): Promise<void> {
+  if (isListenerActive) return
+
+  const client = await getTelegramClient()
+  handlerRef = handleAutoMessage
+  client.addEventHandler(handlerRef, new NewMessage({ chats: [EVENING_TRADER_PEER, NEAR512_PEER] }))
+  isListenerActive = true
+  console.log('[AutoListener] Started -- listening for signals')
+}
+
+/**
+ * Stop the auto listener.
+ */
+export async function stopAutoListener(): Promise<void> {
+  if (!isListenerActive || !handlerRef) return
+
+  const client = await getTelegramClient()
+  client.removeEventHandler(handlerRef, new NewMessage({ chats: [EVENING_TRADER_PEER, NEAR512_PEER] }))
+  isListenerActive = false
+  handlerRef = null
+  console.log('[AutoListener] Stopped')
+}
+
+/**
+ * Check if the auto listener is currently active.
+ */
+export function isAutoListenerActive(): boolean {
+  return isListenerActive
+}
+
+/**
+ * Reset internal state for testing purposes.
+ */
+export function _resetForTests(): void {
+  isListenerActive = false
+  handlerRef = null
+  isDailyLimitPaused = false
+}

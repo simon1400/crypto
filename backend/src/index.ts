@@ -5,9 +5,14 @@ import { authMiddleware } from './middleware/auth'
 import marketRouter from './routes/market'
 import signalsRouter from './routes/signals'
 import tradesRouter from './routes/trades'
+import tradingRouter from './routes/trading'
 import { trackActiveSignals } from './services/signalTracker'
 import scannerRouter from './routes/scanner'
+import settingsRouter from './routes/settings'
 import { expireOldSignals } from './scanner/coinScanner'
+import { startWsListener } from './trading/wsListener'
+import { startTtlChecker } from './trading/tradingService'
+import { reconcilePositions } from './trading/positionManager'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -31,6 +36,8 @@ app.use('/api/market', marketRouter)
 app.use('/api/signals', signalsRouter)
 app.use('/api/trades', tradesRouter)
 app.use('/api/scanner', scannerRouter)
+app.use('/api/settings', settingsRouter)
+app.use('/api/trading', tradingRouter)
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
@@ -44,6 +51,19 @@ app.listen(PORT, () => {
   setInterval(() => {
     expireOldSignals().catch(err => console.error('[Scanner] Expire error:', err))
   }, 30 * 60 * 1000)
+
+  // Start WebSocket listener for real-time Bybit events
+  startWsListener().catch(err =>
+    console.error('[WsListener] Failed to start:', err.message)
+  )
+
+  // Start TTL checker for expired pending orders (every 60s)
+  startTtlChecker()
+
+  // Reconcile positions with Bybit every 60 seconds via REST polling
+  setInterval(() => {
+    reconcilePositions().catch(err => console.error('[PositionManager] Reconcile error:', err))
+  }, 60 * 1000)
 
   // Auto-scan disabled — manual scan only via POST /api/scanner/scan
 })
