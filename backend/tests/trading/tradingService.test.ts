@@ -1,5 +1,37 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+// Use vi.hoisted to ensure mock variables are available when vi.mock factories run
+const { mockPrismaPosition, mockPrismaSignal, mockPrismaBotConfig,
+        mockBybitClient, mockExecutor } = vi.hoisted(() => ({
+  mockPrismaPosition: {
+    findFirst: vi.fn(),
+    findMany: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    count: vi.fn(),
+  },
+  mockPrismaSignal: {
+    findUnique: vi.fn(),
+  },
+  mockPrismaBotConfig: {
+    findUnique: vi.fn(),
+  },
+  mockBybitClient: {
+    getWalletBalance: vi.fn(),
+    cancelOrder: vi.fn(),
+    setLeverage: vi.fn(),
+    submitOrder: vi.fn(),
+    getTickers: vi.fn(),
+  },
+  mockExecutor: {
+    executeInQueue: vi.fn((fn: () => Promise<any>) => fn()),
+    setLeverage: vi.fn(),
+    determineEntryType: vi.fn(),
+    placeEntryWithSl: vi.fn(),
+    placeTpOrders: vi.fn(),
+  },
+}))
+
 // Mock p-queue before imports
 vi.mock('p-queue', () => {
   class MockPQueue {
@@ -10,20 +42,6 @@ vi.mock('p-queue', () => {
   return { default: MockPQueue }
 })
 
-// Mock prisma
-const mockPrismaPosition = {
-  findFirst: vi.fn(),
-  findMany: vi.fn(),
-  create: vi.fn(),
-  update: vi.fn(),
-  count: vi.fn(),
-}
-const mockPrismaSignal = {
-  findUnique: vi.fn(),
-}
-const mockPrismaBotConfig = {
-  findUnique: vi.fn(),
-}
 vi.mock('../../src/db/prisma', () => ({
   prisma: {
     position: mockPrismaPosition,
@@ -32,31 +50,14 @@ vi.mock('../../src/db/prisma', () => ({
   },
 }))
 
-// Mock bybit client
-const mockBybitClient = {
-  getWalletBalance: vi.fn(),
-  cancelOrder: vi.fn(),
-  setLeverage: vi.fn(),
-  submitOrder: vi.fn(),
-  getTickers: vi.fn(),
-}
 vi.mock('../../src/services/bybit', () => ({
   createBybitClient: vi.fn(() => mockBybitClient),
 }))
 
-// Mock orderExecutor
-const mockExecutor = {
-  executeInQueue: vi.fn((fn: () => Promise<any>) => fn()),
-  setLeverage: vi.fn(),
-  determineEntryType: vi.fn(),
-  placeEntryWithSl: vi.fn(),
-  placeTpOrders: vi.fn(),
-}
 vi.mock('../../src/trading/orderExecutor', () => ({
   createOrderExecutor: vi.fn(() => mockExecutor),
 }))
 
-// Mock instrumentCache
 vi.mock('../../src/trading/instrumentCache', () => ({
   getInstrumentInfo: vi.fn(() =>
     Promise.resolve({
@@ -68,13 +69,11 @@ vi.mock('../../src/trading/instrumentCache', () => ({
   ),
 }))
 
-// Mock positionSizer
 vi.mock('../../src/trading/positionSizer', () => ({
   calculatePositionQty: vi.fn(() => '0.01'),
   alignToTickSize: vi.fn((price: number) => String(price)),
 }))
 
-// Mock orderLogger
 vi.mock('../../src/trading/orderLogger', () => ({
   logOrderAction: vi.fn(),
 }))
@@ -133,6 +132,7 @@ describe('TradingService', () => {
       },
     })
 
+    mockExecutor.executeInQueue.mockImplementation((fn: () => Promise<any>) => fn())
     mockExecutor.setLeverage.mockResolvedValue(undefined)
     mockExecutor.determineEntryType.mockResolvedValue({ orderType: 'Market' })
     mockExecutor.placeEntryWithSl.mockResolvedValue({
