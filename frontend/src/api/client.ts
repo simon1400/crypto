@@ -399,6 +399,58 @@ export async function getBalance(): Promise<{ balance: number | null; error?: st
   return res.json()
 }
 
+// ===================== Ticker Mappings =====================
+
+export interface TickerMapping {
+  id: number
+  fromTicker: string
+  toSymbol: string
+  priceMultiplier: number
+  notes: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export async function getTickerMappings(): Promise<TickerMapping[]> {
+  const res = await fetch(`${BASE}/api/settings/ticker-mappings`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch ticker mappings')
+  return res.json()
+}
+
+export async function createTickerMapping(data: { fromTicker: string, toSymbol: string, priceMultiplier: number, notes?: string }): Promise<TickerMapping> {
+  const res = await fetch(`${BASE}/api/settings/ticker-mappings`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function updateTickerMapping(id: number, data: Partial<{ fromTicker: string, toSymbol: string, priceMultiplier: number, notes: string }>): Promise<TickerMapping> {
+  const res = await fetch(`${BASE}/api/settings/ticker-mappings/${id}`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteTickerMapping(id: number): Promise<void> {
+  const res = await fetch(`${BASE}/api/settings/ticker-mappings/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to delete ticker mapping')
+}
+
 export async function executeSignal(signalId: number): Promise<{ success: boolean; positionId?: number; error?: string }> {
   const res = await fetch(`${BASE}/api/trading/execute`, {
     method: 'POST',

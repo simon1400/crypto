@@ -3,6 +3,7 @@ import { prisma } from '../db/prisma'
 import { encrypt, decrypt, maskKey } from '../services/encryption'
 import { createBybitClient, validateBybitKeys } from '../services/bybit'
 import { startAutoListener, stopAutoListener } from '../trading/autoListener'
+import { getInstrumentInfo } from '../trading/instrumentCache'
 
 const router = Router()
 
@@ -149,6 +150,101 @@ router.get('/balance', async (_req, res) => {
     }
     console.error('[Settings] Balance error:', err)
     res.status(502).json({ error: `Failed to fetch balance: ${err.message}` })
+  }
+})
+
+// GET /api/settings/ticker-mappings
+router.get('/ticker-mappings', async (_req, res) => {
+  try {
+    const mappings = await prisma.tickerMapping.findMany({
+      orderBy: { createdAt: 'asc' },
+    })
+    res.json(mappings)
+  } catch (err: any) {
+    console.error('[Settings] Ticker mappings GET error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/settings/ticker-mappings
+router.post('/ticker-mappings', async (req, res) => {
+  try {
+    const { fromTicker, toSymbol, priceMultiplier, notes } = req.body
+
+    if (!fromTicker || !toSymbol) {
+      return res.status(400).json({ error: 'fromTicker and toSymbol are required' })
+    }
+
+    // Validate symbol exists on Bybit (per D-06)
+    try {
+      const client = await createBybitClient()
+      await getInstrumentInfo(client, toSymbol.toUpperCase())
+    } catch {
+      return res.status(400).json({ error: `Symbol ${toSymbol} not found on Bybit` })
+    }
+
+    const mapping = await prisma.tickerMapping.create({
+      data: {
+        fromTicker: fromTicker.toUpperCase(),
+        toSymbol: toSymbol.toUpperCase(),
+        priceMultiplier: priceMultiplier || 1,
+        notes: notes || null,
+      },
+    })
+    res.json(mapping)
+  } catch (err: any) {
+    if (err.code === 'P2002') {
+      return res.status(400).json({ error: `Mapping for ${req.body.fromTicker} already exists` })
+    }
+    console.error('[Settings] Ticker mapping POST error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PUT /api/settings/ticker-mappings/:id
+router.put('/ticker-mappings/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id)
+    const { fromTicker, toSymbol, priceMultiplier, notes } = req.body
+
+    // Validate symbol if changed (per D-06)
+    if (toSymbol) {
+      try {
+        const client = await createBybitClient()
+        await getInstrumentInfo(client, toSymbol.toUpperCase())
+      } catch {
+        return res.status(400).json({ error: `Symbol ${toSymbol} not found on Bybit` })
+      }
+    }
+
+    const mapping = await prisma.tickerMapping.update({
+      where: { id },
+      data: {
+        ...(fromTicker && { fromTicker: fromTicker.toUpperCase() }),
+        ...(toSymbol && { toSymbol: toSymbol.toUpperCase() }),
+        ...(priceMultiplier !== undefined && { priceMultiplier }),
+        ...(notes !== undefined && { notes: notes || null }),
+      },
+    })
+    res.json(mapping)
+  } catch (err: any) {
+    if (err.code === 'P2002') {
+      return res.status(400).json({ error: `Mapping for ${req.body.fromTicker} already exists` })
+    }
+    console.error('[Settings] Ticker mapping PUT error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/settings/ticker-mappings/:id
+router.delete('/ticker-mappings/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id)
+    await prisma.tickerMapping.delete({ where: { id } })
+    res.json({ success: true })
+  } catch (err: any) {
+    console.error('[Settings] Ticker mapping DELETE error:', err)
+    res.status(500).json({ error: err.message })
   }
 })
 
