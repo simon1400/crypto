@@ -145,6 +145,16 @@ router.get('/positions/live', async (req: Request, res: Response) => {
       (bp: any) => parseFloat(bp.size || '0') > 0
     )
 
+    // Fetch all open orders to find TP (reduceOnly limit) orders per symbol
+    let allOpenOrders: any[] = []
+    try {
+      const client = await createBybitClient()
+      const ordersResp = await client.getActiveOrders({ category: 'linear', settleCoin: 'USDT', limit: 50 })
+      allOpenOrders = ordersResp.result?.list || []
+    } catch {
+      // Non-critical — positions still show without detailed TPs
+    }
+
     const result: any[] = []
     const matchedDbIds = new Set<number>()
 
@@ -185,7 +195,19 @@ router.get('/positions/live', async (req: Request, res: Response) => {
         qty: parseFloat(bp.size || '0'),
         margin: parseFloat(bp.positionIM || '0'),
         stopLoss: dbPos ? dbPos.stopLoss : parseFloat(bp.stopLoss || '0'),
-        takeProfits: dbPos ? dbPos.takeProfits : (parseFloat(bp.takeProfit || '0') > 0 ? [parseFloat(bp.takeProfit)] : []),
+        takeProfits: dbPos ? dbPos.takeProfits : (() => {
+          // For external positions, find reduceOnly limit orders as TP levels
+          const tpOrders = allOpenOrders.filter(
+            (o: any) => o.symbol === symbol && o.reduceOnly === true && o.orderType === 'Limit'
+          )
+          if (tpOrders.length > 0) {
+            return tpOrders
+              .map((o: any) => parseFloat(o.price || '0'))
+              .sort((a: number, b: number) => type === 'LONG' ? a - b : b - a)
+          }
+          // Fallback to single TP from position
+          return parseFloat(bp.takeProfit || '0') > 0 ? [parseFloat(bp.takeProfit)] : []
+        })(),
         tpOrderIds: dbPos ? dbPos.tpOrderIds : [],
         closedPct: dbPos ? dbPos.closedPct : 0,
         realizedPnl: dbPos ? dbPos.realizedPnl : 0,
