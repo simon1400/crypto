@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { getSettings, saveSettings, getBalance, SettingsResponse, getTickerMappings, createTickerMapping, deleteTickerMapping, TickerMapping } from '../api/client'
+import { getSettings, saveSettings, getBalance, testNotification, SettingsResponse, getTickerMappings, createTickerMapping, deleteTickerMapping, TickerMapping } from '../api/client'
 
 const NEAR512_TOPICS = [
   { key: 'Near512-LowCap', label: 'Low Cap' },
@@ -32,6 +32,10 @@ export default function Settings() {
   const [mappingsLoading, setMappingsLoading] = useState(true)
   const [newMapping, setNewMapping] = useState({ fromTicker: '', toSymbol: '', priceMultiplier: 1, notes: '' })
   const [showAddMapping, setShowAddMapping] = useState(false)
+  const [telegramBotToken, setTelegramBotToken] = useState('')
+  const [telegramChatId, setTelegramChatId] = useState('')
+  const [telegramEnabled, setTelegramEnabled] = useState(false)
+  const [testingNotif, setTestingNotif] = useState(false)
 
   useEffect(() => {
     getSettings()
@@ -44,6 +48,8 @@ export default function Settings() {
         setTradingMode(data.tradingMode)
         setNear512Topics(data.near512Topics)
         setEveningTraderCategories(data.eveningTraderCategories)
+        setTelegramEnabled(data.telegramEnabled ?? false)
+        setTelegramChatId(data.telegramChatId ?? '')
         if (data.hasKeys && data.balance) {
           setBalance(data.balance != null ? String(data.balance) : null)
         }
@@ -104,6 +110,21 @@ export default function Settings() {
     }
   }
 
+  async function handleTestNotification() {
+    setTestingNotif(true)
+    try {
+      await testNotification({
+        telegramBotToken: telegramBotToken || undefined,
+        telegramChatId: telegramChatId || undefined,
+      })
+      showToast('Test notification sent!', 'success')
+    } catch (err: any) {
+      showToast(err.message || 'Failed to send test', 'error')
+    } finally {
+      setTestingNotif(false)
+    }
+  }
+
   async function handleSave() {
     // Client-side validation
     if (positionSizePct < 1 || positionSizePct > 50) {
@@ -131,6 +152,9 @@ export default function Settings() {
         tradingMode,
         near512Topics,
         eveningTraderCategories,
+        telegramBotToken: telegramBotToken || null,
+        telegramChatId: telegramChatId || null,
+        telegramEnabled,
       }
       const result = await saveSettings(body)
       setSettings(result)
@@ -538,6 +562,86 @@ export default function Settings() {
               </table>
             </div>
           )}
+        </section>
+
+        {/* Section 5: Telegram Notifications */}
+        <section className="bg-card rounded-xl p-6">
+          <h2 className="text-lg font-semibold text-text-primary mb-6">Telegram Notifications</h2>
+
+          <p className="text-sm text-text-secondary mb-4">
+            Get notified about trades, TP/SL hits, and system events via Telegram bot.
+            Create a bot via @BotFather, get your chat ID from @userinfobot.
+          </p>
+
+          <div className="space-y-4">
+            {/* Enable toggle */}
+            <div>
+              <label className="text-sm font-medium text-text-primary mb-1.5 block">
+                Notifications
+              </label>
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-text-secondary">Off</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={telegramEnabled}
+                  onClick={() => setTelegramEnabled(!telegramEnabled)}
+                  className={`relative w-11 h-6 rounded-full transition-colors ${
+                    telegramEnabled ? 'bg-accent' : 'bg-input'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                      telegramEnabled ? 'translate-x-5' : ''
+                    }`}
+                  />
+                </button>
+                <span className="text-sm text-text-secondary">On</span>
+              </div>
+            </div>
+
+            {/* Bot Token */}
+            <div>
+              <label htmlFor="telegramBotToken" className="text-sm font-medium text-text-primary mb-1.5 block">
+                Bot Token
+              </label>
+              <input
+                id="telegramBotToken"
+                type="text"
+                value={telegramBotToken}
+                onChange={(e) => setTelegramBotToken(e.target.value)}
+                placeholder={settings?.telegramBotToken || 'Enter Bot Token from @BotFather'}
+                className="bg-input border border-input rounded-lg px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-secondary w-full focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+              />
+            </div>
+
+            {/* Chat ID */}
+            <div>
+              <label htmlFor="telegramChatId" className="text-sm font-medium text-text-primary mb-1.5 block">
+                Chat ID
+              </label>
+              <input
+                id="telegramChatId"
+                type="text"
+                value={telegramChatId}
+                onChange={(e) => setTelegramChatId(e.target.value)}
+                placeholder={settings?.telegramChatId || 'Enter Chat ID from @userinfobot'}
+                className="bg-input border border-input rounded-lg px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-secondary w-full focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+              />
+            </div>
+
+            {/* Test button */}
+            <button
+              type="button"
+              onClick={handleTestNotification}
+              disabled={testingNotif}
+              className={`bg-input border border-accent text-accent px-4 py-2 rounded-lg text-sm font-medium hover:bg-accent/10 transition-colors ${
+                testingNotif ? 'opacity-50 cursor-not-allowed' : ''
+              }`}
+            >
+              {testingNotif ? 'Sending...' : 'Send Test Notification'}
+            </button>
+          </div>
         </section>
 
         {/* Save Button */}

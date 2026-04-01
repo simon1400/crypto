@@ -369,6 +369,9 @@ export interface SettingsResponse {
   orderTtlMinutes: number
   near512Topics: string[]
   eveningTraderCategories: string[]
+  telegramBotToken: string | null
+  telegramChatId: string | null
+  telegramEnabled: boolean
   hasKeys: boolean
   balance: number | null
   isConnected: boolean
@@ -396,6 +399,19 @@ export async function saveSettings(data: Partial<SettingsResponse>): Promise<Set
 export async function getBalance(): Promise<{ balance: number | null; error?: string }> {
   const res = await fetch(`${BASE}/api/settings/balance`, { headers: getHeaders() })
   if (!res.ok) return { balance: null, error: 'Failed to fetch balance' }
+  return res.json()
+}
+
+export async function testNotification(data?: { telegramBotToken?: string, telegramChatId?: string }): Promise<{ success: boolean; error?: string }> {
+  const res = await fetch(`${BASE}/api/settings/test-notification`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(data || {}),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
   return res.json()
 }
 
