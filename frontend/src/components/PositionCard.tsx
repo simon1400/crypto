@@ -21,6 +21,12 @@ function formatPnl(value: number): string {
   return `${prefix}$${Math.abs(value).toFixed(2)}`
 }
 
+const originColors: Record<string, { label: string; bg: string; text: string }> = {
+  'Auto': { label: 'Auto', bg: 'bg-accent/10', text: 'text-accent' },
+  'Bybit': { label: 'Bybit', bg: 'bg-neutral/10', text: 'text-neutral' },
+  'Auto (Modified)': { label: 'Modified', bg: 'bg-yellow-500/10', text: 'text-yellow-500' },
+}
+
 const statusLabels: Record<string, { label: string; color: string }> = {
   OPEN: { label: 'OPEN', color: 'text-long bg-long/10' },
   PARTIALLY_CLOSED: { label: 'PARTIAL', color: 'text-accent bg-accent/10' },
@@ -47,10 +53,17 @@ export default function PositionCard({
 
   return (
     <div className="bg-card rounded-xl p-5 relative">
-      {/* Status badge */}
-      <span className={`absolute top-4 right-4 px-2 py-0.5 rounded text-xs font-medium ${statusInfo.color}`}>
-        {statusInfo.label}
-      </span>
+      {/* Status + origin badges */}
+      <div className="absolute top-4 right-4 flex items-center gap-1.5">
+        {position.origin && position.origin !== 'Auto' && (
+          <span className={`px-2 py-0.5 rounded text-xs font-medium ${originColors[position.origin]?.bg} ${originColors[position.origin]?.text}`}>
+            {originColors[position.origin]?.label}
+          </span>
+        )}
+        <span className={`px-2 py-0.5 rounded text-xs font-medium ${statusInfo.color}`}>
+          {statusInfo.label}
+        </span>
+      </div>
 
       {/* Top row: coin, direction, leverage */}
       <div className="flex items-center gap-3 mb-4">
@@ -83,7 +96,7 @@ export default function PositionCard({
       </div>
 
       {/* Metrics grid */}
-      <div className="grid grid-cols-2 gap-3 mb-4 text-sm">
+      <div className={`grid grid-cols-2 gap-3 mb-4 text-sm`}>
         <div>
           <div className="text-text-secondary text-xs mb-0.5">Entry Price</div>
           <div className="font-mono text-text-primary">{formatPrice(position.entryPrice)}</div>
@@ -92,22 +105,27 @@ export default function PositionCard({
           <div className="text-text-secondary text-xs mb-0.5">Mark Price</div>
           <div className="font-mono text-text-primary">{formatPrice(position.markPrice)}</div>
         </div>
-        <div>
-          <div className="text-text-secondary text-xs mb-0.5">Stop Loss</div>
-          <div className="font-mono text-short">{formatPrice(position.stopLoss)}</div>
-        </div>
-        <div>
-          <div className="text-text-secondary text-xs mb-0.5">Take Profits</div>
-          <div className="font-mono text-long text-xs">
-            {position.takeProfits.length > 0
-              ? position.takeProfits.map((tp, i) => (
-                  <span key={i} className={i < Math.floor(position.closedPct / (100 / position.takeProfits.length)) ? 'line-through opacity-50' : ''}>
-                    {formatPrice(tp)}{i < position.takeProfits.length - 1 ? ', ' : ''}
-                  </span>
-                ))
-              : '-'}
-          </div>
-        </div>
+        {/* Only show SL/TP for positions that have them (not external Bybit positions) */}
+        {(position.stopLoss > 0 || position.takeProfits.length > 0) && (
+          <>
+            <div>
+              <div className="text-text-secondary text-xs mb-0.5">Stop Loss</div>
+              <div className="font-mono text-short">{formatPrice(position.stopLoss)}</div>
+            </div>
+            <div>
+              <div className="text-text-secondary text-xs mb-0.5">Take Profits</div>
+              <div className="font-mono text-long text-xs">
+                {position.takeProfits.length > 0
+                  ? position.takeProfits.map((tp, i) => (
+                      <span key={i} className={i < Math.floor(position.closedPct / (100 / position.takeProfits.length)) ? 'line-through opacity-50' : ''}>
+                        {formatPrice(tp)}{i < position.takeProfits.length - 1 ? ', ' : ''}
+                      </span>
+                    ))
+                  : '-'}
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Size and margin */}
@@ -122,8 +140,8 @@ export default function PositionCard({
         </div>
       </div>
 
-      {/* Close button / confirmation */}
-      {canClose && (
+      {/* Close button / confirmation -- only for DB-tracked positions */}
+      {canClose && position.id > 0 && (
         <div className="mt-2">
           {isConfirming ? (
             <div className="flex gap-2">

@@ -488,6 +488,7 @@ export interface BybitPosition {
   closedAt: string | null
   unrealisedPnl: number
   markPrice: number | null
+  origin: 'Auto' | 'Bybit' | 'Auto (Modified)'
 }
 
 export interface PnlStats {
