@@ -124,9 +124,11 @@ router.get('/positions/live', async (req: Request, res: Response) => {
 
     // Fetch ALL Bybit positions (source of truth)
     let bybitPositions: any[] = []
+    let allOpenOrders: any[] = []
+    let bybitClient: any = null
     try {
-      const client = await createBybitClient()
-      const response = await client.getPositionInfo({ category: 'linear', settleCoin: 'USDT' })
+      bybitClient = await createBybitClient()
+      const response = await bybitClient.getPositionInfo({ category: 'linear', settleCoin: 'USDT' })
       bybitPositions = response.result?.list || []
     } catch (err: any) {
       console.error('[Trading] Failed to fetch Bybit positions:', err.message)
@@ -146,13 +148,12 @@ router.get('/positions/live', async (req: Request, res: Response) => {
     )
 
     // Fetch all open orders to find TP (reduceOnly limit) orders per symbol
-    let allOpenOrders: any[] = []
     try {
-      const client = await createBybitClient()
-      const ordersResp = await client.getActiveOrders({ category: 'linear', settleCoin: 'USDT', limit: 50 })
+      const ordersResp = await bybitClient.getActiveOrders({ category: 'linear', settleCoin: 'USDT', limit: 50 })
       allOpenOrders = ordersResp.result?.list || []
-    } catch {
-      // Non-critical — positions still show without detailed TPs
+      console.log(`[Trading] Open orders fetched: ${allOpenOrders.length}`)
+    } catch (err: any) {
+      console.error('[Trading] Failed to fetch open orders:', err.message)
     }
 
     const result: any[] = []
