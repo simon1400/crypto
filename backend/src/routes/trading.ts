@@ -4,6 +4,7 @@ import { executeSignalOrder } from '../trading/tradingService'
 import { createBybitClient } from '../services/bybit'
 import { logOrderAction } from '../trading/orderLogger'
 import { getInstrumentInfo } from '../trading/instrumentCache'
+import { stopAutoListener } from '../trading/autoListener'
 
 const router = Router()
 
@@ -91,6 +92,9 @@ router.post('/kill-switch', async (req: Request, res: Response) => {
       where: { status: 'PENDING_ENTRY' },
       data: { status: 'CANCELLED', closedAt: new Date() },
     })
+
+    // Stop auto listener on kill switch
+    await stopAutoListener()
 
     await logOrderAction('KILL_SWITCH', {
       details: { cancelledOrders: cancelResult.result },
