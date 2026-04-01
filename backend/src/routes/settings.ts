@@ -152,7 +152,9 @@ router.put('/', async (req, res) => {
 // POST /api/settings/test-notification
 router.post('/test-notification', async (req, res) => {
   try {
-    let { botToken, chatId } = req.body
+    let { botToken, chatId, telegramBotToken, telegramChatId } = req.body
+    botToken = botToken || telegramBotToken
+    chatId = chatId || telegramChatId
 
     // If not provided, read from BotConfig
     if (!botToken || !chatId) {
