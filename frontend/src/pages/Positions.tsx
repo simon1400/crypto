@@ -119,7 +119,7 @@ export default function Positions() {
 
   // Fetch balance for exposure header
   useEffect(() => {
-    getBalance().then(b => setBalance(b.balance)).catch(() => {})
+    getBalance().then(b => setBalance(parseFloat(String(b.balance)) || 0)).catch(() => {})
   }, [])
 
   // Close position handler
