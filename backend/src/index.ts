@@ -14,6 +14,7 @@ import { startWsListener } from './trading/wsListener'
 import { startTtlChecker } from './trading/tradingService'
 import { reconcilePositions } from './trading/positionManager'
 import { startAutoListener } from './trading/autoListener'
+import { seedTickerMappings } from './trading/tickerMapper'
 import { prisma } from './db/prisma'
 
 const app = express()
@@ -77,6 +78,9 @@ app.listen(PORT, () => {
   }).catch(() => {
     // BotConfig may not exist yet — skip
   })
+
+  // Seed ticker mappings (PEPE, BONK, FLOKI, PLAY)
+  seedTickerMappings().catch(err => console.error('[Startup] Seed ticker mappings error:', err.message))
 
   // Auto-scan disabled — manual scan only via POST /api/scanner/scan
 })

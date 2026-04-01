@@ -132,3 +132,13 @@ model BotConfig {
   updatedAt               DateTime @updatedAt
   createdAt               DateTime @default(now())
 }
+
+model TickerMapping {
+  id              Int      @id @default(autoincrement())
+  fromTicker      String   @unique
+  toSymbol        String
+  priceMultiplier Float    @default(1)
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}

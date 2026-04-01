@@ -4,6 +4,7 @@ import { createOrderExecutor } from './orderExecutor'
 import { getInstrumentInfo } from './instrumentCache'
 import { calculatePositionQty } from './positionSizer'
 import { logOrderAction } from './orderLogger'
+import { resolveBybitSymbol, adjustSignalPrices } from './tickerMapper'
 
 /**
  * Execute a signal as a real Bybit order.
@@ -44,7 +45,21 @@ export async function executeSignalOrder(signalId: number) {
 
   // Run the order flow inside the serial queue
   return executor.executeInQueue(async () => {
-    const symbol = signal.coin + 'USDT'
+    // Resolve ticker to Bybit symbol (per D-04, D-06)
+    const resolution = await resolveBybitSymbol(signal.coin)
+    if (!resolution) {
+      await logOrderAction('AUTO_SKIPPED', {
+        signalId: signal.id,
+        details: { coin: signal.coin, reason: 'symbol_not_on_bybit' },
+      })
+      throw new Error(`Symbol ${signal.coin}USDT not found on Bybit`)
+    }
+    const symbol = resolution.bybitSymbol
+
+    // Adjust prices if multiplier != 1 (per D-08)
+    if (resolution.priceMultiplier !== 1) {
+      adjustSignalPrices(signal, resolution.priceMultiplier)
+    }
 
     // Fetch instrument info
     const instrument = await getInstrumentInfo(client, symbol)
