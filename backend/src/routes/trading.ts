@@ -114,16 +114,14 @@ router.post('/kill-switch', async (req: Request, res: Response) => {
  */
 router.get('/positions/live', async (req: Request, res: Response) => {
   try {
-    const positions = await prisma.position.findMany({
+    // Fetch DB positions with active statuses
+    const dbPositions = await prisma.position.findMany({
       where: { status: { in: ['OPEN', 'PARTIALLY_CLOSED', 'PENDING_ENTRY'] } },
       include: { signal: true },
       orderBy: { createdAt: 'desc' },
     })
 
-    if (positions.length === 0) {
-      return res.json({ data: [] })
-    }
-
+    // Fetch ALL Bybit positions (source of truth)
     let bybitPositions: any[] = []
     try {
       const client = await createBybitClient()
@@ -131,18 +129,91 @@ router.get('/positions/live', async (req: Request, res: Response) => {
       bybitPositions = response.result?.list || []
     } catch (err: any) {
       console.error('[Trading] Failed to fetch Bybit positions:', err.message)
+      // Fallback: return DB-only positions with origin 'Auto'
+      const fallback = dbPositions.map((pos) => ({
+        ...pos,
+        unrealisedPnl: 0,
+        markPrice: null,
+        origin: 'Auto' as const,
+      }))
+      return res.json({ data: fallback })
     }
 
-    const enriched = positions.map((pos) => {
-      const bybitPos = bybitPositions.find((bp: any) => bp.symbol === pos.symbol)
-      return {
-        ...pos,
-        unrealisedPnl: bybitPos ? parseFloat(bybitPos.unrealisedPnl || '0') : 0,
-        markPrice: bybitPos ? parseFloat(bybitPos.markPrice || '0') : null,
-      }
-    })
+    // Filter to only active positions (size > 0)
+    const activeBybitPositions = bybitPositions.filter(
+      (bp: any) => parseFloat(bp.size || '0') > 0
+    )
 
-    return res.json({ data: enriched })
+    const result: any[] = []
+    const matchedDbIds = new Set<number>()
+
+    // Iterate Bybit positions as primary source
+    for (const bp of activeBybitPositions) {
+      const symbol = bp.symbol as string
+      const side = bp.side as string // 'Buy' = LONG, 'Sell' = SHORT
+      const type = side === 'Buy' ? 'LONG' : 'SHORT'
+
+      // Find matching DB position by symbol
+      const dbPos = dbPositions.find(
+        (p) => p.symbol === symbol && !matchedDbIds.has(p.id)
+      )
+      if (dbPos) matchedDbIds.add(dbPos.id)
+
+      // Origin detection per D-03
+      let origin: 'Auto' | 'Bybit' | 'Auto (Modified)' = 'Bybit'
+      if (dbPos) {
+        origin = 'Auto'
+        // Check if modified: margin or leverage differs from DB
+        const bybitMargin = parseFloat(bp.positionIM || '0')
+        const bybitLeverage = parseInt(bp.leverage || '0')
+        if (dbPos.margin !== null && Math.abs(dbPos.margin - bybitMargin) > 0.01) {
+          origin = 'Auto (Modified)'
+        }
+        if (dbPos.leverage !== bybitLeverage) {
+          origin = 'Auto (Modified)'
+        }
+      }
+
+      // Build response object — Bybit data for dynamic fields per D-04
+      result.push({
+        id: dbPos ? dbPos.id : -(result.length + 1),
+        symbol,
+        type,
+        leverage: parseInt(bp.leverage || '1'),
+        entryPrice: parseFloat(bp.entryPrice || '0'),
+        qty: parseFloat(bp.size || '0'),
+        margin: parseFloat(bp.positionIM || '0'),
+        stopLoss: dbPos ? dbPos.stopLoss : 0,
+        takeProfits: dbPos ? dbPos.takeProfits : [],
+        tpOrderIds: dbPos ? dbPos.tpOrderIds : [],
+        closedPct: dbPos ? dbPos.closedPct : 0,
+        realizedPnl: dbPos ? dbPos.realizedPnl : 0,
+        fees: dbPos ? dbPos.fees : 0,
+        status: dbPos ? dbPos.status : 'OPEN',
+        signalId: dbPos ? dbPos.signalId : null,
+        signal: dbPos ? dbPos.signal : null,
+        createdAt: dbPos ? dbPos.createdAt : new Date().toISOString(),
+        filledAt: dbPos ? dbPos.filledAt : null,
+        closedAt: null,
+        unrealisedPnl: parseFloat(bp.unrealisedPnl || '0'),
+        markPrice: parseFloat(bp.markPrice || '0'),
+        origin,
+      })
+    }
+
+    // Include PENDING_ENTRY positions from DB not yet on Bybit (limit order not filled)
+    for (const dbPos of dbPositions) {
+      if (!matchedDbIds.has(dbPos.id) && dbPos.status === 'PENDING_ENTRY') {
+        result.push({
+          ...dbPos,
+          unrealisedPnl: 0,
+          markPrice: null,
+          origin: 'Auto' as const,
+        })
+      }
+    }
+
+    return res.json({ data: result })
   } catch (err: any) {
     console.error('[Trading] Live positions error:', err.message)
     return res.status(500).json({ error: err.message })
