@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { BybitPosition } from '../api/client'
 import ConfirmDialog from './ConfirmDialog'
 
@@ -9,6 +9,31 @@ interface Props {
   onCancel: (id: number) => void
   closingId: number | null
   actionId: number | null
+}
+
+function formatElapsedTime(dateStr: string): string {
+  const now = Date.now()
+  const then = new Date(dateStr).getTime()
+  const diffMs = now - then
+  const diffMin = Math.floor(diffMs / 60000)
+  if (diffMin < 60) return `${diffMin}m`
+  const diffHours = Math.floor(diffMin / 60)
+  const remainMin = diffMin % 60
+  if (diffHours < 24) return `${diffHours}h ${remainMin}m`
+  const diffDays = Math.floor(diffHours / 24)
+  const remainHours = diffHours % 24
+  return `${diffDays}d ${remainHours}h`
+}
+
+function useElapsedTime(dateStr: string | null): string {
+  const [elapsed, setElapsed] = useState(() => dateStr ? formatElapsedTime(dateStr) : '')
+  useEffect(() => {
+    if (!dateStr) return
+    setElapsed(formatElapsedTime(dateStr))
+    const timer = setInterval(() => setElapsed(formatElapsedTime(dateStr)), 60000)
+    return () => clearInterval(timer)
+  }, [dateStr])
+  return elapsed
 }
 
 function formatPrice(price: number | null): string {
@@ -74,9 +99,11 @@ export default function PositionCard({
   const statusInfo = statusLabels[position.status] || statusLabels.OPEN
 
   const hasTpSl = position.stopLoss > 0 || position.takeProfits.length > 0
+  const refDate = isPending ? position.createdAt : (position.filledAt || position.createdAt)
+  const elapsed = useElapsedTime(refDate)
 
   return (
-    <div className="bg-card rounded-xl p-5 relative">
+    <div className="bg-card rounded-xl p-5 relative border border-input shadow-lg shadow-black/20">
       {/* Status + origin badges */}
       <div className="absolute top-4 right-4 flex items-center gap-1.5">
         {position.origin && position.origin !== 'Auto' && (
@@ -108,6 +135,15 @@ export default function PositionCard({
           </span>
         </div>
       )}
+
+      {/* Elapsed time */}
+      <div className="mb-3 text-text-secondary text-xs">
+        {isPending ? (
+          <span>Ожидание: {elapsed}</span>
+        ) : (
+          <span>В позиции: {elapsed}</span>
+        )}
+      </div>
 
       {/* Unrealized P&L - large */}
       <div className="mb-4">
