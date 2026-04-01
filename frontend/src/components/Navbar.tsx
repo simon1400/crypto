@@ -41,7 +41,7 @@ export default function Navbar({ onLogout }: Props) {
         </div>
         <div className="flex items-center gap-3">
           {balance != null && (
-            <span className="font-mono text-sm text-accent">{balance} USDT</span>
+            <span className="font-mono text-sm text-accent">{parseFloat(balance).toFixed(3)} USDT</span>
           )}
           <KillSwitchButton onActivated={refreshBalance} />
           {onLogout && (

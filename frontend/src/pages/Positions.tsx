@@ -6,6 +6,7 @@ import {
   cancelOrder,
   getPnlStats,
   getOrderLogs,
+  getBalance,
   BybitPosition,
   PnlStats,
   OrderLogEntry,
@@ -26,6 +27,9 @@ export default function Positions() {
   const [stats, setStats] = useState<PnlStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(true)
   const [period, setPeriod] = useState<'day' | 'week' | 'month'>('month')
+
+  // Balance for exposure calculation
+  const [balance, setBalance] = useState<number | null>(null)
 
   // Order logs state
   const [logs, setLogs] = useState<OrderLogEntry[]>([])
@@ -89,6 +93,11 @@ export default function Positions() {
     fetchLogs()
   }, [fetchLogs])
 
+  // Fetch balance for exposure header
+  useEffect(() => {
+    getBalance().then(b => setBalance(b.balance)).catch(() => {})
+  }, [])
+
   // Close position handler
   const handleClose = async (id: number) => {
     setClosingId(id)
@@ -141,9 +150,24 @@ export default function Positions() {
     (p) => p.status === 'OPEN' || p.status === 'PARTIALLY_CLOSED' || p.status === 'PENDING_ENTRY'
   )
 
+  const totalMargin = openPositions.reduce((sum, p) => sum + (p.margin || 0), 0)
+  const exposurePct = balance && balance > 0 ? (totalMargin / balance) * 100 : 0
+
   return (
     <div>
       <h1 className="text-2xl font-semibold text-text-primary mb-6">Positions</h1>
+
+      {openPositions.length > 0 && (
+        <div className="flex items-center gap-4 mb-6 text-sm">
+          <span className="text-text-secondary">Exposure:</span>
+          <span className="font-mono text-text-primary">
+            ${totalMargin.toFixed(2)}
+            {balance !== null && (
+              <span className="text-text-secondary"> / ${balance.toFixed(2)} ({exposurePct.toFixed(1)}%)</span>
+            )}
+          </span>
+        </div>
+      )}
 
       {/* P&L Summary */}
       <section className="bg-card rounded-xl p-6 mb-6">
