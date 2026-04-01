@@ -7,9 +7,11 @@ import {
   getPnlStats,
   getOrderLogs,
   getBalance,
+  getCoinStats,
   BybitPosition,
   PnlStats,
   OrderLogEntry,
+  CoinStat,
 } from '../api/client'
 import PositionCard from '../components/PositionCard'
 import PnlSummary from '../components/PnlSummary'
@@ -37,6 +39,12 @@ export default function Positions() {
   const [logsPage, setLogsPage] = useState(1)
   const [logsTotalPages, setLogsTotalPages] = useState(1)
   const [logFilters, setLogFilters] = useState<LogFilters>({})
+
+  // Coin stats state
+  const [coinStats, setCoinStats] = useState<CoinStat[]>([])
+  const [coinStatsLoading, setCoinStatsLoading] = useState(true)
+  const [coinSortKey, setCoinSortKey] = useState<'trades' | 'winRate' | 'totalPnl'>('trades')
+  const [coinSortAsc, setCoinSortAsc] = useState(false)
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -75,6 +83,18 @@ export default function Positions() {
     }
   }, [logsPage, logFilters])
 
+  const fetchCoinStats = useCallback(async () => {
+    setCoinStatsLoading(true)
+    try {
+      const res = await getCoinStats()
+      setCoinStats(res.data)
+    } catch (err) {
+      console.error('Failed to fetch coin stats:', err)
+    } finally {
+      setCoinStatsLoading(false)
+    }
+  }, [])
+
   // Initial load and polling
   useEffect(() => {
     fetchPositions()
@@ -92,6 +112,10 @@ export default function Positions() {
   useEffect(() => {
     fetchLogs()
   }, [fetchLogs])
+
+  useEffect(() => {
+    fetchCoinStats()
+  }, [fetchCoinStats])
 
   // Fetch balance for exposure header
   useEffect(() => {
@@ -145,6 +169,20 @@ export default function Positions() {
     setLogFilters(f)
     setLogsPage(1) // Reset to first page on filter change
   }
+
+  const handleCoinSort = (key: 'trades' | 'winRate' | 'totalPnl') => {
+    if (coinSortKey === key) {
+      setCoinSortAsc(!coinSortAsc)
+    } else {
+      setCoinSortKey(key)
+      setCoinSortAsc(false)
+    }
+  }
+
+  const sortedCoinStats = [...coinStats].sort((a, b) => {
+    const diff = a[coinSortKey] - b[coinSortKey]
+    return coinSortAsc ? diff : -diff
+  })
 
   const openPositions = positions.filter(
     (p) => p.status === 'OPEN' || p.status === 'PARTIALLY_CLOSED' || p.status === 'PENDING_ENTRY'
@@ -218,6 +256,59 @@ export default function Positions() {
                 actionId={actionId}
               />
             ))}
+          </div>
+        )}
+      </section>
+
+      {/* Coin Performance */}
+      <section className="bg-card rounded-xl p-6 mb-6">
+        <h2 className="text-lg font-semibold text-text-primary mb-4">Win Rate by Coin</h2>
+        {coinStatsLoading ? (
+          <div className="text-text-secondary text-sm py-4">Loading...</div>
+        ) : coinStats.length === 0 ? (
+          <div className="text-center text-text-secondary text-sm py-8">No closed positions yet</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-text-secondary text-xs border-b border-input">
+                  <th className="text-left py-2 px-3 font-medium">Coin</th>
+                  <th className="text-right py-2 px-3 font-medium cursor-pointer hover:text-text-primary" onClick={() => handleCoinSort('trades')}>
+                    Trades {coinSortKey === 'trades' ? (coinSortAsc ? '↑' : '↓') : ''}
+                  </th>
+                  <th className="text-right py-2 px-3 font-medium">Wins</th>
+                  <th className="text-right py-2 px-3 font-medium cursor-pointer hover:text-text-primary" onClick={() => handleCoinSort('winRate')}>
+                    Win Rate {coinSortKey === 'winRate' ? (coinSortAsc ? '↑' : '↓') : ''}
+                  </th>
+                  <th className="text-right py-2 px-3 font-medium">Avg P&L</th>
+                  <th className="text-right py-2 px-3 font-medium cursor-pointer hover:text-text-primary" onClick={() => handleCoinSort('totalPnl')}>
+                    Total P&L {coinSortKey === 'totalPnl' ? (coinSortAsc ? '↑' : '↓') : ''}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedCoinStats.map((stat) => (
+                  <tr key={stat.coin} className="border-b border-input/50 hover:bg-input/30">
+                    <td className="py-2 px-3 font-mono font-semibold text-text-primary">{stat.coin}</td>
+                    <td className="py-2 px-3 font-mono text-text-primary text-right">{stat.trades}</td>
+                    <td className="py-2 px-3 font-mono text-text-primary text-right">{stat.wins}</td>
+                    <td className="py-2 px-3 font-mono text-right">
+                      <span className={stat.winRate >= 50 ? 'text-long' : 'text-short'}>{stat.winRate}%</span>
+                    </td>
+                    <td className="py-2 px-3 font-mono text-right">
+                      <span className={stat.avgPnl >= 0 ? 'text-long' : 'text-short'}>
+                        {stat.avgPnl >= 0 ? '+' : ''}${stat.avgPnl.toFixed(2)}
+                      </span>
+                    </td>
+                    <td className="py-2 px-3 font-mono text-right">
+                      <span className={stat.totalPnl >= 0 ? 'text-long' : 'text-short'}>
+                        {stat.totalPnl >= 0 ? '+' : ''}${stat.totalPnl.toFixed(2)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </section>
