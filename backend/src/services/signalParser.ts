@@ -6,6 +6,7 @@ export interface ParsedSignal {
   entryMax: number
   stopLoss: number
   takeProfits: number[]
+  category?: string
 }
 
 /**
@@ -70,5 +71,14 @@ function parseEveningTrader(text: string): ParsedSignal | null {
 
   if (takeProfits.length === 0) return null
 
-  return { type, coin, leverage, entryMin, entryMax, stopLoss, takeProfits }
+  return {
+    type, coin, leverage, entryMin, entryMax, stopLoss, takeProfits,
+    category: extractCategory(text) ?? undefined,
+  }
+}
+
+export function extractCategory(text: string): string | null {
+  const match = text.match(/\b(Risk\s+Scalp|Scalp|Swing)\b/i)
+  if (!match) return null
+  return match[1].toLowerCase().replace(/\s+/g, '-')
 }
