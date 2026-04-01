@@ -134,21 +134,30 @@ export async function executeSignalOrder(signalId: number) {
     // If market order, place TP orders immediately
     if (entryResult.orderType === 'Market') {
       const closeSide = signal.type === 'LONG' ? 'Sell' : 'Buy'
-      const tpOrderIds = await executor.placeTpOrders({
-        symbol,
-        side: closeSide as 'Buy' | 'Sell',
-        totalQty: qty,
-        takeProfits: signal.takeProfits as number[],
-        signalId: signal.id,
-        qtyStep: instrument.qtyStep,
-        tickSize: instrument.tickSize,
-      })
+      try {
+        const tpOrderIds = await executor.placeTpOrders({
+          symbol,
+          side: closeSide as 'Buy' | 'Sell',
+          totalQty: qty,
+          takeProfits: signal.takeProfits as number[],
+          signalId: signal.id,
+          qtyStep: instrument.qtyStep,
+          tickSize: instrument.tickSize,
+        })
 
-      // Save TP order IDs to position
-      await prisma.position.update({
-        where: { id: position.id },
-        data: { tpOrderIds: tpOrderIds },
-      })
+        // Save TP order IDs to position
+        await prisma.position.update({
+          where: { id: position.id },
+          data: { tpOrderIds: tpOrderIds },
+        })
+      } catch (err: any) {
+        console.error(`[TradingService] Failed to place TP orders for position ${position.id}: ${err.message}`)
+        await logOrderAction('ERROR', {
+          positionId: position.id,
+          signalId: signal.id,
+          details: { error: err.message, action: 'place_tp_after_market_fill' },
+        })
+      }
     }
 
     return position
