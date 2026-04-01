@@ -1,5 +1,6 @@
 import { prisma } from '../db/prisma'
 import { OrderAction } from './types'
+import { sendNotification } from '../services/notifier'
 
 /**
  * Log a trading action to the OrderLog table.
@@ -27,4 +28,7 @@ export async function logOrderAction(
   console.log(
     `[OrderLog] ${action} pos=${opts.positionId ?? '-'} sig=${opts.signalId ?? '-'}`
   )
+
+  // Fire-and-forget notification
+  sendNotification(action, opts.details).catch(() => {})
 }

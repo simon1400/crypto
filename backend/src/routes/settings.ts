@@ -4,6 +4,7 @@ import { encrypt, decrypt, maskKey } from '../services/encryption'
 import { createBybitClient, validateBybitKeys } from '../services/bybit'
 import { startAutoListener, stopAutoListener } from '../trading/autoListener'
 import { getInstrumentInfo } from '../trading/instrumentCache'
+import { sendTestNotification } from '../services/notifier'
 
 const router = Router()
 
@@ -27,6 +28,9 @@ router.get('/', async (_req, res) => {
       tradingMode: config.tradingMode,
       near512Topics: config.near512Topics,
       eveningTraderCategories: config.eveningTraderCategories,
+      telegramBotToken: config.telegramBotToken ? '****' + config.telegramBotToken.slice(-4) : null,
+      telegramChatId: config.telegramChatId,
+      telegramEnabled: config.telegramEnabled,
     })
   } catch (err: any) {
     console.error('[Settings] GET error:', err)
@@ -47,6 +51,9 @@ router.put('/', async (req, res) => {
       tradingMode,
       near512Topics,
       eveningTraderCategories,
+      telegramBotToken,
+      telegramChatId,
+      telegramEnabled,
     } = req.body
 
     // Validate numeric ranges
@@ -74,6 +81,9 @@ router.put('/', async (req, res) => {
     if (tradingMode !== undefined) { updateData.tradingMode = tradingMode; createData.tradingMode = tradingMode }
     if (near512Topics !== undefined) { updateData.near512Topics = near512Topics; createData.near512Topics = near512Topics }
     if (eveningTraderCategories !== undefined) { updateData.eveningTraderCategories = eveningTraderCategories; createData.eveningTraderCategories = eveningTraderCategories }
+    if (telegramBotToken !== undefined) { updateData.telegramBotToken = telegramBotToken; createData.telegramBotToken = telegramBotToken }
+    if (telegramChatId !== undefined) { updateData.telegramChatId = telegramChatId; createData.telegramChatId = telegramChatId }
+    if (telegramEnabled !== undefined) { updateData.telegramEnabled = telegramEnabled; createData.telegramEnabled = telegramEnabled }
 
     let keyValidationFailed = false
     let balance: string | undefined
@@ -124,6 +134,9 @@ router.put('/', async (req, res) => {
       tradingMode: config.tradingMode,
       near512Topics: config.near512Topics,
       eveningTraderCategories: config.eveningTraderCategories,
+      telegramBotToken: config.telegramBotToken ? '****' + config.telegramBotToken.slice(-4) : null,
+      telegramChatId: config.telegramChatId,
+      telegramEnabled: config.telegramEnabled,
     }
 
     if (balance !== undefined) response.balance = balance
@@ -132,6 +145,33 @@ router.put('/', async (req, res) => {
     res.json(response)
   } catch (err: any) {
     console.error('[Settings] PUT error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/settings/test-notification
+router.post('/test-notification', async (req, res) => {
+  try {
+    let { botToken, chatId } = req.body
+
+    // If not provided, read from BotConfig
+    if (!botToken || !chatId) {
+      const config = await prisma.botConfig.findUnique({ where: { id: 1 } })
+      if (!config?.telegramBotToken || !config?.telegramChatId) {
+        return res.status(400).json({ error: 'Bot token and chat ID are required' })
+      }
+      botToken = botToken || config.telegramBotToken
+      chatId = chatId || config.telegramChatId
+    }
+
+    const success = await sendTestNotification(botToken, chatId)
+    if (success) {
+      res.json({ success: true })
+    } else {
+      res.json({ success: false, error: 'Failed to send test message' })
+    }
+  } catch (err: any) {
+    console.error('[Settings] Test notification error:', err)
     res.status(500).json({ error: err.message })
   }
 })
