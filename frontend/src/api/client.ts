@@ -354,6 +354,64 @@ export async function getScannerStatus(): Promise<{ running: boolean }> {
   return res.json()
 }
 
+// ===================== Settings =====================
+
+export interface SettingsResponse {
+  id: number
+  bybitApiKey: string | null
+  bybitApiSecret: string | null
+  apiKeyMasked: string | null
+  apiSecretMasked: string | null
+  useTestnet: boolean
+  tradingMode: string
+  positionSizePct: number
+  dailyLossLimitPct: number
+  orderTtlMinutes: number
+  near512Topics: string[]
+  eveningTraderCategories: string[]
+  hasKeys: boolean
+  balance: number | null
+  isConnected: boolean
+}
+
+export async function getSettings(): Promise<SettingsResponse> {
+  const res = await fetch(`${BASE}/api/settings`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch settings')
+  return res.json()
+}
+
+export async function saveSettings(data: Partial<SettingsResponse>): Promise<SettingsResponse> {
+  const res = await fetch(`${BASE}/api/settings`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function getBalance(): Promise<{ balance: number | null; error?: string }> {
+  const res = await fetch(`${BASE}/api/settings/balance`, { headers: getHeaders() })
+  if (!res.ok) return { balance: null, error: 'Failed to fetch balance' }
+  return res.json()
+}
+
+export async function executeSignal(signalId: number): Promise<{ success: boolean; positionId?: number; error?: string }> {
+  const res = await fetch(`${BASE}/api/trading/execute`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ signalId }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
 // ===================== Trading (Bybit Positions) =====================
 
 export interface BybitPosition {
@@ -423,7 +481,7 @@ export async function closePosition(id: number): Promise<{ success: boolean }> {
 }
 
 export async function getPnlStats(period: 'day' | 'week' | 'month'): Promise<PnlStats> {
-  const res = await fetch(`${BASE}/api/trading/positions/stats?period=${period}`, { headers: getHeaders() })
+  const res = await fetch(`${BASE}/api/trading/stats?period=${period}`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch P&L stats')
   return res.json()
 }
@@ -442,7 +500,7 @@ export async function getOrderLogs(
   return res.json()
 }
 
-export async function killSwitch(): Promise<KillSwitchResponse> {
+export async function activateKillSwitch(): Promise<KillSwitchResponse> {
   const res = await fetch(`${BASE}/api/trading/kill-switch`, {
     method: 'POST',
     headers: getHeaders(),

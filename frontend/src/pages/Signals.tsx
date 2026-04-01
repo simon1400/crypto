@@ -499,7 +499,7 @@ export default function Signals() {
   const [selected, setSelected] = useState<Signal | null>(null)
   const [prices, setPrices] = useState<Record<string, number | null>>({})
   const [syncedDays, setSyncedDays] = useState<number | null>(null)
-  const [tradingMode, setTradingMode] = useState<'manual' | 'auto'>('manual')
+  const [tradingMode, setTradingMode] = useState<string>('manual')
 
   useEffect(() => {
     getSettings().then(s => setTradingMode(s.tradingMode)).catch(() => {})

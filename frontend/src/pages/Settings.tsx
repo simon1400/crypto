@@ -23,7 +23,7 @@ export default function Settings() {
   const [positionSizePct, setPositionSizePct] = useState(10)
   const [dailyLossLimitPct, setDailyLossLimitPct] = useState(5)
   const [orderTtlMinutes, setOrderTtlMinutes] = useState(60)
-  const [tradingMode, setTradingMode] = useState<'manual' | 'auto'>('manual')
+  const [tradingMode, setTradingMode] = useState<string>('manual')
   const [near512Topics, setNear512Topics] = useState<string[]>([])
   const [eveningTraderCategories, setEveningTraderCategories] = useState<string[]>([])
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
@@ -41,7 +41,7 @@ export default function Settings() {
         setNear512Topics(data.near512Topics)
         setEveningTraderCategories(data.eveningTraderCategories)
         if (data.hasKeys && data.balance) {
-          setBalance(data.balance)
+          setBalance(data.balance != null ? String(data.balance) : null)
         }
       })
       .catch(() => {
@@ -99,7 +99,7 @@ export default function Settings() {
       setSettings(result)
       setApiKey('')
       setApiSecret('')
-      if (result.balance) setBalance(result.balance)
+      if (result.balance != null) setBalance(String(result.balance))
       showToast('Settings saved', 'success')
     } catch (err: any) {
       const msg = err.message || 'Save failed'

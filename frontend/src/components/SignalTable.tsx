@@ -8,7 +8,7 @@ interface Props {
   prices: Record<string, number | null>
   onSelect: (signal: Signal) => void
   showChannel?: boolean
-  tradingMode?: 'manual' | 'auto'
+  tradingMode?: string
   onModeToggle?: (mode: 'manual' | 'auto') => void
   onExecuteSignal?: (signal: Signal) => void
 }

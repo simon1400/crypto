@@ -12,7 +12,7 @@ export default function Navbar({ onLogout }: Props) {
   const [balance, setBalance] = useState<string | null>(null)
 
   const refreshBalance = () => {
-    getBalance().then(b => setBalance(b.balance)).catch(() => {})
+    getBalance().then(b => setBalance(b.balance != null ? String(b.balance) : null)).catch(() => {})
   }
 
   useEffect(() => {
