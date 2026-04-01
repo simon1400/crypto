@@ -1,12 +1,14 @@
+import { useState } from 'react'
 import { BybitPosition } from '../api/client'
+import ConfirmDialog from './ConfirmDialog'
 
 interface Props {
   position: BybitPosition
   onClose: (id: number) => void
+  onMarketEntry: (id: number) => void
+  onCancel: (id: number) => void
   closingId: number | null
-  confirmClose: number | null
-  onConfirmClose: (id: number) => void
-  onCancelClose: () => void
+  actionId: number | null
 }
 
 function formatPrice(price: number | null): string {
@@ -19,6 +21,23 @@ function formatPrice(price: number | null): string {
 function formatPnl(value: number): string {
   const prefix = value >= 0 ? '+' : ''
   return `${prefix}$${Math.abs(value).toFixed(2)}`
+}
+
+function calcPnlForecast(
+  margin: number | null,
+  leverage: number,
+  entryPrice: number | null,
+  targetPrice: number,
+  type: 'LONG' | 'SHORT',
+  closedPct: number
+): number | null {
+  if (!margin || !entryPrice || entryPrice === 0) return null
+  const remainingMargin = margin * (1 - closedPct / 100)
+  if (type === 'LONG') {
+    return remainingMargin * leverage * (targetPrice - entryPrice) / entryPrice
+  } else {
+    return remainingMargin * leverage * (entryPrice - targetPrice) / entryPrice
+  }
 }
 
 const originColors: Record<string, { label: string; bg: string; text: string }> = {
@@ -37,19 +56,24 @@ const statusLabels: Record<string, { label: string; color: string }> = {
 export default function PositionCard({
   position,
   onClose,
+  onMarketEntry,
+  onCancel,
   closingId,
-  confirmClose,
-  onConfirmClose,
-  onCancelClose,
+  actionId,
 }: Props) {
+  const [confirmType, setConfirmType] = useState<'market-entry' | 'cancel' | 'close' | null>(null)
+
   const coin = position.symbol.replace('USDT', '')
   const isLong = position.type === 'LONG'
   const pnlColor = position.unrealisedPnl >= 0 ? 'text-long' : 'text-short'
   const pnlPct = position.margin ? (position.unrealisedPnl / position.margin) * 100 : 0
   const canClose = position.status === 'OPEN' || position.status === 'PARTIALLY_CLOSED'
+  const isPending = position.status === 'PENDING_ENTRY'
   const isClosing = closingId === position.id
-  const isConfirming = confirmClose === position.id
+  const isActioning = actionId === position.id
   const statusInfo = statusLabels[position.status] || statusLabels.OPEN
+
+  const hasTpSl = position.stopLoss > 0 || position.takeProfits.length > 0
 
   return (
     <div className="bg-card rounded-xl p-5 relative">
@@ -106,7 +130,7 @@ export default function PositionCard({
           <div className="font-mono text-text-primary">{formatPrice(position.markPrice)}</div>
         </div>
         {/* Only show SL/TP for positions that have them (not external Bybit positions) */}
-        {(position.stopLoss > 0 || position.takeProfits.length > 0) && (
+        {hasTpSl && (
           <>
             <div>
               <div className="text-text-secondary text-xs mb-0.5">Stop Loss</div>
@@ -128,6 +152,37 @@ export default function PositionCard({
         )}
       </div>
 
+      {/* P&L Forecast */}
+      {hasTpSl && position.entryPrice && position.margin && (
+        <div className="mb-4">
+          <div className="text-text-secondary text-xs mb-1">P&L Forecast</div>
+          <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+            {position.takeProfits.map((tp, i) => {
+              const tpHitCount = position.takeProfits.length > 0
+                ? Math.floor(position.closedPct / (100 / position.takeProfits.length))
+                : 0
+              if (i < tpHitCount) return null
+              const pnl = calcPnlForecast(position.margin, position.leverage, position.entryPrice, tp, position.type, position.closedPct)
+              if (pnl === null) return null
+              return (
+                <span key={i} className="font-mono text-long text-sm">
+                  TP{i + 1}: +${Math.abs(pnl).toFixed(2)}
+                </span>
+              )
+            })}
+            {position.stopLoss > 0 && (() => {
+              const slPnl = calcPnlForecast(position.margin, position.leverage, position.entryPrice, position.stopLoss, position.type, position.closedPct)
+              if (slPnl === null) return null
+              return (
+                <span className="font-mono text-short text-sm">
+                  SL: -${Math.abs(slPnl).toFixed(2)}
+                </span>
+              )
+            })()}
+          </div>
+        </div>
+      )}
+
       {/* Size and margin */}
       <div className="flex items-center gap-4 mb-4 text-sm">
         <div>
@@ -140,35 +195,78 @@ export default function PositionCard({
         </div>
       </div>
 
-      {/* Close button / confirmation -- only for DB-tracked positions */}
-      {canClose && position.id > 0 && (
-        <div className="mt-2">
-          {isConfirming ? (
-            <div className="flex gap-2">
-              <button
-                onClick={() => onClose(position.id)}
-                disabled={isClosing}
-                className="flex-1 px-3 py-1.5 rounded-lg text-sm font-medium bg-short/20 text-short hover:bg-short/30 transition-colors disabled:opacity-50"
-              >
-                {isClosing ? 'Closing...' : 'Confirm close'}
-              </button>
-              <button
-                onClick={onCancelClose}
-                className="px-3 py-1.5 rounded-lg text-sm font-medium text-text-secondary hover:text-text-primary transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => onConfirmClose(position.id)}
-              className="px-3 py-1.5 rounded-lg text-sm font-medium text-short hover:bg-short/10 transition-colors"
-            >
-              Close
-            </button>
-          )}
+      {/* PENDING_ENTRY: Market Entry + Cancel buttons */}
+      {isPending && position.id > 0 && (
+        <div className="mt-2 flex gap-2">
+          <button
+            onClick={() => setConfirmType('market-entry')}
+            className="flex-1 px-3 py-1.5 rounded-lg text-sm font-medium bg-long/20 text-long hover:bg-long/30 transition-colors"
+          >
+            Market Entry
+          </button>
+          <button
+            onClick={() => setConfirmType('cancel')}
+            className="flex-1 px-3 py-1.5 rounded-lg text-sm font-medium bg-short/20 text-short hover:bg-short/30 transition-colors"
+          >
+            Cancel
+          </button>
         </div>
       )}
+
+      {/* OPEN / PARTIALLY_CLOSED: Close button */}
+      {canClose && position.id > 0 && (
+        <div className="mt-2">
+          <button
+            onClick={() => setConfirmType('close')}
+            className="px-3 py-1.5 rounded-lg text-sm font-medium text-short hover:bg-short/10 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      )}
+
+      {/* Confirmation dialogs */}
+      <ConfirmDialog
+        open={confirmType === 'market-entry'}
+        title={`Войти по рынку ${coin} ${position.type}?`}
+        confirmLabel="Войти"
+        variant="danger"
+        loading={isActioning}
+        onConfirm={() => { onMarketEntry(position.id); setConfirmType(null) }}
+        onCancel={() => setConfirmType(null)}
+      >
+        <p className="text-text-secondary text-sm">
+          Позиция будет открыта по текущей рыночной цене.
+        </p>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={confirmType === 'cancel'}
+        title={`Отменить ордер ${coin} ${position.type}?`}
+        confirmLabel="Отменить ордер"
+        variant="danger"
+        loading={isActioning}
+        onConfirm={() => { onCancel(position.id); setConfirmType(null) }}
+        onCancel={() => setConfirmType(null)}
+      >
+        <p className="text-text-secondary text-sm">
+          Лимитный ордер будет отменён на бирже.
+        </p>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={confirmType === 'close'}
+        title={`Закрыть позицию ${coin} ${position.type}?`}
+        confirmLabel="Закрыть"
+        variant="danger"
+        loading={isClosing}
+        onConfirm={() => { onClose(position.id); setConfirmType(null) }}
+        onCancel={() => setConfirmType(null)}
+      >
+        <p className="text-text-secondary text-sm">
+          Позиция будет закрыта по рынку.
+        </p>
+      </ConfirmDialog>
     </div>
   )
 }

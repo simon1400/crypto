@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   getLivePositions,
   closePosition,
+  marketEntry,
+  cancelOrder,
   getPnlStats,
   getOrderLogs,
   BybitPosition,
@@ -18,7 +20,7 @@ export default function Positions() {
   const [positions, setPositions] = useState<BybitPosition[]>([])
   const [loading, setLoading] = useState(true)
   const [closingId, setClosingId] = useState<number | null>(null)
-  const [confirmClose, setConfirmClose] = useState<number | null>(null)
+  const [actionId, setActionId] = useState<number | null>(null)
 
   // P&L stats state
   const [stats, setStats] = useState<PnlStats | null>(null)
@@ -93,11 +95,36 @@ export default function Positions() {
     try {
       await closePosition(id)
       await fetchPositions()
-      setConfirmClose(null)
     } catch (err: any) {
       alert(err.message || 'Failed to close position')
     } finally {
       setClosingId(null)
+    }
+  }
+
+  // Market entry handler
+  const handleMarketEntry = async (id: number) => {
+    setActionId(id)
+    try {
+      await marketEntry(id)
+      await fetchPositions()
+    } catch (err: any) {
+      alert(err.message || 'Failed to enter market')
+    } finally {
+      setActionId(null)
+    }
+  }
+
+  // Cancel order handler
+  const handleCancel = async (id: number) => {
+    setActionId(id)
+    try {
+      await cancelOrder(id)
+      await fetchPositions()
+    } catch (err: any) {
+      alert(err.message || 'Failed to cancel order')
+    } finally {
+      setActionId(null)
     }
   }
 
@@ -161,10 +188,10 @@ export default function Positions() {
                 key={pos.id}
                 position={pos}
                 onClose={handleClose}
+                onMarketEntry={handleMarketEntry}
+                onCancel={handleCancel}
                 closingId={closingId}
-                confirmClose={confirmClose}
-                onConfirmClose={(id) => setConfirmClose(id)}
-                onCancelClose={() => setConfirmClose(null)}
+                actionId={actionId}
               />
             ))}
           </div>
