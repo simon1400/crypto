@@ -135,7 +135,7 @@ export class OrderExecutor {
     const slDirection = side === 'Buy' ? 'floor' : 'ceil'
     const alignedSl = alignToTickSize(stopLoss, tickSize, slDirection)
 
-    const orderParams: Record<string, any> = {
+    const orderParams: any = {
       category: 'linear',
       symbol,
       side,
