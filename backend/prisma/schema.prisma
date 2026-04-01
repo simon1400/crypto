@@ -129,6 +129,9 @@ model BotConfig {
   tradingMode             String   @default("manual")
   near512Topics           Json     @default("[]")
   eveningTraderCategories Json     @default("[]")
+  telegramBotToken        String?
+  telegramChatId          String?
+  telegramEnabled         Boolean  @default(false)
   updatedAt               DateTime @updatedAt
   createdAt               DateTime @default(now())
 }
