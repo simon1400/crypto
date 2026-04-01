@@ -533,6 +533,30 @@ export async function closePosition(id: number): Promise<{ success: boolean }> {
   return res.json()
 }
 
+export async function marketEntry(id: number): Promise<{ success: boolean }> {
+  const res = await fetch(`${BASE}/api/trading/positions/${id}/market-entry`, {
+    method: 'POST',
+    headers: getHeaders(),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function cancelOrder(id: number): Promise<{ success: boolean }> {
+  const res = await fetch(`${BASE}/api/trading/positions/${id}/cancel`, {
+    method: 'POST',
+    headers: getHeaders(),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function getPnlStats(period: 'day' | 'week' | 'month'): Promise<PnlStats> {
   const res = await fetch(`${BASE}/api/trading/stats?period=${period}`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch P&L stats')
