@@ -8,11 +8,15 @@ export async function createBybitClient(): Promise<RestClientV5> {
     throw new Error('Bybit API keys not configured')
   }
 
-  return new RestClientV5({
+  const options: any = {
     key: decrypt(config.apiKey),
     secret: decrypt(config.apiSecret),
     testnet: config.useTestnet,
-  })
+  }
+  if (config.useTestnet) {
+    options.baseUrl = 'https://api-testnet.bybit.eu'
+  }
+  return new RestClientV5(options)
 }
 
 export async function validateBybitKeys(
@@ -21,7 +25,11 @@ export async function validateBybitKeys(
   testnet: boolean
 ): Promise<{ valid: boolean; balance?: string; error?: string }> {
   try {
-    const client = new RestClientV5({ key: apiKey, secret: apiSecret, testnet })
+    const options: any = { key: apiKey, secret: apiSecret, testnet }
+    if (testnet) {
+      options.baseUrl = 'https://api-testnet.bybit.eu'
+    }
+    const client = new RestClientV5(options)
     const response = await client.getWalletBalance({ accountType: 'UNIFIED', coin: 'USDT' })
 
     if (response.retCode !== 0) {

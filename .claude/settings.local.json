@@ -52,7 +52,30 @@
       "Bash(find D:/crypto/.planning -type f -name *02-03*)",
       "Bash(node -e \"require\\(''p-queue''\\)\")",
       "Bash(node \"$HOME/.claude/get-shit-done/bin/gsd-tools.cjs\" phase complete \"02\")",
-      "Bash(node \"$HOME/.claude/get-shit-done/bin/gsd-tools.cjs\" commit \"docs\\(phase-2\\): complete phase execution\" --files .planning/ROADMAP.md .planning/STATE.md .planning/REQUIREMENTS.md .planning/phases/02-order-execution/02-VERIFICATION.md)"
+      "Bash(node \"$HOME/.claude/get-shit-done/bin/gsd-tools.cjs\" commit \"docs\\(phase-2\\): complete phase execution\" --files .planning/ROADMAP.md .planning/STATE.md .planning/REQUIREMENTS.md .planning/phases/02-order-execution/02-VERIFICATION.md)",
+      "Bash(sed -i 's/setBalance\\(data\\\\.balance\\)/setBalance\\(data.balance != null ? String\\(data.balance\\) : null\\)/' frontend/src/pages/Settings.tsx)",
+      "Bash(sed -i 's/if \\(result\\\\.balance\\) setBalance\\(result\\\\.balance\\)/if \\(result.balance != null\\) setBalance\\(String\\(result.balance\\)\\)/' frontend/src/pages/Settings.tsx)",
+      "Bash(node \"$HOME/.claude/get-shit-done/bin/gsd-tools.cjs\" phase complete \"03\")",
+      "Bash(node \"$HOME/.claude/get-shit-done/bin/gsd-tools.cjs\" commit \"docs\\(phase-3\\): complete phase execution\" --files .planning/ROADMAP.md .planning/STATE.md .planning/REQUIREMENTS.md)",
+      "Bash(curl -s -X GET http://localhost:3001/api/settings/balance -H \"X-Api-Secret: x7Kp9mQ2vR4sT8wB3nF6jL0hD5aE1cY\")",
+      "Bash(ssh root@157.90.169.205 \"cd /opt/crypto/backend && pm2 logs crypto-backend --lines 30 --nostream 2>&1\")",
+      "Bash(ssh root@157.90.169.205 \"cd /opt/crypto/backend && npx prisma db push 2>&1\")",
+      "Bash(ssh root@157.90.169.205 \"pm2 restart crypto-backend && sleep 2 && pm2 logs crypto-backend --lines 5 --nostream 2>&1\")",
+      "Bash(ssh root@157.90.169.205 \"cat /opt/crypto/backend/.env | grep ENCRYPTION\")",
+      "Bash(ssh root@157.90.169.205 \"pm2 restart crypto-backend 2>&1 | tail -1 && sleep 2 && pm2 logs crypto-backend --lines 3 --nostream 2>&1 | tail -5\")",
+      "Bash(ssh root@157.90.169.205 \"curl -s -X PUT http://localhost:3020/api/settings -H ''X-Api-Secret: x7Kp9mQ2vR4sT8wB3nF6jL0hD5aE1cY'' -H ''Content-Type: application/json'' -d ''{\"\"useTestnet\"\": true}'' 2>&1\")",
+      "Bash(ssh root@157.90.169.205 \"curl -s -X PUT http://localhost:3020/api/settings -H ''X-Api-Secret: x7Kp9mQ2vR4sT8wB3nF6jL0hD5aE1cY'' -H ''Content-Type: application/json'' -d ''{\"\"bybitApiKey\"\": \"\"test-key-123\"\", \"\"bybitApiSecret\"\": \"\"test-secret-456\"\", \"\"useTestnet\"\": true}'' 2>&1\")",
+      "Bash(ssh root@157.90.169.205 \"curl -s -X PUT http://localhost:3020/api/settings -H ''X-Api-Secret: x7Kp9mQ2vR4sT8wB3nF6jL0hD5aE1cY'' -H ''Content-Type: application/json'' -d ''{\"\"apiKey\"\": \"\"test-key-123\"\", \"\"apiSecret\"\": \"\"test-secret-456\"\", \"\"useTestnet\"\": true}'' 2>&1\")",
+      "Bash(ssh root@157.90.169.205 \"pm2 logs crypto-backend --lines 10 --nostream 2>&1 | grep -i ''valid\\\\|key\\\\|bybit\\\\|error'' | tail -10\")",
+      "Bash(npm run:*)",
+      "Bash(scp -r dist/* root@157.90.169.205:/opt/crypto/backend/dist/)",
+      "Bash(ssh root@157.90.169.205 \"pm2 restart crypto-backend\")",
+      "Bash(ssh root@157.90.169.205 \"pm2 logs crypto-backend --lines 5 --nostream 2>&1 | grep -i ''validation''\")",
+      "Bash(ssh root@157.90.169.205 \"pm2 logs crypto-backend --lines 20 --nostream 2>&1 | grep -i ''validation\\\\|Settings\\\\|error\\\\|key''\")",
+      "Bash(ssh root@157.90.169.205 \"cd /opt/crypto/backend && node -e \"\":*)",
+      "Bash(ssh root@157.90.169.205 \"curl -s https://api-testnet.bybit.com/v5/market/time 2>&1 | head -1 && curl -s https://api-testnet.bybit.eu/v5/market/time 2>&1 | head -1\")",
+      "Skill(gsd:complete-milestone)",
+      "Skill(gsd:complete-milestone:*)"
     ]
   }
 }
