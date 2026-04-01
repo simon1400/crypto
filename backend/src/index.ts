@@ -13,6 +13,8 @@ import { expireOldSignals } from './scanner/coinScanner'
 import { startWsListener } from './trading/wsListener'
 import { startTtlChecker } from './trading/tradingService'
 import { reconcilePositions } from './trading/positionManager'
+import { startAutoListener } from './trading/autoListener'
+import { prisma } from './db/prisma'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -64,6 +66,17 @@ app.listen(PORT, () => {
   setInterval(() => {
     reconcilePositions().catch(err => console.error('[PositionManager] Reconcile error:', err))
   }, 60 * 1000)
+
+  // Start auto listener if tradingMode is "auto"
+  prisma.botConfig.findUnique({ where: { id: 1 } }).then(config => {
+    if (config?.tradingMode === 'auto') {
+      startAutoListener().catch(err =>
+        console.error('[AutoListener] Failed to start on boot:', err.message)
+      )
+    }
+  }).catch(() => {
+    // BotConfig may not exist yet — skip
+  })
 
   // Auto-scan disabled — manual scan only via POST /api/scanner/scan
 })

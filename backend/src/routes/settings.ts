@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { prisma } from '../db/prisma'
 import { encrypt, decrypt, maskKey } from '../services/encryption'
 import { createBybitClient, validateBybitKeys } from '../services/bybit'
+import { startAutoListener, stopAutoListener } from '../trading/autoListener'
 
 const router = Router()
 
@@ -99,6 +100,17 @@ router.put('/', async (req, res) => {
       update: updateData,
       create: createData,
     })
+
+    // Start/stop auto listener based on tradingMode change
+    if (tradingMode === 'auto') {
+      startAutoListener().catch(err =>
+        console.error('[Settings] Failed to start auto listener:', err.message)
+      )
+    } else if (tradingMode === 'manual') {
+      stopAutoListener().catch(err =>
+        console.error('[Settings] Failed to stop auto listener:', err.message)
+      )
+    }
 
     const response: any = {
       apiKeyMasked: maskKey(config.apiKey),
