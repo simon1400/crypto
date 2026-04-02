@@ -17,23 +17,24 @@ router.post('/scan', async (req, res) => {
       useGPT?: boolean
     }
 
-    const results = await runScan(
+    const { results, funnel } = await runScan(
       coins || SCAN_COINS,
-      minScore ?? 55,
+      minScore ?? 40,
       useGPT ?? true,
     )
 
     res.json({
       total: results.length,
-      confirmed: results.filter(r => r.gptReview.verdict === 'CONFIRM').length,
-      rejected: results.filter(r => r.gptReview.verdict === 'REJECT').length,
+      funnel,
       regime: results[0]?.regime || null,
       signals: results.map(r => ({
         coin: r.signal.coin,
         type: r.signal.type,
         strategy: r.signal.strategy,
         score: r.signal.score,
+        category: r.category,
         scoreBreakdown: r.signal.scoreBreakdown,
+        // Best entry model
         entry: r.signal.entry,
         stopLoss: r.signal.stopLoss,
         slPercent: r.signal.slPercent,
@@ -44,12 +45,18 @@ router.post('/scan', async (req, res) => {
         leverage: r.signal.leverage,
         positionPct: r.signal.positionPct,
         riskReward: r.signal.riskReward,
+        bestEntryType: r.signal.bestEntryType,
+        // All entry models
+        entryModels: r.signal.entryModels,
         reasons: r.signal.reasons,
-        gptVerdict: r.gptReview.verdict,
-        gptConfidence: r.gptReview.confidence,
-        gptReasoning: r.gptReview.reasoning,
-        gptRisks: r.gptReview.risks,
-        gptKeyLevels: r.gptReview.keyLevels,
+        // GPT annotation (not verdict)
+        setupQuality: r.gptAnnotation.setupQuality,
+        aiCommentary: r.gptAnnotation.commentary,
+        aiRisks: r.gptAnnotation.risks,
+        aiConflicts: r.gptAnnotation.conflicts,
+        aiKeyLevels: r.gptAnnotation.keyLevels,
+        recommendedEntryType: r.gptAnnotation.recommendedEntryType,
+        waitForConfirmation: r.gptAnnotation.waitForConfirmation,
       })),
     })
   } catch (err: any) {
@@ -70,10 +77,12 @@ router.get('/signals', async (req, res) => {
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20))
     const status = req.query.status as string | undefined
     const coin = req.query.coin as string | undefined
+    const category = req.query.category as string | undefined
 
     const where: any = {}
     if (status) where.status = status
     if (coin) where.coin = { contains: coin.toUpperCase() }
+    // Category is stored inside marketContext JSON — filter in app layer if needed
 
     const [data, total] = await Promise.all([
       prisma.generatedSignal.findMany({
@@ -85,9 +94,18 @@ router.get('/signals', async (req, res) => {
       prisma.generatedSignal.count({ where }),
     ])
 
+    // Post-filter by category if requested
+    let filtered = data
+    if (category) {
+      filtered = data.filter((s: any) => {
+        const mc = s.marketContext as any
+        return mc?.category === category
+      })
+    }
+
     res.json({
-      data,
-      total,
+      data: filtered,
+      total: category ? filtered.length : total,
       page,
       totalPages: Math.ceil(total / limit),
     })
@@ -136,7 +154,6 @@ router.post('/signals/:id/close', async (req, res) => {
     const closePct = Number(percent)
     const newClosedPct = Math.min(100, signal.closedPct + closePct)
 
-    // P&L calculation — amount is margin, leverage applied
     const direction = signal.type === 'LONG' ? 1 : -1
     const priceDiff = (closePrice - signal.entry) * direction
     const pnlPercent = (priceDiff / signal.entry) * 100 * signal.leverage

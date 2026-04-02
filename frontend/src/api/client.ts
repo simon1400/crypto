@@ -245,10 +245,63 @@ export interface ScannerSignal {
   closedAt: string | null
 }
 
+export interface EntryModel {
+  type: 'aggressive' | 'confirmation' | 'pullback'
+  entry: number
+  stopLoss: number
+  takeProfits: { price: number; rr: number }[]
+  leverage: number
+  positionPct: number
+  slPercent: number
+  riskReward: number
+  viable: boolean
+}
+
+export interface ScanSignal {
+  coin: string
+  type: string
+  strategy: string
+  score: number
+  category: string
+  scoreBreakdown: { technical: number; multiTF: number; volume: number; marketContext: number; patterns: number }
+  entry: number
+  stopLoss: number
+  slPercent: number
+  takeProfits: { price: number; rr: number }[]
+  tp1Percent: number
+  tp2Percent: number
+  tp3Percent: number
+  leverage: number
+  positionPct: number
+  riskReward: number
+  bestEntryType: string
+  entryModels: EntryModel[]
+  reasons: string[]
+  setupQuality: string
+  aiCommentary: string
+  aiRisks: string[]
+  aiConflicts: string[]
+  aiKeyLevels: string[]
+  recommendedEntryType: string
+  waitForConfirmation: string | null
+}
+
+export interface ScanFunnel {
+  coinsScanned: number
+  fetchErrors: number
+  strategyCandidates: number
+  rejectedByVolume: number
+  passedScoring: number
+  rejectedByRR: number
+  passedRisk: number
+  byStrategy: Record<string, number>
+  byCategory: Record<string, number>
+  final: number
+}
+
 export interface ScanResponse {
   total: number
-  confirmed: number
-  rejected: number
+  funnel: ScanFunnel
   regime: {
     regime: string
     confidence: number
@@ -256,29 +309,7 @@ export interface ScanResponse {
     fearGreedZone: string
     volatility: string
   } | null
-  signals: {
-    coin: string
-    type: string
-    strategy: string
-    score: number
-    scoreBreakdown: { technical: number; multiTF: number; volume: number; marketContext: number; patterns: number }
-    entry: number
-    stopLoss: number
-    slPercent: number
-    takeProfits: { price: number; rr: number }[]
-    tp1Percent: number
-    tp2Percent: number
-    tp3Percent: number
-    leverage: number
-    positionPct: number
-    riskReward: number
-    reasons: string[]
-    gptVerdict: string
-    gptConfidence: number
-    gptReasoning: string
-    gptRisks: string[]
-    gptKeyLevels: string[]
-  }[]
+  signals: ScanSignal[]
 }
 
 export async function triggerScan(coins?: string[], minScore?: number, useGPT?: boolean): Promise<ScanResponse> {

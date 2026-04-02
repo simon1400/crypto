@@ -11,51 +11,72 @@ function getOpenAI() {
   return _openai
 }
 
+// GPT is an ANNOTATOR, not a gatekeeper.
+// It does NOT confirm/reject signals.
+// It provides: commentary, risks, setup quality grade, suggested adjustments.
+// The user decides whether to act on the signal.
+
 const SYSTEM = `Ты профессиональный крипто-трейдер с 10-летним опытом.
 Тебе дают автоматически сгенерированный торговый сигнал с техническим анализом.
-Твоя задача — ПОДТВЕРДИТЬ или ОТКЛОНИТЬ сигнал.
 
-Будь критичным. Отклоняй сигналы:
-- С конфликтующими индикаторами на разных таймфреймах
-- С плохим R:R (меньше 1:1.5)
-- Против сильного тренда без веских причин
-- С слишком близким SL (будет выбит шумом)
-- С слишком далёким entry (цена может не дойти)
+Твоя задача — АННОТИРОВАТЬ сигнал, а НЕ принимать решение за трейдера.
+
+Ты должен:
+1. Оценить качество сетапа (A/B/C/D/F)
+2. Описать комментарий к сетапу (2-3 предложения)
+3. Перечислить риски
+4. Перечислить конфликты между индикаторами/таймфреймами
+5. Предложить корректировки entry/SL/TP если текущие неоптимальны
+6. Рекомендовать тип входа: aggressive / confirmation / pullback
 
 Отвечай СТРОГО в формате JSON (без markdown):
 {
-  "verdict": "CONFIRM" | "REJECT",
-  "confidence": 1-10,
-  "adjustedEntry": number | null,
-  "adjustedSL": number | null,
-  "adjustedTP1": number | null,
-  "reasoning": "краткое объяснение на русском (2-3 предложения)",
+  "setupQuality": "A" | "B" | "C" | "D" | "F",
+  "commentary": "краткий комментарий на русском (2-3 предложения)",
   "risks": ["риск 1", "риск 2"],
-  "keyLevels": ["уровень 1", "уровень 2"]
-}`
-
-export interface GPTReview {
-  verdict: 'CONFIRM' | 'REJECT'
-  confidence: number
-  adjustedEntry: number | null
-  adjustedSL: number | null
-  adjustedTP1: number | null
-  reasoning: string
-  risks: string[]
-  keyLevels: string[]
+  "conflicts": ["конфликт 1", "конфликт 2"],
+  "suggestedEntry": number | null,
+  "suggestedSL": number | null,
+  "suggestedTP1": number | null,
+  "recommendedEntryType": "aggressive" | "confirmation" | "pullback",
+  "keyLevels": ["уровень 1", "уровень 2"],
+  "waitForConfirmation": "описание что ждать, если нужно" | null
 }
 
-export async function gptFilterSignal(
+Критерии качества:
+- A: Идеальный сетап, все индикаторы согласованы, отличный R:R
+- B: Хороший сетап, мелкие конфликты, но сигнал рабочий
+- C: Средний, есть заметные конфликты, нужна осторожность
+- D: Слабый, много конфликтов, лучше ждать подтверждение
+- F: Очень слабый, противоречия критичные`
+
+export type SetupQuality = 'A' | 'B' | 'C' | 'D' | 'F'
+export type EntryType = 'aggressive' | 'confirmation' | 'pullback'
+
+export interface GPTAnnotation {
+  setupQuality: SetupQuality
+  commentary: string
+  risks: string[]
+  conflicts: string[]
+  suggestedEntry: number | null
+  suggestedSL: number | null
+  suggestedTP1: number | null
+  recommendedEntryType: EntryType
+  keyLevels: string[]
+  waitForConfirmation: string | null
+}
+
+export async function gptAnnotateSignal(
   signal: SignalWithRisk,
   regime: RegimeContext,
   funding?: FundingData | null,
   news?: NewsSentiment | null,
   oi?: OIData | null,
-): Promise<GPTReview> {
+): Promise<GPTAnnotation> {
   const tf1h = signal.indicators.tf1h
   const tf4h = signal.indicators.tf4h
 
-  const prompt = `СИГНАЛ ДЛЯ ПРОВЕРКИ:
+  const prompt = `СИГНАЛ ДЛЯ АННОТАЦИИ:
 
 Монета: ${signal.coin}
 Направление: ${signal.type}
@@ -111,32 +132,38 @@ ${news && news.total > 0 ? `Новости: ${news.score > 0 ? '+' : ''}${news.s
     const text = completion.choices[0]?.message?.content?.trim()
     if (!text) throw new Error('Empty GPT response')
 
-    // Parse JSON response
     const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
-    const review = JSON.parse(cleaned) as GPTReview
+    const review = JSON.parse(cleaned)
+
+    const validQualities: SetupQuality[] = ['A', 'B', 'C', 'D', 'F']
+    const validEntryTypes: EntryType[] = ['aggressive', 'confirmation', 'pullback']
 
     return {
-      verdict: review.verdict === 'CONFIRM' ? 'CONFIRM' : 'REJECT',
-      confidence: Math.max(1, Math.min(10, review.confidence || 5)),
-      adjustedEntry: review.adjustedEntry ?? null,
-      adjustedSL: review.adjustedSL ?? null,
-      adjustedTP1: review.adjustedTP1 ?? null,
-      reasoning: review.reasoning || '',
+      setupQuality: validQualities.includes(review.setupQuality) ? review.setupQuality : 'C',
+      commentary: review.commentary || '',
       risks: review.risks || [],
+      conflicts: review.conflicts || [],
+      suggestedEntry: review.suggestedEntry ?? null,
+      suggestedSL: review.suggestedSL ?? null,
+      suggestedTP1: review.suggestedTP1 ?? null,
+      recommendedEntryType: validEntryTypes.includes(review.recommendedEntryType) ? review.recommendedEntryType : 'confirmation',
       keyLevels: review.keyLevels || [],
+      waitForConfirmation: review.waitForConfirmation ?? null,
     }
   } catch (err) {
-    console.error('[GPT Filter] Error:', err)
-    // On GPT failure, pass through with neutral review
+    console.error('[GPT Annotator] Error:', err)
+    // On GPT failure, return neutral annotation — signal still passes through
     return {
-      verdict: 'CONFIRM',
-      confidence: 5,
-      adjustedEntry: null,
-      adjustedSL: null,
-      adjustedTP1: null,
-      reasoning: 'GPT фильтр недоступен — сигнал пропущен без проверки',
+      setupQuality: 'C',
+      commentary: 'AI аннотация недоступна — оценка не выполнена',
       risks: ['AI проверка не выполнена'],
+      conflicts: [],
+      suggestedEntry: null,
+      suggestedSL: null,
+      suggestedTP1: null,
+      recommendedEntryType: 'confirmation',
       keyLevels: [],
+      waitForConfirmation: null,
     }
   }
 }

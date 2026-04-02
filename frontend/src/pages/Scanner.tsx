@@ -281,10 +281,33 @@ function SignalCard({ signal, onStatusChange }: {
   )
 }
 
+// === Category badge ===
+const CATEGORY_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  READY: { bg: 'bg-long/15', text: 'text-long', label: 'Ready' },
+  WATCHLIST: { bg: 'bg-accent/15', text: 'text-accent', label: 'Watchlist' },
+  WAIT_CONFIRMATION: { bg: 'bg-blue-500/15', text: 'text-blue-400', label: 'Wait' },
+  LATE_ENTRY: { bg: 'bg-orange-500/15', text: 'text-orange-400', label: 'Late' },
+  CONFLICTED: { bg: 'bg-short/15', text: 'text-short', label: 'Conflicted' },
+  REJECTED: { bg: 'bg-neutral/15', text: 'text-neutral', label: 'Rejected' },
+}
+
+function CategoryBadge({ category }: { category: string }) {
+  const style = CATEGORY_STYLES[category] || CATEGORY_STYLES.REJECTED
+  return <span className={`px-2 py-0.5 rounded text-xs font-bold ${style.bg} ${style.text}`}>{style.label}</span>
+}
+
+const QUALITY_COLORS: Record<string, string> = {
+  A: 'text-long',
+  B: 'text-accent',
+  C: 'text-text-secondary',
+  D: 'text-orange-400',
+  F: 'text-short',
+}
+
 // === Scan Results (from fresh scan) ===
 function ScanResultCard({ result }: { result: ScanResponse['signals'][0] }) {
   const isLong = result.type === 'LONG'
-  const isRejected = result.gptVerdict === 'REJECT'
+  const isRejected = result.category === 'REJECTED'
 
   return (
     <div className={`bg-card rounded-xl p-4 border ${isRejected ? 'border-short/20 opacity-60' : 'border-card hover:border-accent/30'} transition-colors`}>
@@ -295,8 +318,9 @@ function ScanResultCard({ result }: { result: ScanResponse['signals'][0] }) {
             {result.type}
           </span>
           <StrategyBadge strategy={result.strategy} />
-          <span className={`px-2 py-0.5 rounded text-xs font-bold ${isRejected ? 'bg-short/10 text-short' : 'bg-long/10 text-long'}`}>
-            GPT: {result.gptVerdict} ({result.gptConfidence}/10)
+          <CategoryBadge category={result.category} />
+          <span className={`font-mono font-bold text-sm ${QUALITY_COLORS[result.setupQuality] || 'text-neutral'}`}>
+            {result.setupQuality}
           </span>
         </div>
         <ScoreBadge score={result.score} />
@@ -305,15 +329,31 @@ function ScanResultCard({ result }: { result: ScanResponse['signals'][0] }) {
       {/* Score breakdown */}
       <div className="flex gap-2 mb-3 text-xs text-text-secondary">
         <span>Tech: {result.scoreBreakdown.technical}/25</span>
-        <span>Multi-TF: {result.scoreBreakdown.multiTF}/15</span>
-        <span>Vol: {result.scoreBreakdown.volume}/30</span>
+        <span>MTF: {result.scoreBreakdown.multiTF}/20</span>
+        <span>Vol: {result.scoreBreakdown.volume}/15</span>
         <span>Market: {result.scoreBreakdown.marketContext}/15</span>
         <span>Patterns: {result.scoreBreakdown.patterns}/15</span>
       </div>
 
+      {/* Entry models */}
+      {result.entryModels && result.entryModels.length > 0 && (
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          {result.entryModels.map((model) => (
+            <div key={model.type} className={`bg-input rounded-lg p-2 border ${model.type === result.bestEntryType ? 'border-accent/40' : 'border-transparent'} ${!model.viable ? 'opacity-40' : ''}`}>
+              <div className="text-xs text-text-secondary capitalize">{model.type}{model.type === result.bestEntryType ? ' ★' : ''}</div>
+              <div className="font-mono text-sm text-accent">${model.entry}</div>
+              <div className="text-xs text-text-secondary">
+                SL: <span className="text-short">{model.slPercent}%</span> · R:R: <span className="text-text-primary">1:{model.riskReward}</span>
+              </div>
+              {!model.viable && <div className="text-xs text-short">non-viable</div>}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
         <div className="bg-input rounded-lg p-2">
-          <div className="text-xs text-text-secondary">Вход</div>
+          <div className="text-xs text-text-secondary">Вход ({result.bestEntryType})</div>
           <div className="font-mono font-bold text-accent">${result.entry}</div>
         </div>
         <div className="bg-input rounded-lg p-2">
@@ -348,14 +388,24 @@ function ScanResultCard({ result }: { result: ScanResponse['signals'][0] }) {
         </ul>
       </div>
 
-      {/* GPT analysis */}
-      {result.gptReasoning && (
+      {/* AI annotation */}
+      {result.aiCommentary && (
         <div className="bg-input rounded-lg p-3 text-sm text-text-secondary">
-          <div className="text-xs text-accent mb-1 font-medium">GPT-5.4:</div>
-          <div>{result.gptReasoning}</div>
-          {result.gptRisks.length > 0 && (
+          <div className="text-xs text-accent mb-1 font-medium">AI Annotation [{result.setupQuality}]:</div>
+          <div>{result.aiCommentary}</div>
+          {result.aiConflicts.length > 0 && (
+            <div className="mt-1 text-xs text-orange-400">
+              Конфликты: {result.aiConflicts.join(' · ')}
+            </div>
+          )}
+          {result.aiRisks.length > 0 && (
             <div className="mt-1 text-xs text-short">
-              Риски: {result.gptRisks.join(' · ')}
+              Риски: {result.aiRisks.join(' · ')}
+            </div>
+          )}
+          {result.waitForConfirmation && (
+            <div className="mt-1 text-xs text-blue-400">
+              ⏳ Ждать: {result.waitForConfirmation}
             </div>
           )}
         </div>
@@ -390,7 +440,7 @@ export default function Scanner() {
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [useGPT, setUseGPT] = useState(true)
-  const [minScore, setMinScore] = useState(55)
+  const [minScore, setMinScore] = useState(40)
 
   // Load saved signals
   useEffect(() => {
@@ -502,7 +552,7 @@ export default function Scanner() {
             onClick={() => setTab('scan')}
             className={`px-4 py-2 text-sm font-medium transition-colors ${tab === 'scan' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary hover:text-text-primary'}`}
           >
-            Результаты скана {scanResults ? `(${scanResults.confirmed}/${scanResults.total})` : ''}
+            Результаты скана {scanResults ? `(${scanResults.total})` : ''}
           </button>
         </div>
       )}
@@ -583,10 +633,11 @@ export default function Scanner() {
                 <span className="text-text-secondary">Volatility: </span>
                 <span className="text-text-primary">{scanResults.regime.volatility}</span>
               </div>
-              <div className="ml-auto">
-                <span className="text-long">{scanResults.confirmed} подтверждено</span>
-                <span className="text-text-secondary mx-1">·</span>
-                <span className="text-short">{scanResults.rejected} отклонено</span>
+              <div className="ml-auto flex gap-2 text-xs">
+                {scanResults.funnel && Object.entries(scanResults.funnel.byCategory).filter(([, v]) => v > 0).map(([cat, count]) => {
+                  const style = CATEGORY_STYLES[cat]
+                  return <span key={cat} className={style?.text || 'text-neutral'}>{count} {style?.label || cat}</span>
+                })}
               </div>
             </div>
           )}
