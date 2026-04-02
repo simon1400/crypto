@@ -82,7 +82,8 @@ export class OrderExecutor {
    */
   async determineEntryType(
     signal: SignalForEntry,
-    symbol: string
+    symbol: string,
+    tickSize: string = '0.01'
   ): Promise<EntryTypeResult> {
     // Scalp signals always use market order for fast entry (D-02)
     if (
@@ -111,14 +112,14 @@ export class OrderExecutor {
     if (signal.type === 'LONG') {
       return {
         orderType: 'Limit',
-        price: alignToTickSize(signal.entryMax, '0.01', 'floor'),
+        price: alignToTickSize(signal.entryMax, tickSize, 'floor'),
       }
     }
 
     // SHORT outside range -> Limit at entryMin (sell at lower edge)
     return {
       orderType: 'Limit',
-      price: alignToTickSize(signal.entryMin, '0.01', 'ceil'),
+      price: alignToTickSize(signal.entryMin, tickSize, 'ceil'),
     }
   }
 

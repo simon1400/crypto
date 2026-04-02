@@ -101,7 +101,7 @@ export async function executeSignalOrder(signalId: number) {
     }
 
     // Determine entry type (market vs limit)
-    const entryResult = await executor.determineEntryType(signal, symbol)
+    const entryResult = await executor.determineEntryType(signal, symbol, instrument.tickSize)
 
     // Calculate entry price for sizing
     const entryPrice =
