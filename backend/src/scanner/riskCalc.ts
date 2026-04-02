@@ -2,12 +2,20 @@ import { MultiTFIndicators } from '../services/indicators'
 import { ScoredSignal } from './scoring'
 
 // Phase C: Trade Construction
-// Instead of calculating one "ideal" entry that gets killed by R:R,
-// we find a SETUP ZONE and provide 3 entry models:
-//   - aggressive: market entry or close to current price
-//   - confirmation: wait for key level break/hold
-//   - pullback: wait for retest of level
-// Each has its own SL, TPs, R:R, and leverage
+// Setup zone → entry models → R:R per model
+// Show max 2 models to user: primary (recommended) + alternative
+// R:R minimum is strategy-aware
+
+// Strategy-aware R:R minimums
+const RR_MINIMUMS: Record<string, number> = {
+  breakout: 2.0,       // breakout needs room to run
+  trend_follow: 1.5,   // trend has momentum backing
+  mean_revert: 1.3,    // mean revert has short SL, high probability
+}
+
+function getMinRR(strategy: string): number {
+  return RR_MINIMUMS[strategy] || 1.5
+}
 
 export interface EntryModel {
   type: 'aggressive' | 'confirmation' | 'pullback'
@@ -18,7 +26,7 @@ export interface EntryModel {
   positionPct: number
   slPercent: number
   riskReward: number  // TP1 R:R
-  viable: boolean     // false if R:R < 1.5
+  viable: boolean     // false if R:R < strategy minimum
 }
 
 export interface SignalWithRisk {
@@ -29,7 +37,7 @@ export interface SignalWithRisk {
   scoreBreakdown: ScoredSignal['scoreBreakdown']
   reasons: string[]
   indicators: MultiTFIndicators
-  // Legacy single-entry fields (best entry model)
+  // Best entry model (primary)
   entry: number
   stopLoss: number
   takeProfits: { price: number; rr: number }[]
@@ -40,8 +48,8 @@ export interface SignalWithRisk {
   tp2Percent: number
   tp3Percent: number
   riskReward: number
-  // New: all entry models
-  entryModels: EntryModel[]
+  // Entry models: max 2 shown (primary + alternative)
+  entryModels: EntryModel[]  // only viable/relevant models, max 2
   bestEntryType: 'aggressive' | 'confirmation' | 'pullback'
 }
 
@@ -50,33 +58,34 @@ export function calculateRisk(signal: ScoredSignal): SignalWithRisk {
   const { tf1h, tf4h } = ind
   const price = tf1h.price
   const atr = tf1h.atr
+  const minRR = getMinRR(strategy)
 
-  // === Build 3 entry models ===
-  const models: EntryModel[] = []
+  // Build all 3 models
+  const aggressive = buildEntryModel('aggressive', type, strategy, price, atr, tf1h, tf4h, score, minRR)
+  const confirmation = buildEntryModel('confirmation', type, strategy, price, atr, tf1h, tf4h, score, minRR)
+  const pullback = buildEntryModel('pullback', type, strategy, price, atr, tf1h, tf4h, score, minRR)
 
-  // 1. Aggressive entry: near current price
-  const aggressiveEntry = buildEntryModel('aggressive', type, strategy, price, atr, tf1h, tf4h, score)
-  models.push(aggressiveEntry)
+  const allModels = [aggressive, confirmation, pullback]
 
-  // 2. Confirmation entry: wait for level break/hold
-  const confirmationEntry = buildEntryModel('confirmation', type, strategy, price, atr, tf1h, tf4h, score)
-  models.push(confirmationEntry)
-
-  // 3. Pullback entry: wait for retest
-  const pullbackEntry = buildEntryModel('pullback', type, strategy, price, atr, tf1h, tf4h, score)
-  models.push(pullbackEntry)
-
-  // Pick best viable model (highest R:R among viable)
-  const viable = models.filter(m => m.viable)
+  // Pick primary: best viable model (highest R:R)
+  const viable = allModels.filter(m => m.viable)
   viable.sort((a, b) => b.riskReward - a.riskReward)
 
-  // If no model is viable, still keep the signal but mark best as aggressive
-  const best = viable[0] || aggressiveEntry
-  const bestEntryType = best.type
+  const primary = viable[0] || aggressive // fallback to aggressive if none viable
+  const bestEntryType = primary.type
 
-  const tp1Percent = best.takeProfits[0] ? round(Math.abs((best.takeProfits[0].price - best.entry) / best.entry) * 100) : 0
-  const tp2Percent = best.takeProfits[1] ? round(Math.abs((best.takeProfits[1].price - best.entry) / best.entry) * 100) : 0
-  const tp3Percent = best.takeProfits[2] ? round(Math.abs((best.takeProfits[2].price - best.entry) / best.entry) * 100) : 0
+  // Pick alternative: second best viable model (different type from primary)
+  const alternative = viable.find(m => m.type !== primary.type) || null
+
+  // Export max 2 models: primary + alternative (if exists and viable)
+  const entryModels: EntryModel[] = [primary]
+  if (alternative && alternative.viable) {
+    entryModels.push(alternative)
+  }
+
+  const tp1Percent = primary.takeProfits[0] ? round(Math.abs((primary.takeProfits[0].price - primary.entry) / primary.entry) * 100) : 0
+  const tp2Percent = primary.takeProfits[1] ? round(Math.abs((primary.takeProfits[1].price - primary.entry) / primary.entry) * 100) : 0
+  const tp3Percent = primary.takeProfits[2] ? round(Math.abs((primary.takeProfits[2].price - primary.entry) / primary.entry) * 100) : 0
 
   return {
     coin,
@@ -86,19 +95,17 @@ export function calculateRisk(signal: ScoredSignal): SignalWithRisk {
     scoreBreakdown,
     reasons,
     indicators: ind,
-    // Legacy fields from best entry model
-    entry: best.entry,
-    stopLoss: best.stopLoss,
-    takeProfits: best.takeProfits,
-    leverage: best.leverage,
-    positionPct: best.positionPct,
-    slPercent: best.slPercent,
+    entry: primary.entry,
+    stopLoss: primary.stopLoss,
+    takeProfits: primary.takeProfits,
+    leverage: primary.leverage,
+    positionPct: primary.positionPct,
+    slPercent: primary.slPercent,
     tp1Percent,
     tp2Percent,
     tp3Percent,
-    riskReward: best.riskReward,
-    // New fields
-    entryModels: models,
+    riskReward: primary.riskReward,
+    entryModels,
     bestEntryType,
   }
 }
@@ -112,6 +119,7 @@ function buildEntryModel(
   tf1h: MultiTFIndicators['tf1h'],
   tf4h: MultiTFIndicators['tf4h'],
   score: number,
+  minRR: number,
 ): EntryModel {
   const isBreakout = strategy === 'breakout'
 
@@ -120,23 +128,20 @@ function buildEntryModel(
   if (type === 'LONG') {
     switch (entryType) {
       case 'aggressive':
-        // Enter near current price (or slight breakout offset)
         if (isBreakout) {
           entry = round(tf1h.resistance * 1.002)
         } else {
-          entry = round(price - atr * 0.1) // slightly below for a quick fill
+          entry = round(price - atr * 0.1)
         }
         break
       case 'confirmation':
-        // Wait for level to hold/break
         if (isBreakout) {
-          entry = round(tf1h.resistance * 1.005) // confirmed break above resistance
+          entry = round(tf1h.resistance * 1.005)
         } else {
-          entry = round(Math.max(tf1h.ema9, price - atr * 0.3)) // EMA9 hold
+          entry = round(Math.max(tf1h.ema9, price - atr * 0.3))
         }
         break
       case 'pullback':
-        // Wait for retest of support/EMA zone
         {
           const pullbackTargets = [
             tf1h.ema20,
@@ -180,7 +185,7 @@ function buildEntryModel(
     }
   }
 
-  // === Stop Loss: ATR-based, beyond support/resistance ===
+  // === Stop Loss ===
   const minSLDistance = entry * 0.01
   const slDistance = Math.max(atr * 1.5, minSLDistance)
 
@@ -261,7 +266,7 @@ function buildEntryModel(
   if (score < 60) leverage = Math.max(1, Math.floor(leverage * 0.5))
   else if (score < 75) leverage = Math.max(1, Math.floor(leverage * 0.75))
 
-  // Pullback gets full leverage, aggressive gets reduced
+  // Aggressive gets reduced leverage
   if (entryType === 'aggressive') leverage = Math.max(1, Math.floor(leverage * 0.75))
 
   // === Position size ===
@@ -271,11 +276,12 @@ function buildEntryModel(
   else if (score >= 60) positionPct = 2
   else positionPct = 1.5
 
-  // Reduce size for aggressive entry
   if (entryType === 'aggressive') positionPct = Math.max(1, positionPct * 0.75)
 
   const riskReward = takeProfits.length > 0 ? takeProfits[0].rr : 0
-  const viable = riskReward >= 1.5
+
+  // Strategy-aware viability check
+  const viable = riskReward >= minRR
 
   return {
     type: entryType,

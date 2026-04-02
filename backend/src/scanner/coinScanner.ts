@@ -82,55 +82,102 @@ export function isScannerRunning(): boolean {
   return isScanning
 }
 
+// REJECTED = rare, structural/technical only. NOT for "weak setups".
+// CONFLICTED = strong cross-layer contradictions (2+ between direction/structure/context)
 function classifySignal(signal: SignalWithRisk, gpt: GPTAnnotation): SignalCategory {
   const viableModels = signal.entryModels.filter(m => m.viable)
-  const hasConflicts = gpt.conflicts.length >= 2
-  const qualityBad = gpt.setupQuality === 'D' || gpt.setupQuality === 'F'
 
-  // All entry models non-viable
+  // === REJECTED: only structural/data issues ===
+  // 1. No viable entry model at all (all R:R below strategy minimum)
   if (viableModels.length === 0) return 'REJECTED'
+  // 2. Quality F = structurally broken (GPT found critical data/logic issue)
+  if (gpt.setupQuality === 'F') return 'REJECTED'
 
-  // Multiple conflicts or very bad quality
-  if (hasConflicts && qualityBad) return 'CONFLICTED'
+  // === CONFLICTED: strong cross-layer contradictions only ===
+  // Need 2+ STRONG conflicts between: direction vs 4h bias, strategy vs regime, entry vs structure
+  // Weak conflicts (e.g. 15m doesn't match) are NOT conflicts — just lower score
+  const strongConflicts = detectStrongConflicts(signal, gpt)
+  if (strongConflicts >= 2) return 'CONFLICTED'
 
-  // GPT says wait for confirmation
+  // === WAIT_CONFIRMATION ===
   if (gpt.waitForConfirmation && gpt.recommendedEntryType === 'confirmation') {
     return 'WAIT_CONFIRMATION'
   }
 
-  // Only aggressive entry is viable (pullback/confirmation failed)
+  // === LATE_ENTRY: only aggressive viable, others failed ===
   if (viableModels.length === 1 && viableModels[0].type === 'aggressive') {
     return 'LATE_ENTRY'
   }
 
-  // Good score + good quality + multiple viable entries
-  if (signal.score >= 65 && viableModels.length >= 2 && (gpt.setupQuality === 'A' || gpt.setupQuality === 'B')) {
+  // === READY: good setup with actionable entries ===
+  if (signal.score >= 60 && viableModels.length >= 2 && (gpt.setupQuality === 'A' || gpt.setupQuality === 'B')) {
     return 'READY'
   }
 
-  // Decent but not perfect
+  // === WATCHLIST: everything else that isn't broken ===
   return 'WATCHLIST'
+}
+
+// Detect strong cross-layer contradictions (not weak disagreements)
+function detectStrongConflicts(signal: SignalWithRisk, gpt: GPTAnnotation): number {
+  let conflicts = 0
+  const { tf1h, tf4h } = signal.indicators
+  const isLong = signal.type === 'LONG'
+
+  // 1. Direction vs 4h bias: LONG but 4h clearly bearish (or vice versa)
+  if (isLong && tf4h.trend === 'BEARISH' && tf4h.adx > 25) conflicts++
+  if (!isLong && tf4h.trend === 'BULLISH' && tf4h.adx > 25) conflicts++
+
+  // 2. Breakout LONG right into major resistance (or SHORT into support)
+  if (signal.strategy === 'breakout') {
+    if (isLong && tf1h.price > tf4h.resistance * 0.99) conflicts++
+    if (!isLong && tf1h.price < tf4h.support * 1.01) conflicts++
+  }
+
+  // 3. Trend follow but funding/context strongly against
+  if (signal.strategy === 'trend_follow') {
+    const mc = signal.scoreBreakdown.marketContext
+    if (mc <= 1) conflicts++ // market context is actively against this direction
+  }
+
+  // 4. Mean reversion but market isn't actually ranging (regime mismatch)
+  // This shouldn't happen due to strategy filter, but catch edge cases
+  if (signal.strategy === 'mean_revert' && tf4h.adx > 30) conflicts++
+
+  // 5. GPT found 2+ explicit conflicts
+  if (gpt.conflicts.length >= 2) conflicts++
+
+  return conflicts
 }
 
 // Classify without GPT annotation (when GPT is off)
 function classifySignalNoGPT(signal: SignalWithRisk): SignalCategory {
   const viableModels = signal.entryModels.filter(m => m.viable)
 
+  // REJECTED: only if no viable models
   if (viableModels.length === 0) return 'REJECTED'
+
+  // Check for strong structural conflicts without GPT
+  const { tf4h } = signal.indicators
+  const isLong = signal.type === 'LONG'
+  let conflicts = 0
+  if (isLong && tf4h.trend === 'BEARISH' && tf4h.adx > 25) conflicts++
+  if (!isLong && tf4h.trend === 'BULLISH' && tf4h.adx > 25) conflicts++
+  if (signal.strategy === 'breakout') {
+    if (isLong && signal.indicators.tf1h.price > tf4h.resistance * 0.99) conflicts++
+    if (!isLong && signal.indicators.tf1h.price < tf4h.support * 1.01) conflicts++
+  }
+  if (conflicts >= 2) return 'CONFLICTED'
 
   if (viableModels.length === 1 && viableModels[0].type === 'aggressive') {
     return 'LATE_ENTRY'
   }
 
-  if (signal.score >= 65 && viableModels.length >= 2) {
+  if (signal.score >= 60 && viableModels.length >= 2) {
     return 'READY'
   }
 
-  if (signal.score >= 50) {
-    return 'WATCHLIST'
-  }
-
-  return 'WAIT_CONFIRMATION'
+  return 'WATCHLIST'
 }
 
 export async function runScan(

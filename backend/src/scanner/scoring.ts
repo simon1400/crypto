@@ -7,6 +7,7 @@ import { NewsSentiment } from '../services/news'
 // Score a raw signal from 0-100 across 5 dimensions
 // Volume is strategy-aware: mandatory for breakout, weighted for trend, secondary for mean revert
 // MTF alignment: 4h = bias, 1h = setup, 15m = trigger (not all must match)
+// Decorrelation: factors that overlap get discounted to avoid double-counting
 
 export interface ScoredSignal extends RawSignal {
   score: number
@@ -32,9 +33,6 @@ export function scoreSignal(
   const volRatio = ind.tf1h.volRatio
 
   // === VOLUME GATE: strategy-aware ===
-  // Breakout: volume is mandatory (< 1.0 kills signal)
-  // Trend follow: volume is desired but not mandatory (penalty instead of kill)
-  // Mean revert: volume is secondary (small penalty)
   if (raw.strategy === 'breakout' && volRatio < 1.0) {
     return {
       ...raw,
@@ -45,6 +43,7 @@ export function scoreSignal(
   }
 
   // === 1. Technical score (max 25) ===
+  // This is pure strategy confidence — how well conditions match the strategy
   const techRaw = (raw.confidence / raw.maxConfidence) * 18
   let regimeBonus = 0
   if (raw.strategy === 'trend_follow' && (regime.regime === 'TRENDING_UP' || regime.regime === 'TRENDING_DOWN')) regimeBonus = 7
@@ -53,29 +52,31 @@ export function scoreSignal(
   const technical = Math.min(25, Math.round(techRaw + regimeBonus))
 
   // === 2. Multi-timeframe alignment (max 20) ===
-  // New approach: 4h = bias (direction), 1h = setup (structure), 15m = trigger
-  // Not all must match — role-based scoring
+  // 4h = bias, 1h = setup, 15m = trigger
   let multiTF = 0
   const { tf15m, tf1h, tf4h } = ind
   const expectedTrend = type === 'LONG' ? 'BULLISH' : 'BEARISH'
   const neutralTrend = 'SIDEWAYS'
 
-  // 4h = bias (max 8): must be aligned OR neutral (not conflicting)
+  // Track what MTF contributed for decorrelation
+  let mtfUsed4hTrend = false
+
+  // 4h = bias (max 8)
   if (tf4h.trend === expectedTrend) {
     multiTF += 8
+    mtfUsed4hTrend = true
   } else if (tf4h.trend === neutralTrend) {
-    multiTF += 4 // neutral is OK, not conflicting
+    multiTF += 4
   }
-  // tf4h opposing = 0 points (penalty is just absence of points)
 
-  // 1h = setup (max 7): the main structural timeframe
+  // 1h = setup (max 7)
   if (tf1h.trend === expectedTrend) {
     multiTF += 7
   } else if (tf1h.trend === neutralTrend) {
     multiTF += 3
   }
 
-  // 15m = trigger (max 5): confirms timing, nice to have
+  // 15m = trigger (max 5)
   if (tf15m.trend === expectedTrend) {
     multiTF += 5
   } else if (tf15m.trend === neutralTrend) {
@@ -88,57 +89,56 @@ export function scoreSignal(
   let volume = 0
 
   if (raw.strategy === 'breakout') {
-    // Breakout: volume is critical confirmation
     if (volRatio > 3.0) volume = 15
     else if (volRatio > 2.5) volume = 13
     else if (volRatio > 2.0) volume = 11
     else if (volRatio > 1.5) volume = 9
     else if (volRatio > 1.2) volume = 7
     else if (volRatio >= 1.0) volume = 5
-    // Below 1.0 already killed above
   } else if (raw.strategy === 'trend_follow') {
-    // Trend follow: volume desired but not mandatory
     if (volRatio > 2.5) volume = 15
     else if (volRatio > 2.0) volume = 13
     else if (volRatio > 1.5) volume = 11
     else if (volRatio > 1.2) volume = 9
     else if (volRatio > 1.0) volume = 7
-    else if (volRatio > 0.8) volume = 4  // below average — small penalty, not kill
-    else volume = 2  // very low volume — bigger penalty but still alive
+    else if (volRatio > 0.8) volume = 4
+    else volume = 2
   } else {
-    // Mean revert: volume is secondary
     if (volRatio > 2.0) volume = 15
     else if (volRatio > 1.5) volume = 12
     else if (volRatio > 1.0) volume = 9
-    else if (volRatio > 0.7) volume = 6  // low volume is OK for mean reversion
-    else volume = 4  // even very low volume gets some points
+    else if (volRatio > 0.7) volume = 6
+    else volume = 4
   }
 
   // === 4. Market context (max 15) ===
+  // Only INDEPENDENT signals: funding, fear&greed, news, OI
+  // These don't overlap with technical/MTF because they are external data sources
   let marketContext = 3 // base
 
-  // Funding rate — stronger contrarian signal
   if (funding) {
+    // Contrarian funding — independent signal (exchange-level positioning data)
     if (type === 'SHORT' && funding.fundingRate > 0.003) marketContext += 4
-    if (type === 'LONG' && funding.fundingRate < -0.003) marketContext += 4
-    if (type === 'SHORT' && funding.fundingRate > 0.001) marketContext += 2
-    if (type === 'LONG' && funding.fundingRate < -0.001) marketContext += 2
+    else if (type === 'LONG' && funding.fundingRate < -0.003) marketContext += 4
+    else if (type === 'SHORT' && funding.fundingRate > 0.001) marketContext += 2
+    else if (type === 'LONG' && funding.fundingRate < -0.001) marketContext += 2
+
+    // Crowded trade penalty
     if (type === 'LONG' && funding.fundingRate > 0.005) marketContext -= 3
     if (type === 'SHORT' && funding.fundingRate < -0.005) marketContext -= 3
   }
 
-  // OI confirmation
   if (oi && oi.openInterest > 0) {
     marketContext += 1
   }
 
-  // Fear & Greed
+  // Fear & Greed — independent sentiment data
   if (type === 'LONG' && regime.fearGreedZone === 'EXTREME_FEAR') marketContext += 2
   if (type === 'SHORT' && regime.fearGreedZone === 'EXTREME_GREED') marketContext += 2
   if (type === 'LONG' && regime.fearGreedZone === 'EXTREME_GREED') marketContext -= 2
   if (type === 'SHORT' && regime.fearGreedZone === 'EXTREME_FEAR') marketContext -= 2
 
-  // News sentiment
+  // News — independent external data
   if (news && news.total > 0) {
     if (type === 'LONG' && news.score > 30) marketContext += 2
     if (type === 'SHORT' && news.score < -30) marketContext += 2
@@ -158,12 +158,32 @@ export function scoreSignal(
     if (relevantPatterns.includes(p)) patterns += 5
     if (conflictPatterns.includes(p)) patterns -= 3
   }
+
+  // 4h patterns: discount if MTF already scored 4h trend alignment
+  // This prevents double-counting: "4h trend bullish" + "4h bullish engulfing" measure the same thing
+  const tf4hPatternWeight = mtfUsed4hTrend ? 2 : 4 // discount from 4 to 2 if MTF already counted 4h
   for (const p of tf4h.patterns) {
-    if (relevantPatterns.includes(p)) patterns += 4
+    if (relevantPatterns.includes(p)) patterns += tf4hPatternWeight
   }
   patterns = Math.max(0, Math.min(15, patterns))
 
-  const score = technical + multiTF + volume + marketContext + patterns
+  // === Decorrelation adjustment ===
+  // If technical score is high AND MTF is high, it often means the same thing:
+  // "strategy conditions met" and "timeframes aligned" are correlated for trend_follow
+  // Apply a small discount when both are near max to prevent inflated totals
+  let decorrelationPenalty = 0
+  if (raw.strategy === 'trend_follow') {
+    // Technical includes EMA alignment checks, MTF also checks EMA trends
+    const techNorm = technical / 25
+    const mtfNorm = multiTF / 20
+    if (techNorm > 0.7 && mtfNorm > 0.7) {
+      // Both high → they're partly measuring the same thing
+      decorrelationPenalty = Math.round((techNorm + mtfNorm - 1) * 5) // max ~5 pts penalty
+    }
+  }
+
+  const rawScore = technical + multiTF + volume + marketContext + patterns
+  const score = Math.max(0, rawScore - decorrelationPenalty)
 
   return {
     ...raw,

@@ -335,17 +335,16 @@ function ScanResultCard({ result }: { result: ScanResponse['signals'][0] }) {
         <span>Patterns: {result.scoreBreakdown.patterns}/15</span>
       </div>
 
-      {/* Entry models */}
+      {/* Entry models: primary + alternative (max 2) */}
       {result.entryModels && result.entryModels.length > 0 && (
-        <div className="grid grid-cols-3 gap-2 mb-3">
-          {result.entryModels.map((model) => (
-            <div key={model.type} className={`bg-input rounded-lg p-2 border ${model.type === result.bestEntryType ? 'border-accent/40' : 'border-transparent'} ${!model.viable ? 'opacity-40' : ''}`}>
-              <div className="text-xs text-text-secondary capitalize">{model.type}{model.type === result.bestEntryType ? ' ★' : ''}</div>
+        <div className={`grid ${result.entryModels.length > 1 ? 'grid-cols-2' : 'grid-cols-1'} gap-2 mb-3`}>
+          {result.entryModels.map((model, idx) => (
+            <div key={model.type} className={`bg-input rounded-lg p-2 border ${idx === 0 ? 'border-accent/40' : 'border-text-secondary/20'}`}>
+              <div className="text-xs text-text-secondary capitalize">{idx === 0 ? `${model.type} ★` : model.type}</div>
               <div className="font-mono text-sm text-accent">${model.entry}</div>
               <div className="text-xs text-text-secondary">
                 SL: <span className="text-short">{model.slPercent}%</span> · R:R: <span className="text-text-primary">1:{model.riskReward}</span>
               </div>
-              {!model.viable && <div className="text-xs text-short">non-viable</div>}
             </div>
           ))}
         </div>
