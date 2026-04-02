@@ -9,6 +9,7 @@ const API_HASH = process.env.TELEGRAM_API_HASH || ''
 const SESSION_FILE = path.join(__dirname, '../../.telegram-session')
 
 let client: TelegramClient | null = null
+let healthCheckInterval: ReturnType<typeof setInterval> | null = null
 
 function loadSession(): string {
   try {
@@ -28,19 +29,62 @@ export async function getTelegramClient(): Promise<TelegramClient> {
   const sessionStr = loadSession()
   const session = new StringSession(sessionStr)
   client = new TelegramClient(session, API_ID, API_HASH, {
-    connectionRetries: 5,
+    connectionRetries: 10,
+    autoReconnect: true,
   })
 
   if (!sessionStr) {
-    // First-time auth — needs interactive input
-    // Run: npx tsx src/telegram-auth.ts
     throw new Error(
       'Telegram session not found. Run "npx tsx src/telegram-auth.ts" to authenticate first.'
     )
   }
 
   await client.connect()
+  console.log('[Telegram] Client connected')
+
+  // Start health check — ping every 5 minutes to detect silent disconnects
+  startHealthCheck()
+
   return client
+}
+
+function startHealthCheck() {
+  if (healthCheckInterval) return
+
+  healthCheckInterval = setInterval(async () => {
+    if (!client) return
+
+    if (!client.connected) {
+      console.warn('[Telegram] Health check: disconnected, reconnecting...')
+      try {
+        await client.connect()
+        console.log('[Telegram] Health check: reconnected successfully')
+      } catch (err: any) {
+        console.error('[Telegram] Health check: reconnect failed:', err.message)
+      }
+      return
+    }
+
+    // Ping with a lightweight API call to detect silent connection loss
+    try {
+      await client.invoke(new Api.updates.GetState())
+    } catch (err: any) {
+      console.warn('[Telegram] Health check: getState failed, reconnecting...', err.message)
+      try {
+        await client.connect()
+        console.log('[Telegram] Health check: reconnected after getState failure')
+      } catch (reconnectErr: any) {
+        console.error('[Telegram] Health check: reconnect failed:', reconnectErr.message)
+      }
+    }
+  }, 5 * 60 * 1000) // every 5 minutes
+}
+
+export function stopHealthCheck() {
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval)
+    healthCheckInterval = null
+  }
 }
 
 export interface TelegramMessage {

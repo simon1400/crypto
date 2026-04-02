@@ -162,6 +162,11 @@ async function handleTpOrderUpdate(order: WsOrderUpdate, tpLevel: number): Promi
 
   const actionName = `TP${tpLevel}_HIT` as any
 
+  // Calculate P&L for this TP portion
+  const tpPrice = parseFloat(order.avgPrice) || tps[tpLevel - 1]
+  const tpPnl = calculateRealizedPnl(position, tpPrice, pctPerTp)
+  const totalPnl = Math.round((position.realizedPnl + tpPnl) * 100) / 100
+
   // Determine if all TPs are filled
   const allFilled = newClosedPct >= 100
   const newStatus = allFilled ? 'CLOSED' : 'PARTIALLY_CLOSED'
@@ -171,6 +176,7 @@ async function handleTpOrderUpdate(order: WsOrderUpdate, tpLevel: number): Promi
     data: {
       closedPct: newClosedPct,
       status: newStatus,
+      realizedPnl: totalPnl,
       closedAt: allFilled ? new Date() : undefined,
     },
   })
@@ -183,8 +189,28 @@ async function handleTpOrderUpdate(order: WsOrderUpdate, tpLevel: number): Promi
       price: order.avgPrice,
       qty: order.cumExecQty,
       closedPct: newClosedPct,
+      tpPnl,
+      totalPnl,
     },
   })
+}
+
+/**
+ * Calculate realized P&L for a position closed at a given price.
+ * Takes into account partially closed percentage (TPs already hit).
+ */
+function calculateRealizedPnl(
+  position: { entryPrice: number | null; type: string; leverage: number; margin: number | null; closedPct: number; realizedPnl: number },
+  closePrice: number,
+  closePct: number // percentage being closed now (e.g. 100 for full SL, or per-TP pct)
+): number {
+  if (!position.entryPrice || !position.margin) return 0
+
+  const direction = position.type === 'LONG' ? 1 : -1
+  const priceDiff = (closePrice - position.entryPrice) * direction
+  const pnlPercent = (priceDiff / position.entryPrice) * 100 * position.leverage
+  const portionMargin = position.margin * (closePct / 100)
+  return Math.round(portionMargin * (pnlPercent / 100) * 100) / 100
 }
 
 /**
@@ -200,11 +226,19 @@ async function handleSlTriggered(order: WsOrderUpdate): Promise<void> {
   })
   if (!position) return
 
+  // Calculate P&L for the remaining portion closed by SL
+  const remainingPct = 100 - position.closedPct
+  const slPrice = parseFloat(order.avgPrice) || position.stopLoss
+  const slPnl = calculateRealizedPnl(position, slPrice, remainingPct)
+  const totalPnl = Math.round((position.realizedPnl + slPnl) * 100) / 100
+
   await prisma.position.update({
     where: { id: position.id },
     data: {
       status: 'SL_HIT',
       closedAt: new Date(),
+      closedPct: 100,
+      realizedPnl: totalPnl,
     },
   })
 
@@ -215,6 +249,9 @@ async function handleSlTriggered(order: WsOrderUpdate): Promise<void> {
       orderId: order.orderId,
       price: order.avgPrice,
       symbol: order.symbol,
+      slPnl,
+      totalPnl,
+      remainingPct,
     },
   })
 }
@@ -236,11 +273,19 @@ export async function handlePositionUpdate(data: WsPositionUpdate[]): Promise<vo
         })
         if (!position) continue
 
+        const bybitPnl = parseFloat(update.cumRealisedPnl || '0')
+        // Use Bybit's cumRealisedPnl if available, otherwise keep what we have
+        const totalPnl = bybitPnl !== 0
+          ? Math.round(bybitPnl * 100) / 100
+          : position.realizedPnl
+
         await prisma.position.update({
           where: { id: position.id },
           data: {
             status: 'CLOSED_EXTERNAL',
             closedAt: new Date(),
+            closedPct: 100,
+            realizedPnl: totalPnl,
           },
         })
 
@@ -250,6 +295,7 @@ export async function handlePositionUpdate(data: WsPositionUpdate[]): Promise<vo
           details: {
             symbol: update.symbol,
             cumRealisedPnl: update.cumRealisedPnl,
+            realizedPnl: totalPnl,
             reason: 'position_size_zero_on_exchange',
           },
         })
@@ -303,19 +349,40 @@ export async function reconcilePositions(): Promise<void> {
       const existsOnBybit = bybitSymbolSet.has(dbPos.symbol)
 
       if (!existsOnBybit && (dbPos.status === 'OPEN' || dbPos.status === 'PARTIALLY_CLOSED')) {
-        // Position closed externally
+        // Position closed externally — try to get P&L from Bybit closed PnL API
+        let closedPnl = dbPos.realizedPnl
+        try {
+          const pnlResp = await client.getClosedPnL({
+            category: 'linear',
+            symbol: dbPos.symbol,
+            limit: 5,
+          })
+          const pnlRecords = (pnlResp.result as any)?.list || []
+          // Find the most recent record for this symbol
+          if (pnlRecords.length > 0) {
+            const totalFromBybit = pnlRecords.reduce(
+              (sum: number, r: any) => sum + parseFloat(r.closedPnl || '0'), 0
+            )
+            if (totalFromBybit !== 0) {
+              closedPnl = Math.round(totalFromBybit * 100) / 100
+            }
+          }
+        } catch {
+          // Fallback: use calculated P&L if Bybit API fails
+        }
+
         await prisma.position.update({
           where: { id: dbPos.id },
-          data: { status: 'CLOSED_EXTERNAL', closedAt: new Date() },
+          data: { status: 'CLOSED_EXTERNAL', closedAt: new Date(), closedPct: 100, realizedPnl: closedPnl },
         })
 
         await logOrderAction('CLOSED_EXTERNAL', {
           positionId: dbPos.id,
           signalId: dbPos.signalId ?? undefined,
-          details: { reason: 'reconcile_not_on_exchange', symbol: dbPos.symbol },
+          details: { reason: 'reconcile_not_on_exchange', symbol: dbPos.symbol, realizedPnl: closedPnl },
         })
 
-        console.log(`[PositionManager] Reconcile: marked ${dbPos.symbol} pos=${dbPos.id} as CLOSED_EXTERNAL`)
+        console.log(`[PositionManager] Reconcile: marked ${dbPos.symbol} pos=${dbPos.id} as CLOSED_EXTERNAL (P&L: ${closedPnl})`)
       } else if (existsOnBybit && dbPos.status === 'PENDING_ENTRY') {
         // Entry filled but WS event missed
         const bybitPos = bybitPositions.find(

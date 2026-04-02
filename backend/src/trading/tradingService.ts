@@ -77,6 +77,29 @@ export async function executeSignalOrder(signalId: number) {
         (c: any) => c.coin === 'USDT'
       )?.walletBalance || '0'
 
+    // Validate SL vs current price before placing order
+    const tickerResp = await client.getTickers({ category: 'linear', symbol })
+    const currentPrice = parseFloat((tickerResp.result as any).list[0].lastPrice)
+
+    if (signal.type === 'LONG' && signal.stopLoss >= currentPrice) {
+      const reason = `SL ${signal.stopLoss} >= current price ${currentPrice} for LONG`
+      console.warn(`[TradingService] Skipping ${symbol}: ${reason}`)
+      await logOrderAction('AUTO_SKIPPED', {
+        signalId: signal.id,
+        details: { coin: signal.coin, reason, currentPrice, stopLoss: signal.stopLoss },
+      })
+      throw new Error(`Invalid SL for ${symbol}: ${reason}`)
+    }
+    if (signal.type === 'SHORT' && signal.stopLoss <= currentPrice) {
+      const reason = `SL ${signal.stopLoss} <= current price ${currentPrice} for SHORT`
+      console.warn(`[TradingService] Skipping ${symbol}: ${reason}`)
+      await logOrderAction('AUTO_SKIPPED', {
+        signalId: signal.id,
+        details: { coin: signal.coin, reason, currentPrice, stopLoss: signal.stopLoss },
+      })
+      throw new Error(`Invalid SL for ${symbol}: ${reason}`)
+    }
+
     // Determine entry type (market vs limit)
     const entryResult = await executor.determineEntryType(signal, symbol)
 

@@ -1,4 +1,5 @@
 import { NewMessage, type NewMessageEvent } from 'telegram/events'
+import { EditedMessage } from 'telegram/events/EditedMessage'
 import { prisma } from '../db/prisma'
 import { getTelegramClient } from '../services/telegram'
 import { parseSignalMessage, extractCategory } from '../services/signalParser'
@@ -16,6 +17,7 @@ const NEAR512_TOPIC_MAP: Record<number, string> = {
 
 let isListenerActive = false
 let handlerRef: ((event: NewMessageEvent) => Promise<void>) | null = null
+let editHandlerRef: ((event: NewMessageEvent) => Promise<void>) | null = null
 let isDailyLimitPaused = false
 
 /**
@@ -26,11 +28,14 @@ export async function handleAutoMessage(event: NewMessageEvent): Promise<void> {
   try {
     const msg = event.message
     const text = msg.message
-    if (!text) return
-
     const chatId = msg.chatId?.toString() ?? ''
     const messageId = msg.id
     const topicId = (msg as any).replyTo?.replyToMsgId as number | undefined
+    const isEdit = !!(msg as any).editDate
+
+    console.log(`[AutoListener] ${isEdit ? 'EDITED' : 'NEW'} msg #${messageId} chat=${chatId} topic=${topicId ?? '-'} text=${text?.substring(0, 80) ?? '(empty)'}`)
+
+    if (!text) return
 
     // Determine channel name
     let channel: string | null = null
@@ -52,7 +57,12 @@ export async function handleAutoMessage(event: NewMessageEvent): Promise<void> {
 
     // Parse signal
     const parsed = parseSignalMessage(text)
-    if (!parsed) return
+    if (!parsed) {
+      console.log(`[AutoListener] Could not parse signal from msg #${messageId} (channel=${channel})`)
+      return
+    }
+    console.log(`[AutoListener] Parsed: ${parsed.coin} ${parsed.type} lev=${parsed.leverage}x entry=${parsed.entryMin}-${parsed.entryMax} SL=${parsed.stopLoss} TPs=${parsed.takeProfits.join(',')}`)
+
 
     // Load BotConfig
     const config = await prisma.botConfig.findUnique({ where: { id: 1 } })
@@ -122,8 +132,11 @@ export async function handleAutoMessage(event: NewMessageEvent): Promise<void> {
         },
       })
     } catch (err: any) {
-      // Unique constraint violation (duplicate signal)
-      if (err.code === 'P2002') return
+      // Unique constraint violation (duplicate signal — already processed)
+      if (err.code === 'P2002') {
+        console.log(`[AutoListener] Duplicate signal skipped: ${parsed.coin} msg #${messageId} (already in DB)`)
+        return
+      }
       throw err
     }
 
@@ -149,22 +162,37 @@ export async function startAutoListener(): Promise<void> {
   if (isListenerActive) return
 
   const client = await getTelegramClient()
+  const chats = [EVENING_TRADER_PEER, NEAR512_PEER]
+
   handlerRef = handleAutoMessage
-  client.addEventHandler(handlerRef, new NewMessage({ chats: [EVENING_TRADER_PEER, NEAR512_PEER] }))
+  client.addEventHandler(handlerRef, new NewMessage({ chats }))
+
+  editHandlerRef = handleAutoMessage
+  client.addEventHandler(editHandlerRef, new EditedMessage({ chats }))
+
   isListenerActive = true
-  console.log('[AutoListener] Started -- listening for signals')
+  console.log('[AutoListener] Started -- listening for new + edited signals')
 }
 
 /**
  * Stop the auto listener.
  */
 export async function stopAutoListener(): Promise<void> {
-  if (!isListenerActive || !handlerRef) return
+  if (!isListenerActive) return
 
   const client = await getTelegramClient()
-  client.removeEventHandler(handlerRef, new NewMessage({ chats: [EVENING_TRADER_PEER, NEAR512_PEER] }))
+  const chats = [EVENING_TRADER_PEER, NEAR512_PEER]
+
+  if (handlerRef) {
+    client.removeEventHandler(handlerRef, new NewMessage({ chats }))
+    handlerRef = null
+  }
+  if (editHandlerRef) {
+    client.removeEventHandler(editHandlerRef, new EditedMessage({ chats }))
+    editHandlerRef = null
+  }
+
   isListenerActive = false
-  handlerRef = null
   console.log('[AutoListener] Stopped')
 }
 
@@ -181,5 +209,6 @@ export function isAutoListenerActive(): boolean {
 export function _resetForTests(): void {
   isListenerActive = false
   handlerRef = null
+  editHandlerRef = null
   isDailyLimitPaused = false
 }
