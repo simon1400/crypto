@@ -271,7 +271,37 @@ export async function handlePositionUpdate(data: WsPositionUpdate[]): Promise<vo
             status: { in: ['OPEN', 'PARTIALLY_CLOSED'] },
           },
         })
-        if (!position) continue
+        if (!position) {
+          // External position closed — create a record for P&L tracking
+          const bybitPnl = parseFloat(update.cumRealisedPnl || '0')
+          if (bybitPnl !== 0) {
+            await prisma.position.create({
+              data: {
+                symbol: update.symbol,
+                type: 'LONG',
+                leverage: parseInt(update.leverage || '1'),
+                qty: 0,
+                stopLoss: 0,
+                takeProfits: [],
+                status: 'CLOSED_EXTERNAL',
+                closedAt: new Date(),
+                closedPct: 100,
+                realizedPnl: Math.round(bybitPnl * 100) / 100,
+              },
+            })
+
+            await logOrderAction('CLOSED_EXTERNAL', {
+              details: {
+                symbol: update.symbol,
+                cumRealisedPnl: update.cumRealisedPnl,
+                reason: 'external_position_closed_ws',
+              },
+            })
+
+            console.log(`[PositionManager] External position closed: ${update.symbol} P&L: ${bybitPnl}`)
+          }
+          continue
+        }
 
         const bybitPnl = parseFloat(update.cumRealisedPnl || '0')
         // Use Bybit's cumRealisedPnl if available, otherwise keep what we have
