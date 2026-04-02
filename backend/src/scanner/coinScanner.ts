@@ -10,6 +10,43 @@ import { calculateRisk, SignalWithRisk } from './riskCalc'
 import { gptAnnotateSignal, GPTAnnotation } from './gptFilter'
 import { prisma } from '../db/prisma'
 
+// === Bybit linear symbols filter ===
+// Only scan coins that are tradeable on Bybit (linear perpetual)
+let bybitSymbolsCache: Set<string> | null = null
+let bybitSymbolsCacheTime = 0
+const BYBIT_CACHE_TTL = 60 * 60 * 1000 // 1 hour
+
+async function fetchBybitLinearSymbols(): Promise<Set<string>> {
+  if (bybitSymbolsCache && Date.now() - bybitSymbolsCacheTime < BYBIT_CACHE_TTL) {
+    return bybitSymbolsCache
+  }
+
+  try {
+    const res = await fetch('https://api.bybit.com/v5/market/instruments-info?category=linear&limit=1000')
+    if (!res.ok) throw new Error(`Bybit API error: ${res.status}`)
+    const data = await res.json() as { retCode: number; result?: { list?: { symbol?: string; status?: string }[] } }
+
+    if (data.retCode !== 0) throw new Error(`Bybit retCode: ${data.retCode}`)
+
+    const symbols = new Set<string>()
+    for (const item of data.result?.list || []) {
+      // Linear USDT perpetuals: symbol like "BTCUSDT"
+      if (item.symbol?.endsWith('USDT') && item.status === 'Trading') {
+        // Extract coin name: "BTCUSDT" → "BTC"
+        symbols.add(item.symbol.replace('USDT', ''))
+      }
+    }
+
+    bybitSymbolsCache = symbols
+    bybitSymbolsCacheTime = Date.now()
+    console.log(`[Scanner] Bybit linear symbols loaded: ${symbols.size} coins`)
+    return symbols
+  } catch (err) {
+    console.warn('[Scanner] Failed to fetch Bybit symbols, using all coins:', err)
+    return new Set<string>() // empty = don't filter
+  }
+}
+
 // Default coins to scan
 export const SCAN_COINS = [
   // Layer 1 (25)
@@ -202,22 +239,34 @@ export async function runScan(
   }
 
   try {
-    console.log(`[Scanner] Starting scan for ${coins.length} coins...`)
+    // === Filter coins by Bybit availability ===
+    const bybitSymbols = await fetchBybitLinearSymbols()
+    let filteredCoins = coins
+    if (bybitSymbols.size > 0) {
+      filteredCoins = coins.filter(c => bybitSymbols.has(c))
+      const removed = coins.length - filteredCoins.length
+      if (removed > 0) {
+        console.log(`[Scanner] Filtered out ${removed} coins not on Bybit (${filteredCoins.length} remaining)`)
+      }
+    }
+    funnel.coinsScanned = filteredCoins.length
+
+    console.log(`[Scanner] Starting scan for ${filteredCoins.length} coins...`)
 
     // === Phase A: Discovery — Gather market data ===
     const [market, fundingMap, oiMap, newsMap] = await Promise.all([
       fetchMarketOverview(),
-      fetchFundingRates(coins),
-      fetchOpenInterests(coins),
-      fetchAllCoinNews(coins.slice(0, 10)),
+      fetchFundingRates(filteredCoins),
+      fetchOpenInterests(filteredCoins),
+      fetchAllCoinNews(filteredCoins.slice(0, 10)),
     ])
 
     // === Phase A cont: Fetch OHLCV and compute indicators ===
     const coinIndicators: Record<string, MultiTFIndicators> = {}
     const fetchErrors: string[] = []
 
-    for (let i = 0; i < coins.length; i += 5) {
-      const batch = coins.slice(i, i + 5)
+    for (let i = 0; i < filteredCoins.length; i += 5) {
+      const batch = filteredCoins.slice(i, i + 5)
       const results = await Promise.all(
         batch.map(async (coin) => {
           try {
@@ -246,7 +295,7 @@ export async function runScan(
         if (r) coinIndicators[r.coin] = r.indicators
       }
 
-      if (i + 5 < coins.length) {
+      if (i + 5 < filteredCoins.length) {
         await new Promise(r => setTimeout(r, 500))
       }
     }
