@@ -293,7 +293,7 @@ export default function Backtester() {
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: 500,
+      height: Math.max(400, window.innerHeight - 300),
       layout: {
         background: { color: '#0b0e11' },
         textColor: '#848e9c',
@@ -396,7 +396,10 @@ export default function Backtester() {
 
     const handleResize = () => {
       if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth })
+        chart.applyOptions({
+          width: containerRef.current.clientWidth,
+          height: containerRef.current.clientHeight || Math.max(400, window.innerHeight - 300),
+        })
         if (rsiChartRef.current && rsiContainerRef.current) {
           rsiChartRef.current.applyOptions({ width: rsiContainerRef.current.clientWidth })
         }
@@ -790,7 +793,13 @@ export default function Backtester() {
   function handleSelectTool(tool: string | null) {
     setActiveTool(tool)
     if (managerRef.current) {
-      managerRef.current.setActiveTool(tool)
+      try {
+        managerRef.current.setActiveTool(tool)
+      } catch (e) {
+        console.error('[Backtester] setActiveTool failed:', tool, e)
+      }
+    } else {
+      console.warn('[Backtester] DrawingManager not attached, tool:', tool)
     }
   }
 
@@ -818,11 +827,15 @@ export default function Backtester() {
   }
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold text-text-primary mb-4">Бэктестер</h1>
+    <div className="flex flex-col h-[calc(100vh-56px)]">
+      {/* Compact header row */}
+      <div className="flex items-center gap-3 px-2 py-1 flex-shrink-0">
+        <span className="text-lg font-semibold text-text-primary">Бэктестер</span>
+        <span className="text-xs text-text-secondary font-mono">{symbol} · {tf} · {klines.length} свечей</span>
+      </div>
 
       {/* Controls row */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
+      <div className="flex flex-wrap items-center gap-2 px-2 py-1 flex-shrink-0">
         {/* Symbol input */}
         <div className="flex items-center gap-2">
           <input
@@ -862,14 +875,7 @@ export default function Backtester() {
         </div>
       </div>
 
-      {/* Current symbol + interval display */}
-      <div className="flex items-center gap-2 mb-2 text-sm text-text-secondary">
-        <span className="font-mono text-text-primary font-semibold">{symbol}</span>
-        <span>·</span>
-        <span>{tf}</span>
-        <span>·</span>
-        <span>{klines.length} свечей</span>
-      </div>
+
 
       {/* Error */}
       {error && (
@@ -905,7 +911,7 @@ export default function Backtester() {
       />
 
       {/* Session save/load buttons */}
-      <div className="flex items-center gap-2 mb-2">
+      <div className="flex items-center gap-2 px-2 flex-shrink-0">
         {replayMode && (
           <button
             onClick={saveSession}
@@ -924,7 +930,7 @@ export default function Backtester() {
         )}
       </div>
 
-      {/* Indicator toolbar */}
+      {/* Indicator toolbar + session controls in one row */}
       <IndicatorToolbar
         emaEnabled={emaEnabled}
         rsiEnabled={rsiEnabled}
@@ -935,16 +941,16 @@ export default function Backtester() {
       />
 
       {/* Chart container */}
-      <div ref={containerRef} className="rounded-lg overflow-hidden border border-card" />
+      <div ref={containerRef} className="flex-1 min-h-0 overflow-hidden border border-card" />
 
       {/* RSI sub-chart */}
       {rsiEnabled && (
-        <div ref={rsiContainerRef} className="rounded-lg overflow-hidden border border-card mt-1" />
+        <div ref={rsiContainerRef} className="overflow-hidden border border-card flex-shrink-0" />
       )}
 
       {/* MACD sub-chart */}
       {macdEnabled && (
-        <div ref={macdContainerRef} className="rounded-lg overflow-hidden border border-card mt-1" />
+        <div ref={macdContainerRef} className="overflow-hidden border border-card flex-shrink-0" />
       )}
 
       {/* Virtual trading panel */}
