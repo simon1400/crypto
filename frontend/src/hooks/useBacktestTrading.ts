@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react'
-import { createTrade, closeTrade, Trade, TradeTP } from '../api/client'
+import { createTrade, closeTrade, hitStopLoss, Trade, TradeTP } from '../api/client'
 
 // KlineData shape matching what Backtester uses
 interface KlineData {
@@ -221,8 +221,10 @@ export function useBacktestTrading({ candleSeriesRef, symbol, replayMode }: UseB
         source: 'BACKTEST',
       })
 
-      // Close trade at hit price with 100%
-      const closedTrade = await closeTrade(savedTrade.id, hitPrice, 100)
+      // Close trade — use hitStopLoss for SL, closeTrade for TP
+      const closedTrade = isSL
+        ? await hitStopLoss(savedTrade.id)
+        : await closeTrade(savedTrade.id, hitPrice, 100)
 
       setClosedTrades(prev => [...prev, closedTrade])
 

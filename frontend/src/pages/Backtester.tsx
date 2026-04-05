@@ -127,6 +127,7 @@ export default function Backtester() {
     leverage: number
     amount: number
   } | null>(null)
+  const [pendingSessionIndex, setPendingSessionIndex] = useState<number | null>(null)
 
   // Virtual trading hook
   const {
@@ -168,6 +169,17 @@ export default function Backtester() {
         setAllCandles([])
       })
   }, [symbol, tf])
+
+  // Deferred session index restoration: fires when klines reload after cross-symbol session load
+  useEffect(() => {
+    if (pendingSessionIndex === null || allCandles.length === 0) return
+    setReplayMode(true)
+    setIsPlaying(false)
+    const idx = Math.min(pendingSessionIndex, allCandles.length - 1)
+    setCurrentIndex(idx)
+    displayCandles(idx)
+    setPendingSessionIndex(null)
+  }, [allCandles, pendingSessionIndex])
 
   // Helper: compute and set all indicator data from a candle array
   function setIndicatorData(candles: KlineData[]): void {
@@ -682,7 +694,7 @@ export default function Backtester() {
         // After symbol/tf change the useEffect will reload klines;
         // we can't easily resume index until data is loaded — set a flag
         // For simplicity: set currentIndex after a brief delay via a separate effect
-        // TODO: could be improved with a "pendingSessionIndex" state
+        setPendingSessionIndex(session.currentIndex)
         return
       }
 
