@@ -3,6 +3,7 @@ import { createChart, IChartApi, CandlestickSeries, HistogramSeries } from 'ligh
 import { DrawingManager, getToolRegistry, SerializedDrawing } from 'lightweight-charts-drawing'
 import { getKlines, KlineData } from '../api/client'
 import DrawingToolbar from '../components/backtester/DrawingToolbar'
+import ReplayControls from '../components/backtester/ReplayControls'
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1D']
 
@@ -42,9 +43,19 @@ export default function Backtester() {
   const [error, setError] = useState('')
   const [activeTool, setActiveTool] = useState<string | null>(null)
 
+  // Replay state
+  const [allCandles, setAllCandles] = useState<KlineData[]>([])
+  const [replayMode, setReplayMode] = useState(false)
+  const [currentIndex, setCurrentIndex] = useState(0)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [speed, setSpeed] = useState(1)
+
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const managerRef = useRef<DrawingManager | null>(null)
+  const candleSeriesRef = useRef<any>(null)
+  const volumeSeriesRef = useRef<any>(null)
+  const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Load data when symbol or tf changes
   useEffect(() => {
@@ -53,12 +64,18 @@ export default function Backtester() {
     getKlines(symbol, tf, 1000)
       .then(response => {
         setKlines(response.data)
+        setAllCandles(response.data)
+        // Exit replay mode when data reloads
+        setReplayMode(false)
+        setIsPlaying(false)
+        setCurrentIndex(0)
         setLoading(false)
       })
       .catch(err => {
         setError(err.message)
         setLoading(false)
         setKlines([])
+        setAllCandles([])
       })
   }, [symbol, tf])
 
@@ -144,6 +161,8 @@ export default function Backtester() {
 
     chart.timeScale().fitContent()
     chartRef.current = chart
+    candleSeriesRef.current = candleSeries
+    volumeSeriesRef.current = volumeSeries
 
     // Attach DrawingManager
     const manager = new DrawingManager()
@@ -177,8 +196,49 @@ export default function Backtester() {
       }
       chart.remove()
       chartRef.current = null
+      candleSeriesRef.current = null
+      volumeSeriesRef.current = null
     }
   }, [klines])
+
+  // Auto-play useEffect
+  useEffect(() => {
+    if (!isPlaying || !replayMode) {
+      if (playIntervalRef.current) {
+        clearInterval(playIntervalRef.current)
+        playIntervalRef.current = null
+      }
+      return
+    }
+
+    const intervalMs = 1000 / speed // 1x=1000ms, 2x=500ms, 5x=200ms, 10x=100ms
+
+    playIntervalRef.current = setInterval(() => {
+      setCurrentIndex(prev => {
+        const next = prev + 1
+        if (next >= allCandles.length) {
+          setIsPlaying(false)
+          return prev
+        }
+        const k = allCandles[next]
+        if (candleSeriesRef.current) {
+          candleSeriesRef.current.update({ time: k.time as any, open: k.open, high: k.high, low: k.low, close: k.close })
+        }
+        if (volumeSeriesRef.current) {
+          volumeSeriesRef.current.update({ time: k.time as any, value: k.volume, color: k.close >= k.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)' })
+        }
+        chartRef.current?.timeScale().scrollToRealTime()
+        return next
+      })
+    }, intervalMs)
+
+    return () => {
+      if (playIntervalRef.current) {
+        clearInterval(playIntervalRef.current)
+        playIntervalRef.current = null
+      }
+    }
+  }, [isPlaying, speed, replayMode, allCandles])
 
   // Keyboard shortcuts for Delete and Escape
   useEffect(() => {
@@ -195,6 +255,76 @@ export default function Backtester() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [symbol, tf])
+
+  function displayCandles(idx: number) {
+    if (!candleSeriesRef.current || !volumeSeriesRef.current) return
+    const visible = allCandles.slice(0, idx + 1)
+    candleSeriesRef.current.setData(
+      visible.map(k => ({ time: k.time as any, open: k.open, high: k.high, low: k.low, close: k.close }))
+    )
+    volumeSeriesRef.current.setData(
+      visible.map(k => ({
+        time: k.time as any,
+        value: k.volume,
+        color: k.close >= k.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)',
+      }))
+    )
+    chartRef.current?.timeScale().scrollToRealTime()
+  }
+
+  function handleStartReplay(dateStr: string) {
+    if (!dateStr) return
+    // Reset from current position
+    if (currentIndex > 0) setCurrentIndex(0)
+    const ts = Math.floor(new Date(dateStr).getTime() / 1000)
+    let idx = allCandles.findIndex(c => c.time >= ts)
+    if (idx === -1) {
+      setError('Дата за пределами данных')
+      return
+    }
+    if (idx === 0) idx = 1 // need at least 1 visible candle
+    setReplayMode(true)
+    setCurrentIndex(idx)
+    setIsPlaying(false)
+    setSpeed(1)
+    displayCandles(idx)
+  }
+
+  function handlePlay() {
+    setIsPlaying(true)
+  }
+
+  function handlePause() {
+    setIsPlaying(false)
+  }
+
+  function handleStep() {
+    if (!replayMode) return
+    const atEnd = currentIndex >= allCandles.length - 1
+    if (atEnd) return
+    const next = currentIndex + 1
+    setCurrentIndex(next)
+    const k = allCandles[next]
+    if (candleSeriesRef.current) {
+      candleSeriesRef.current.update({ time: k.time as any, open: k.open, high: k.high, low: k.low, close: k.close })
+    }
+    if (volumeSeriesRef.current) {
+      volumeSeriesRef.current.update({ time: k.time as any, value: k.volume, color: k.close >= k.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)' })
+    }
+    chartRef.current?.timeScale().scrollToRealTime()
+  }
+
+  function handleSpeedChange(s: number) {
+    setSpeed(s)
+  }
+
+  function handleExitReplay() {
+    if (!replayMode) return
+    setReplayMode(false)
+    setIsPlaying(false)
+    setCurrentIndex(0)
+    displayCandles(allCandles.length - 1)
+  }
 
   function handleSelectTool(tool: string | null) {
     setActiveTool(tool)
@@ -240,11 +370,13 @@ export default function Backtester() {
             onChange={e => setInputSymbol(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="BTCUSDT"
-            className="bg-input text-text-primary border border-card rounded-lg px-3 py-2 font-mono focus:outline-none focus:border-accent transition-colors"
+            disabled={isPlaying}
+            className="bg-input text-text-primary border border-card rounded-lg px-3 py-2 font-mono focus:outline-none focus:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           />
           <button
             onClick={loadSymbol}
-            className="px-4 py-2 bg-accent text-primary rounded-lg font-medium hover:bg-accent/90 transition-colors"
+            disabled={isPlaying}
+            className="px-4 py-2 bg-accent text-primary rounded-lg font-medium hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Загрузить
           </button>
@@ -256,7 +388,8 @@ export default function Backtester() {
             <button
               key={i}
               onClick={() => setTf(i)}
-              className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+              disabled={isPlaying}
+              className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                 tf === i
                   ? 'bg-accent/20 text-accent border-accent'
                   : 'bg-input text-text-secondary border-transparent hover:text-text-primary'
@@ -293,6 +426,21 @@ export default function Backtester() {
         onSelectTool={handleSelectTool}
         onClearAll={handleClearAll}
         onDeleteSelected={handleDeleteSelected}
+      />
+
+      {/* Replay controls */}
+      <ReplayControls
+        replayMode={replayMode}
+        isPlaying={isPlaying}
+        speed={speed}
+        currentIndex={currentIndex}
+        totalCandles={allCandles.length}
+        onStartReplay={handleStartReplay}
+        onPlay={handlePlay}
+        onPause={handlePause}
+        onStep={handleStep}
+        onSpeedChange={handleSpeedChange}
+        onExit={handleExitReplay}
       />
 
       {/* Chart container */}
