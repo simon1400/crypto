@@ -380,8 +380,14 @@ export default function Backtester() {
 
     // Attach DrawingManager
     const manager = new DrawingManager()
-    manager.attach(chart, candleSeries, containerRef.current)
+    manager.attach(chart, candleSeries, containerRef.current!)
     managerRef.current = manager
+
+    // DEBUG: verify chart clicks work
+    chart.subscribeClick((param) => {
+      console.log('[Backtester] Chart click:', param.time, param.point, 'activeTool:', managerRef.current?.getActiveTool?.() ?? 'N/A')
+    })
+    console.log('[Backtester] DrawingManager attached, isAttached:', manager.isAttached())
 
     // Restore drawings from localStorage
     loadDrawings(manager, symbol, tf)
