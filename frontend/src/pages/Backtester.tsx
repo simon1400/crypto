@@ -301,7 +301,7 @@ export default function Backtester() {
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: Math.max(400, window.innerHeight - 300),
+      height: Math.max(300, window.innerHeight - 380),
       layout: {
         background: { color: '#0b0e11' },
         textColor: '#848e9c',
@@ -392,12 +392,13 @@ export default function Backtester() {
     manager.attach(chart, candleSeries, containerRef.current!)
     managerRef.current = manager
 
-    // Handle chart clicks for drawing tool placement
+    // Handle chart clicks for drawing tool placement with live preview
+    let previewDrawingId: string | null = null
+
     chart.subscribeClick((param) => {
       const tool = managerRef.current?.getActiveTool()
       if (!tool || !param.point) return
 
-      // Convert pixel coordinates to time/price for precise placement
       const time = chart.timeScale().coordinateToTime(param.point.x as any)
       const price = candleSeries.coordinateToPrice(param.point.y as any)
       if (time === null || price === null) return
@@ -406,8 +407,15 @@ export default function Backtester() {
       pendingAnchorsRef.current = [...pendingAnchorsRef.current, anchor]
 
       const needed = TOOL_ANCHORS[tool] ?? 2
+
+      // Remove preview drawing if exists
+      if (previewDrawingId && managerRef.current) {
+        managerRef.current.removeDrawing(previewDrawingId)
+        previewDrawingId = null
+      }
+
       if (pendingAnchorsRef.current.length >= needed) {
-        // Create the drawing
+        // Final drawing with all anchors
         const registry = getToolRegistry()
         const id = tool + '-' + Date.now()
         const drawing = registry.createDrawing(tool, id, pendingAnchorsRef.current.slice(0, needed))
@@ -415,9 +423,41 @@ export default function Backtester() {
           managerRef.current.addDrawing(drawing)
         }
         pendingAnchorsRef.current = []
-        // Deactivate tool after placing (optional: keep active for rapid drawing)
-        // managerRef.current?.setActiveTool(null)
-        // setActiveTool(null)
+      }
+    })
+
+    // Live preview: update preview drawing as mouse moves after first click
+    containerRef.current!.addEventListener('mousemove', (e) => {
+      const tool = managerRef.current?.getActiveTool()
+      if (!tool || pendingAnchorsRef.current.length === 0) return
+      const needed = TOOL_ANCHORS[tool] ?? 2
+      if (pendingAnchorsRef.current.length >= needed) return
+
+      const rect = containerRef.current!.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      const y = e.clientY - rect.top
+      const time = chart.timeScale().coordinateToTime(x as any)
+      const price = candleSeries.coordinateToPrice(y as any)
+      if (time === null || price === null) return
+
+      // Build preview anchors: existing + current mouse position
+      const previewAnchors = [...pendingAnchorsRef.current, { time, price }]
+      // For 3-point tools with only 1 anchor placed, duplicate last anchor for preview
+      while (previewAnchors.length < needed) {
+        previewAnchors.push({ time, price })
+      }
+
+      // Remove old preview
+      if (previewDrawingId && managerRef.current) {
+        managerRef.current.removeDrawing(previewDrawingId)
+      }
+
+      // Create preview drawing
+      const registry = getToolRegistry()
+      previewDrawingId = '__preview__'
+      const preview = registry.createDrawing(tool, previewDrawingId, previewAnchors.slice(0, needed), { lineColor: 'rgba(255,255,255,0.5)', lineWidth: 1 })
+      if (preview && managerRef.current) {
+        managerRef.current.addDrawing(preview)
       }
     })
 
@@ -436,7 +476,7 @@ export default function Backtester() {
       if (containerRef.current) {
         chart.applyOptions({
           width: containerRef.current.clientWidth,
-          height: containerRef.current.clientHeight || Math.max(400, window.innerHeight - 300),
+          height: containerRef.current.clientHeight || Math.max(300, window.innerHeight - 380),
         })
         if (rsiChartRef.current && rsiContainerRef.current) {
           rsiChartRef.current.applyOptions({ width: rsiContainerRef.current.clientWidth })
@@ -832,6 +872,8 @@ export default function Backtester() {
     setActiveTool(tool)
     pendingAnchorsRef.current = []
     if (managerRef.current) {
+      // Remove any preview drawing
+      try { managerRef.current.removeDrawing('__preview__') } catch {}
       managerRef.current.setActiveTool(tool)
     }
   }
