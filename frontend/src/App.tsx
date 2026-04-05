@@ -6,6 +6,7 @@ import Trades from './pages/Trades'
 import Scanner from './pages/Scanner'
 import Settings from './pages/Settings'
 import Positions from './pages/Positions'
+import Backtester from './pages/Backtester'
 import Login from './pages/Login'
 import { setAuthToken } from './api/client'
 
@@ -44,6 +45,7 @@ export default function App() {
             <Route path="/scanner" element={<Scanner />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/positions" element={<Positions />} />
+            <Route path="/backtester" element={<Backtester />} />
           </Routes>
         </main>
       </div>
