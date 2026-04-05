@@ -78,12 +78,16 @@ export default function Backtester() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [activeTool, setActiveTool] = useState<string | null>(null)
+  const [fibLevels, setFibLevels] = useState<number[]>(() => {
+    const saved = localStorage.getItem('fib_levels')
+    return saved ? JSON.parse(saved) : [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618, 2.618]
+  })
   const pendingAnchorsRef = useRef<{ time: any; price: number }[]>([])
 
   // How many anchors each tool needs
   const TOOL_ANCHORS: Record<string, number> = {
     'trend-line': 2, 'ray': 2, 'horizontal-line': 1, 'horizontal-ray': 1,
-    'fib-retracement': 2, 'fib-extension': 2, 'rectangle': 2,
+    'fib-retracement': 2, 'rectangle': 2,
     'parallel-channel': 3, 'triangle': 3,
   }
 
@@ -301,7 +305,7 @@ export default function Backtester() {
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: Math.max(300, window.innerHeight - 380),
+      height: Math.max(300, window.innerHeight - 180),
       layout: {
         background: { color: '#0b0e11' },
         textColor: '#848e9c',
@@ -418,7 +422,8 @@ export default function Backtester() {
         // Final drawing with all anchors
         const registry = getToolRegistry()
         const id = tool + '-' + Date.now()
-        const drawing = registry.createDrawing(tool, id, pendingAnchorsRef.current.slice(0, needed))
+        const opts = tool === 'fib-retracement' ? { levels: fibLevels } as any : undefined
+        const drawing = registry.createDrawing(tool, id, pendingAnchorsRef.current.slice(0, needed), undefined, opts)
         if (drawing && managerRef.current) {
           managerRef.current.addDrawing(drawing)
         }
@@ -476,7 +481,7 @@ export default function Backtester() {
       if (containerRef.current) {
         chart.applyOptions({
           width: containerRef.current.clientWidth,
-          height: containerRef.current.clientHeight || Math.max(300, window.innerHeight - 380),
+          height: containerRef.current.clientHeight || Math.max(300, window.innerHeight - 180),
         })
         if (rsiChartRef.current && rsiContainerRef.current) {
           rsiChartRef.current.applyOptions({ width: rsiContainerRef.current.clientWidth })
@@ -968,6 +973,11 @@ export default function Backtester() {
         onSelectTool={handleSelectTool}
         onClearAll={handleClearAll}
         onDeleteSelected={handleDeleteSelected}
+        fibLevels={fibLevels}
+        onFibLevelsChange={(levels) => {
+          setFibLevels(levels)
+          localStorage.setItem('fib_levels', JSON.stringify(levels))
+        }}
       />
 
       {/* Replay controls */}
@@ -1016,7 +1026,7 @@ export default function Backtester() {
       />
 
       {/* Chart container */}
-      <div ref={containerRef} className="flex-1 min-h-0 overflow-hidden border border-card" />
+      <div ref={containerRef} className="border border-card" style={{ height: "calc(100vh - 180px)" }} />
 
       {/* RSI sub-chart */}
       {rsiEnabled && (
@@ -1028,21 +1038,29 @@ export default function Backtester() {
         <div ref={macdContainerRef} className="overflow-hidden border border-card flex-shrink-0" />
       )}
 
-      {/* Virtual trading panel */}
-      <TradingPanel
-        replayMode={replayMode}
-        activeOrder={activeOrder}
-        currentPnl={currentPnl}
-        onPlace={placeOrder}
-        onCancel={cancelOrder}
-        lastPrice={klines.length > 0 ? klines[klines.length - 1].close : 0}
-      />
+      {/* Floating trading panel — bottom-left overlay */}
+      {replayMode && (
+        <div className="fixed bottom-4 left-4 z-50 bg-card border border-card rounded-lg shadow-2xl max-w-sm">
+          <TradingPanel
+            replayMode={replayMode}
+            activeOrder={activeOrder}
+            currentPnl={currentPnl}
+            onPlace={placeOrder}
+            onCancel={cancelOrder}
+            lastPrice={klines.length > 0 ? klines[klines.length - 1].close : 0}
+          />
+        </div>
+      )}
 
-      {/* Trade history panel */}
-      <TradeHistory
-        trades={closedTrades}
-        sessionPnl={closedTrades.reduce((sum, t) => sum + t.realizedPnl, 0)}
-      />
+      {/* Floating trade history — bottom-right overlay, only when trades exist */}
+      {closedTrades.length > 0 && (
+        <div className="fixed bottom-4 right-4 z-50 bg-card border border-card rounded-lg shadow-2xl max-w-md max-h-64 overflow-auto">
+          <TradeHistory
+            trades={closedTrades}
+            sessionPnl={closedTrades.reduce((sum, t) => sum + t.realizedPnl, 0)}
+          />
+        </div>
+      )}
     </div>
   )
 }
