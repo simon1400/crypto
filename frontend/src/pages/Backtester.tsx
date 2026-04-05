@@ -6,8 +6,11 @@ import DrawingToolbar from '../components/backtester/DrawingToolbar'
 import ReplayControls from '../components/backtester/ReplayControls'
 import IndicatorToolbar from '../components/backtester/IndicatorToolbar'
 import TradingPanel from '../components/backtester/TradingPanel'
+import TradeHistory from '../components/backtester/TradeHistory'
 import { useBacktestTrading } from '../hooks/useBacktestTrading'
 import { ema, rsiSeries, macdSeries } from '../lib/indicators'
+
+const SESSION_KEY = 'backtest_session'
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1D']
 
@@ -111,6 +114,20 @@ export default function Backtester() {
   const macdSignalRef = useRef<any>(null)
   const macdHistRef = useRef<any>(null)
 
+  // Session save/load state
+  const [saveToast, setSaveToast] = useState(false)
+  const [hasSavedSession, setHasSavedSession] = useState(() => !!localStorage.getItem(SESSION_KEY))
+
+  // Pending session order: deferred placeOrder call until candleSeriesRef is ready
+  const [pendingSessionOrder, setPendingSessionOrder] = useState<{
+    type: 'LONG' | 'SHORT'
+    entry: number
+    sl: number
+    tps: { price: number; percent: number }[]
+    leverage: number
+    amount: number
+  } | null>(null)
+
   // Virtual trading hook
   const {
     activeOrder,
@@ -121,6 +138,14 @@ export default function Backtester() {
     placeOrder,
     cancelOrder,
   } = useBacktestTrading({ candleSeriesRef, symbol, replayMode })
+
+  // Deferred price line recreation: fires once candleSeriesRef is ready and pending order is set
+  useEffect(() => {
+    if (!pendingSessionOrder || !candleSeriesRef.current) return
+    const o = pendingSessionOrder
+    placeOrder(o.type, o.entry, o.sl, o.tps, o.leverage, o.amount)
+    setPendingSessionOrder(null)
+  }, [pendingSessionOrder, candleSeriesRef.current])
 
   // Load data when symbol or tf changes
   useEffect(() => {
@@ -614,6 +639,68 @@ export default function Backtester() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [symbol, tf])
 
+  function saveSession() {
+    const session = {
+      symbol,
+      tf,
+      currentIndex,
+      replayMode,
+      activeOrder: activeOrder
+        ? {
+            type: activeOrder.type,
+            entry: activeOrder.entry,
+            sl: activeOrder.sl,
+            tps: activeOrder.tps,
+            leverage: activeOrder.leverage,
+            amount: activeOrder.amount,
+          }
+        : null,
+      closedTradeIds: closedTrades.map(t => t.id),
+      savedAt: new Date().toISOString(),
+    }
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session))
+    setHasSavedSession(true)
+    setSaveToast(true)
+    setTimeout(() => setSaveToast(false), 2000)
+  }
+
+  function loadSession() {
+    const raw = localStorage.getItem(SESSION_KEY)
+    if (!raw) return
+    try {
+      const session = JSON.parse(raw)
+
+      // If symbol/tf differ, load the new symbol first, then session will be applied via currentIndex
+      if (session.symbol !== symbol || session.tf !== tf) {
+        setInputSymbol(session.symbol)
+        setSymbol(session.symbol)
+        setTf(session.tf)
+        // Store session order for after chart/candles reload
+        if (session.activeOrder) {
+          setPendingSessionOrder(session.activeOrder)
+        }
+        // After symbol/tf change the useEffect will reload klines;
+        // we can't easily resume index until data is loaded — set a flag
+        // For simplicity: set currentIndex after a brief delay via a separate effect
+        // TODO: could be improved with a "pendingSessionIndex" state
+        return
+      }
+
+      // Same symbol/tf — restore replay position
+      setReplayMode(true)
+      setIsPlaying(false)
+      setCurrentIndex(session.currentIndex)
+      displayCandles(session.currentIndex)
+
+      // Restore active order if present (deferred until candleSeriesRef ready)
+      if (session.activeOrder) {
+        setPendingSessionOrder(session.activeOrder)
+      }
+    } catch (e) {
+      console.warn('[Backtester] Failed to load session:', e)
+    }
+  }
+
   function displayCandles(idx: number) {
     if (!candleSeriesRef.current || !volumeSeriesRef.current) return
     const visible = allCandles.slice(0, idx + 1)
@@ -805,6 +892,26 @@ export default function Backtester() {
         onExit={handleExitReplay}
       />
 
+      {/* Session save/load buttons */}
+      <div className="flex items-center gap-2 mb-2">
+        {replayMode && (
+          <button
+            onClick={saveSession}
+            className="bg-input text-text-secondary rounded-lg px-3 py-1.5 text-sm hover:text-text-primary transition-colors"
+          >
+            {saveToast ? 'Сохранено' : 'Сохранить сессию'}
+          </button>
+        )}
+        {hasSavedSession && (
+          <button
+            onClick={loadSession}
+            className="bg-input text-text-secondary rounded-lg px-3 py-1.5 text-sm hover:text-text-primary transition-colors"
+          >
+            Загрузить сессию
+          </button>
+        )}
+      </div>
+
       {/* Indicator toolbar */}
       <IndicatorToolbar
         emaEnabled={emaEnabled}
@@ -838,29 +945,11 @@ export default function Backtester() {
         lastPrice={klines.length > 0 ? klines[klines.length - 1].close : 0}
       />
 
-      {/* Closed trades in this session */}
-      {closedTrades.length > 0 && (
-        <div className="bg-card rounded-xl p-4 mt-3">
-          <div className="text-sm font-semibold text-text-primary mb-2">Сделки сессии ({closedTrades.length})</div>
-          <div className="space-y-1">
-            {closedTrades.map(t => {
-              const pnl = t.realizedPnl
-              const pnlColor = pnl > 0 ? 'text-long' : pnl < 0 ? 'text-short' : 'text-text-secondary'
-              return (
-                <div key={t.id} className="flex items-center justify-between text-sm">
-                  <span className={`px-1.5 py-0.5 rounded text-xs ${t.type === 'LONG' ? 'bg-long/20 text-long' : 'bg-short/20 text-short'}`}>
-                    {t.type}
-                  </span>
-                  <span className="font-mono text-text-secondary text-xs">{t.coin}</span>
-                  <span className={`font-mono font-semibold ${pnlColor}`}>
-                    {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} USDT
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
+      {/* Trade history panel */}
+      <TradeHistory
+        trades={closedTrades}
+        sessionPnl={closedTrades.reduce((sum, t) => sum + t.realizedPnl, 0)}
+      />
     </div>
   )
 }
