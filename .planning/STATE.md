@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Executing Phase 02
-last_updated: "2026-04-05T19:48:58.586Z"
+status: Executing Phase 04
+last_updated: "2026-04-05T20:38:35.399Z"
 progress:
   total_phases: 5
-  completed_phases: 1
-  total_plans: 3
-  completed_plans: 2
+  completed_phases: 2
+  total_plans: 5
+  completed_plans: 3
 ---
 
 ## Current Position
 
-Phase: 02 (drawing-tools) — EXECUTING
+Phase: 04 (indicator-overlay) — EXECUTING
 Plan: 1 of 1
 
 ## Project Reference
@@ -21,7 +21,7 @@ Plan: 1 of 1
 See: .planning/PROJECT.md (updated 2026-04-05)
 
 **Core value:** Бесплатный симулятор для тестирования торговых стратегий на реальных исторических данных
-**Current focus:** Phase 02 — drawing-tools
+**Current focus:** Phase 04 — indicator-overlay
 
 ## Progress Bar
 
@@ -59,11 +59,13 @@ See: .planning/PROJECT.md (updated 2026-04-05)
 - [02-01] Type strings are kebab-case in lightweight-charts-drawing (trend-line not TrendLine)
 - [02-01] importDrawings() requires factory fn; use getToolRegistry().createDrawing() for deserialization
 - [02-01] Save-before-rebuild: save drawings at klines useEffect start, reload after DrawingManager.attach()
+- [04-01] subscribeVisibleTimeRangeChange returns void in v5 — use unsubscribeVisibleTimeRangeChange(handler) for cleanup
+- [04-01] EMA series stay on main chart (data cleared when disabled), RSI/MACD sub-charts created/destroyed on toggle
 
 ### Last Session
 
-- Stopped at: Checkpoint Task 3 (human-verify) — 02-drawing-tools 02-01-PLAN.md
-- Timestamp: 2026-04-05T19:53:05Z
+- Stopped at: Checkpoint Task 3 (human-verify) — 04-indicator-overlay 04-01-PLAN.md
+- Timestamp: 2026-04-05T20:45:00Z
 
 ### Phase Dependencies
 
