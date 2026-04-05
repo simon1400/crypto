@@ -16,6 +16,7 @@ import { reconcilePositions } from './trading/positionManager'
 import { startAutoListener } from './trading/autoListener'
 import { seedTickerMappings } from './trading/tickerMapper'
 import { prisma } from './db/prisma'
+import klinesRouter from './routes/klines'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -41,6 +42,7 @@ app.use('/api/trades', tradesRouter)
 app.use('/api/scanner', scannerRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/api/trading', tradingRouter)
+app.use('/api/klines', klinesRouter)
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
