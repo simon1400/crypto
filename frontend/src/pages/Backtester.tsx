@@ -78,6 +78,14 @@ export default function Backtester() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [activeTool, setActiveTool] = useState<string | null>(null)
+  const pendingAnchorsRef = useRef<{ time: any; price: number }[]>([])
+
+  // How many anchors each tool needs
+  const TOOL_ANCHORS: Record<string, number> = {
+    'trend-line': 2, 'ray': 2, 'horizontal-line': 1, 'horizontal-ray': 1,
+    'fib-retracement': 2, 'fib-extension': 2, 'rectangle': 2,
+    'parallel-channel': 3, 'triangle': 3,
+  }
 
   // Replay state
   const [allCandles, setAllCandles] = useState<KlineData[]>([])
@@ -383,11 +391,34 @@ export default function Backtester() {
     manager.attach(chart, candleSeries, containerRef.current!)
     managerRef.current = manager
 
-    // DEBUG: verify chart clicks work
+    // Handle chart clicks for drawing tool placement
     chart.subscribeClick((param) => {
-      console.log('[Backtester] Chart click:', param.time, param.point, 'activeTool:', managerRef.current?.getActiveTool?.() ?? 'N/A')
+      const tool = managerRef.current?.getActiveTool()
+      if (!tool || !param.time || !param.seriesData) return
+
+      // Get price from candlestick series data
+      const candleData = param.seriesData.get(candleSeries) as any
+      if (!candleData) return
+      const price = candleData.close ?? candleData.value ?? 0
+
+      const anchor = { time: param.time, price }
+      pendingAnchorsRef.current = [...pendingAnchorsRef.current, anchor]
+
+      const needed = TOOL_ANCHORS[tool] ?? 2
+      if (pendingAnchorsRef.current.length >= needed) {
+        // Create the drawing
+        const registry = getToolRegistry()
+        const id = tool + '-' + Date.now()
+        const drawing = registry.createDrawing(tool, id, pendingAnchorsRef.current.slice(0, needed))
+        if (drawing && managerRef.current) {
+          managerRef.current.addDrawing(drawing)
+        }
+        pendingAnchorsRef.current = []
+        // Deactivate tool after placing (optional: keep active for rapid drawing)
+        // managerRef.current?.setActiveTool(null)
+        // setActiveTool(null)
+      }
     })
-    console.log('[Backtester] DrawingManager attached, isAttached:', manager.isAttached())
 
     // Restore drawings from localStorage
     loadDrawings(manager, symbol, tf)
@@ -798,14 +829,9 @@ export default function Backtester() {
 
   function handleSelectTool(tool: string | null) {
     setActiveTool(tool)
+    pendingAnchorsRef.current = []
     if (managerRef.current) {
-      try {
-        managerRef.current.setActiveTool(tool)
-      } catch (e) {
-        console.error('[Backtester] setActiveTool failed:', tool, e)
-      }
-    } else {
-      console.warn('[Backtester] DrawingManager not attached, tool:', tool)
+      managerRef.current.setActiveTool(tool)
     }
   }
 
