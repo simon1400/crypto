@@ -47,6 +47,7 @@ export default function Navbar({ onLogout }: Props) {
           <Link to="/trades" className={linkClass('/trades')}>Сделки</Link>
           <Link to="/positions" className={linkClass('/positions')}>Позиции</Link>
           <Link to="/settings" className={linkClass('/settings')}>Настройки</Link>
+          <Link to="/backtester" className={linkClass('/backtester')}>Бэктестер</Link>
         </div>
 
         {/* Right side: balance, kill switch, logout, burger */}
@@ -92,6 +93,7 @@ export default function Navbar({ onLogout }: Props) {
             <Link to="/trades" className={linkClass('/trades')}>Сделки</Link>
             <Link to="/positions" className={linkClass('/positions')}>Позиции</Link>
             <Link to="/settings" className={linkClass('/settings')}>Настройки</Link>
+            <Link to="/backtester" className={linkClass('/backtester')}>Бэктестер</Link>
             {onLogout && (
               <button
                 onClick={onLogout}
