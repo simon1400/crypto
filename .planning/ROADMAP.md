@@ -44,7 +44,9 @@ Plans:
   3. User can draw rectangles, parallel channels, and triangles
   4. User can click an existing drawing to select it, drag it to a new position, or press Delete to remove it
   5. After page refresh, drawings reappear exactly as left (serialized to localStorage per symbol+timeframe)
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 02-01-PLAN.md — Drawing toolbar + DrawingManager integration + localStorage persistence
 **UI hint**: yes
 
 ### Phase 3: Replay Engine
@@ -56,7 +58,9 @@ Plans:
   2. User can press Play and watch candles appear one at a time at the selected speed
   3. User can press Pause to stop playback, and Step to advance exactly one candle at a time
   4. User can select playback speed (1x, 2x, 5x, 10x) and the interval between candles changes accordingly
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 03-01-PLAN.md — ReplayControls component + replay state/logic in Backtester (date picker, play/pause/step, speed)
 **UI hint**: yes
 
 ### Phase 4: Indicator Overlay
@@ -89,7 +93,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Chart Foundation | 2/2 | Complete   | 2026-04-05 |
-| 2. Drawing Tools | 0/? | Not started | - |
-| 3. Replay Engine | 0/? | Not started | - |
+| 2. Drawing Tools | 0/1 | Planning complete | - |
+| 3. Replay Engine | 0/1 | Planning complete | - |
 | 4. Indicator Overlay | 0/? | Not started | - |
 | 5. Virtual Trading | 0/? | Not started | - |
