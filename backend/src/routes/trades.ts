@@ -39,13 +39,14 @@ router.get('/symbols', async (req: Request, res: Response) => {
 // GET /api/trades — список сделок с фильтрами
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const { status, coin, page = '1', limit = '20' } = req.query
+    const { status, coin, source, page = '1', limit = '20' } = req.query
     const p = Math.max(1, Number(page))
     const l = Math.min(100, Math.max(1, Number(limit)))
 
     const where: any = {}
     if (status && status !== 'ALL') where.status = status
     if (coin) where.coin = { contains: String(coin).toUpperCase() }
+    if (source) where.source = String(source)
 
     const [data, total] = await Promise.all([
       prisma.trade.findMany({
@@ -131,11 +132,16 @@ router.get('/:id', async (req: Request, res: Response) => {
 // POST /api/trades — создать сделку
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { coin, type, leverage, entryPrice, amount, stopLoss, takeProfits, notes, fees } = req.body
+    const { coin, type, leverage, entryPrice, amount, stopLoss, takeProfits, notes, fees, source } = req.body
 
     if (!coin || !type || !entryPrice || !amount || !stopLoss || !takeProfits?.length) {
       return res.status(400).json({ error: 'Missing required fields' })
     }
+
+    const validSources = ['MANUAL', 'SIGNAL', 'BACKTEST']
+    const tradeSource = source && validSources.includes(String(source).toUpperCase())
+      ? String(source).toUpperCase()
+      : 'MANUAL'
 
     const trade = await prisma.trade.create({
       data: {
@@ -148,6 +154,7 @@ router.post('/', async (req: Request, res: Response) => {
         takeProfits,
         fees: Number(fees) || 0,
         notes: notes || null,
+        source: tradeSource,
       },
     })
 

@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Trade" ADD COLUMN "source" TEXT NOT NULL DEFAULT 'MANUAL';

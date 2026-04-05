@@ -94,6 +94,7 @@ export interface Trade {
   realizedPnl: number
   fees: number
   status: string
+  source: string
   notes: string | null
   openedAt: string
   closedAt: string | null
@@ -128,10 +129,11 @@ export async function searchSymbols(q = ''): Promise<string[]> {
   return res.json()
 }
 
-export async function getTrades(params: { status?: string; coin?: string; page?: number } = {}): Promise<TradesResponse> {
+export async function getTrades(params: { status?: string; coin?: string; source?: string; page?: number } = {}): Promise<TradesResponse> {
   const q = new URLSearchParams()
   if (params.status) q.set('status', params.status)
   if (params.coin) q.set('coin', params.coin)
+  if (params.source) q.set('source', params.source)
   if (params.page) q.set('page', String(params.page))
   const res = await fetch(`${BASE}/api/trades?${q}`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch trades')
@@ -146,7 +148,7 @@ export async function getTradeStats(): Promise<TradeStats> {
 
 export async function createTrade(data: {
   coin: string; type: string; leverage: number; entryPrice: number;
-  amount: number; stopLoss: number; takeProfits: TradeTP[]; fees?: number; notes?: string
+  amount: number; stopLoss: number; takeProfits: TradeTP[]; fees?: number; notes?: string; source?: string
 }): Promise<Trade> {
   const res = await fetch(`${BASE}/api/trades`, {
     method: 'POST', headers: getHeaders(), body: JSON.stringify(data),
