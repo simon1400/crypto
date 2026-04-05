@@ -313,6 +313,7 @@ export default function Backtester() {
         horzLines: { color: '#1e2329' },
       },
       crosshair: {
+        mode: 0, // Normal mode (free crosshair, not snapping to bars)
         horzLine: { color: '#f0b90b', labelBackgroundColor: '#f0b90b' },
         vertLine: { color: '#f0b90b', labelBackgroundColor: '#f0b90b' },
       },
@@ -394,14 +395,14 @@ export default function Backtester() {
     // Handle chart clicks for drawing tool placement
     chart.subscribeClick((param) => {
       const tool = managerRef.current?.getActiveTool()
-      if (!tool || !param.time || !param.seriesData) return
+      if (!tool || !param.point) return
 
-      // Get price from candlestick series data
-      const candleData = param.seriesData.get(candleSeries) as any
-      if (!candleData) return
-      const price = candleData.close ?? candleData.value ?? 0
+      // Convert pixel coordinates to time/price for precise placement
+      const time = chart.timeScale().coordinateToTime(param.point.x as any)
+      const price = candleSeries.coordinateToPrice(param.point.y as any)
+      if (time === null || price === null) return
 
-      const anchor = { time: param.time, price }
+      const anchor = { time, price }
       pendingAnchorsRef.current = [...pendingAnchorsRef.current, anchor]
 
       const needed = TOOL_ANCHORS[tool] ?? 2
