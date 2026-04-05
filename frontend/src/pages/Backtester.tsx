@@ -422,9 +422,12 @@ export default function Backtester() {
         // Final drawing with all anchors
         const registry = getToolRegistry()
         const id = tool + '-' + Date.now()
-        const opts = tool === 'fib-retracement' ? { levels: fibLevels } as any : undefined
-        const drawing = registry.createDrawing(tool, id, pendingAnchorsRef.current.slice(0, needed), undefined, opts)
+        const drawing = registry.createDrawing(tool, id, pendingAnchorsRef.current.slice(0, needed))
         if (drawing && managerRef.current) {
+          // Apply fib levels after creation (constructor doesn't always honor opts)
+          if (tool === 'fib-retracement' && 'setFibOptions' in drawing) {
+            (drawing as any).setFibOptions({ levels: fibLevels })
+          }
           managerRef.current.addDrawing(drawing)
         }
         pendingAnchorsRef.current = []
@@ -977,6 +980,14 @@ export default function Backtester() {
         onFibLevelsChange={(levels) => {
           setFibLevels(levels)
           localStorage.setItem('fib_levels', JSON.stringify(levels))
+          // Update all existing fib-retracement drawings
+          if (managerRef.current) {
+            for (const d of managerRef.current.getAllDrawings()) {
+              if (d.type === 'fib-retracement') {
+                (d as any).setFibOptions({ levels })
+              }
+            }
+          }
         }}
       />
 
