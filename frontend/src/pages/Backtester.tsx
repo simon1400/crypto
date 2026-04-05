@@ -5,6 +5,8 @@ import { getKlines, KlineData } from '../api/client'
 import DrawingToolbar from '../components/backtester/DrawingToolbar'
 import ReplayControls from '../components/backtester/ReplayControls'
 import IndicatorToolbar from '../components/backtester/IndicatorToolbar'
+import TradingPanel from '../components/backtester/TradingPanel'
+import { useBacktestTrading } from '../hooks/useBacktestTrading'
 import { ema, rsiSeries, macdSeries } from '../lib/indicators'
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1D']
@@ -108,6 +110,17 @@ export default function Backtester() {
   const macdLineRef = useRef<any>(null)
   const macdSignalRef = useRef<any>(null)
   const macdHistRef = useRef<any>(null)
+
+  // Virtual trading hook
+  const {
+    activeOrder,
+    currentPnl,
+    closedTrades,
+    checkCandle,
+    updatePnl,
+    placeOrder,
+    cancelOrder,
+  } = useBacktestTrading({ candleSeriesRef, symbol, replayMode })
 
   // Load data when symbol or tf changes
   useEffect(() => {
@@ -570,6 +583,8 @@ export default function Backtester() {
           volumeSeriesRef.current.update({ time: k.time as any, value: k.volume, color: k.close >= k.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)' })
         }
         updateIndicatorsForNewCandle(allCandles, next)
+        checkCandle(allCandles[next])
+        updatePnl(allCandles[next].close)
         chartRef.current?.timeScale().scrollToRealTime()
         return next
       })
@@ -581,7 +596,7 @@ export default function Backtester() {
         playIntervalRef.current = null
       }
     }
-  }, [isPlaying, speed, replayMode, allCandles])
+  }, [isPlaying, speed, replayMode, allCandles, checkCandle, updatePnl])
 
   // Keyboard shortcuts for Delete and Escape
   useEffect(() => {
@@ -656,6 +671,8 @@ export default function Backtester() {
       volumeSeriesRef.current.update({ time: k.time as any, value: k.volume, color: k.close >= k.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)' })
     }
     updateIndicatorsForNewCandle(allCandles, next)
+    checkCandle(allCandles[next])
+    updatePnl(allCandles[next].close)
     chartRef.current?.timeScale().scrollToRealTime()
   }
 
@@ -809,6 +826,40 @@ export default function Backtester() {
       {/* MACD sub-chart */}
       {macdEnabled && (
         <div ref={macdContainerRef} className="rounded-lg overflow-hidden border border-card mt-1" />
+      )}
+
+      {/* Virtual trading panel */}
+      <TradingPanel
+        replayMode={replayMode}
+        activeOrder={activeOrder}
+        currentPnl={currentPnl}
+        onPlace={placeOrder}
+        onCancel={cancelOrder}
+        lastPrice={klines.length > 0 ? klines[klines.length - 1].close : 0}
+      />
+
+      {/* Closed trades in this session */}
+      {closedTrades.length > 0 && (
+        <div className="bg-card rounded-xl p-4 mt-3">
+          <div className="text-sm font-semibold text-text-primary mb-2">Сделки сессии ({closedTrades.length})</div>
+          <div className="space-y-1">
+            {closedTrades.map(t => {
+              const pnl = t.realizedPnl
+              const pnlColor = pnl > 0 ? 'text-long' : pnl < 0 ? 'text-short' : 'text-text-secondary'
+              return (
+                <div key={t.id} className="flex items-center justify-between text-sm">
+                  <span className={`px-1.5 py-0.5 rounded text-xs ${t.type === 'LONG' ? 'bg-long/20 text-long' : 'bg-short/20 text-short'}`}>
+                    {t.type}
+                  </span>
+                  <span className="font-mono text-text-secondary text-xs">{t.coin}</span>
+                  <span className={`font-mono font-semibold ${pnlColor}`}>
+                    {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} USDT
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
       )}
     </div>
   )
