@@ -30,8 +30,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Virtual Trading
 
-- [ ] **TRADE-01**: User can place Entry, Stop Loss, Take Profit as draggable lines on chart
-- [ ] **TRADE-02**: P&L calculates in real-time as replay progresses (TP/SL hit detection)
+- [x] **TRADE-01**: User can place Entry, Stop Loss, Take Profit as draggable lines on chart
+- [x] **TRADE-02**: P&L calculates in real-time as replay progresses (TP/SL hit detection)
 - [ ] **TRADE-03**: Trade history log shows all virtual trades with results per session
 - [ ] **TRADE-04**: User can save and load backtesting sessions (drawings + trades + position)
 
@@ -75,8 +75,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | REPLAY-01 | Phase 3 | Pending |
 | REPLAY-02 | Phase 3 | Pending |
 | REPLAY-03 | Phase 3 | Pending |
-| TRADE-01 | Phase 5 | Pending |
-| TRADE-02 | Phase 5 | Pending |
+| TRADE-01 | Phase 5 | Complete |
+| TRADE-02 | Phase 5 | Complete |
 | TRADE-03 | Phase 5 | Pending |
 | TRADE-04 | Phase 5 | Pending |
 

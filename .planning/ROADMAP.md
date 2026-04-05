@@ -71,7 +71,9 @@ Plans:
   1. User can toggle EMA (configurable period, default 20 and 50) lines overlaid on the candle chart
   2. User can open a separate RSI pane below the chart that updates as replay progresses
   3. User can open a separate MACD pane that shows MACD line, signal line, and histogram
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 04-01-PLAN.md — Client-side indicators (EMA/RSI/MACD) with overlay, sub-panes, and time sync
 **UI hint**: yes
 
 ### Phase 5: Virtual Trading
@@ -83,7 +85,10 @@ Plans:
   2. As replay plays forward, P&L updates in real time and the position is marked closed (TP hit or SL hit) when price crosses the respective line
   3. A trade history panel lists all virtual trades in the current session with entry price, exit price, and P&L result
   4. User can save the current session (drawings + trades + replay position) and reload it to continue later
-**Plans**: TBD
+**Plans:** 0/2 plans executed
+Plans:
+- [ ] 05-01-PLAN.md — DB migration (source field) + useBacktestTrading hook + TradingPanel + price lines + hit detection
+- [ ] 05-02-PLAN.md — Trade history panel + session save/load + E2E verification checkpoint
 **UI hint**: yes
 
 ---
@@ -95,5 +100,5 @@ Plans:
 | 1. Chart Foundation | 2/2 | Complete   | 2026-04-05 |
 | 2. Drawing Tools | 0/1 | Planning complete | - |
 | 3. Replay Engine | 0/1 | Planning complete | - |
-| 4. Indicator Overlay | 0/? | Not started | - |
-| 5. Virtual Trading | 0/? | Not started | - |
+| 4. Indicator Overlay | 0/1 | Planning complete | - |
+| 5. Virtual Trading | 0/2 | Planned    |  |
