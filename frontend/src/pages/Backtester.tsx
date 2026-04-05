@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
-import { createChart, IChartApi, CandlestickSeries, HistogramSeries } from 'lightweight-charts'
+import { createChart, IChartApi, CandlestickSeries, HistogramSeries, LineSeries } from 'lightweight-charts'
 import { DrawingManager, getToolRegistry, SerializedDrawing } from 'lightweight-charts-drawing'
 import { getKlines, KlineData } from '../api/client'
 import DrawingToolbar from '../components/backtester/DrawingToolbar'
 import ReplayControls from '../components/backtester/ReplayControls'
+import IndicatorToolbar from '../components/backtester/IndicatorToolbar'
+import { ema, rsiSeries, macdSeries } from '../lib/indicators'
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1D']
 
@@ -34,6 +36,35 @@ function loadDrawings(manager: DrawingManager, sym: string, interval: string): v
   }
 }
 
+function createSubChart(container: HTMLDivElement, height: number): IChartApi {
+  return createChart(container, {
+    width: container.clientWidth,
+    height,
+    layout: {
+      background: { color: '#0b0e11' },
+      textColor: '#848e9c',
+      fontFamily: 'JetBrains Mono, monospace',
+      fontSize: 11,
+    },
+    grid: {
+      vertLines: { color: '#1e2329' },
+      horzLines: { color: '#1e2329' },
+    },
+    crosshair: {
+      horzLine: { color: '#f0b90b', labelBackgroundColor: '#f0b90b' },
+      vertLine: { color: '#f0b90b', labelBackgroundColor: '#f0b90b' },
+    },
+    timeScale: {
+      timeVisible: true,
+      borderColor: '#2b3139',
+      secondsVisible: false,
+    },
+    rightPriceScale: {
+      borderColor: '#2b3139',
+    },
+  })
+}
+
 export default function Backtester() {
   const [symbol, setSymbol] = useState('BTCUSDT')
   const [inputSymbol, setInputSymbol] = useState('BTCUSDT')
@@ -50,12 +81,33 @@ export default function Backtester() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [speed, setSpeed] = useState(1)
 
+  // Indicator toggle state
+  const [emaEnabled, setEmaEnabled] = useState(false)
+  const [rsiEnabled, setRsiEnabled] = useState(false)
+  const [macdEnabled, setMacdEnabled] = useState(false)
+
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const managerRef = useRef<DrawingManager | null>(null)
   const candleSeriesRef = useRef<any>(null)
   const volumeSeriesRef = useRef<any>(null)
   const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // EMA refs (on main chart)
+  const ema20SeriesRef = useRef<any>(null)
+  const ema50SeriesRef = useRef<any>(null)
+
+  // RSI sub-chart refs
+  const rsiContainerRef = useRef<HTMLDivElement>(null)
+  const rsiChartRef = useRef<IChartApi | null>(null)
+  const rsiSeriesRef = useRef<any>(null)
+
+  // MACD sub-chart refs
+  const macdContainerRef = useRef<HTMLDivElement>(null)
+  const macdChartRef = useRef<IChartApi | null>(null)
+  const macdLineRef = useRef<any>(null)
+  const macdSignalRef = useRef<any>(null)
+  const macdHistRef = useRef<any>(null)
 
   // Load data when symbol or tf changes
   useEffect(() => {
@@ -79,6 +131,95 @@ export default function Backtester() {
       })
   }, [symbol, tf])
 
+  // Helper: compute and set all indicator data from a candle array
+  function setIndicatorData(candles: KlineData[]): void {
+    if (candles.length === 0) return
+    const closes = candles.map(c => c.close)
+
+    // EMA 20
+    if (ema20SeriesRef.current) {
+      const ema20Arr = ema(closes, 20)
+      ema20SeriesRef.current.setData(
+        candles.map((c, i) => ({ time: c.time as any, value: ema20Arr[i] }))
+      )
+    }
+
+    // EMA 50
+    if (ema50SeriesRef.current) {
+      const ema50Arr = ema(closes, 50)
+      ema50SeriesRef.current.setData(
+        candles.map((c, i) => ({ time: c.time as any, value: ema50Arr[i] }))
+      )
+    }
+
+    // RSI
+    if (rsiSeriesRef.current) {
+      const rsiArr = rsiSeries(closes, 14)
+      rsiSeriesRef.current.setData(
+        candles.map((c, i) => ({ time: c.time as any, value: rsiArr[i] }))
+      )
+    }
+
+    // MACD
+    if (macdLineRef.current && macdSignalRef.current && macdHistRef.current) {
+      const { macd, signal, histogram } = macdSeries(closes)
+      macdLineRef.current.setData(
+        candles.map((c, i) => ({ time: c.time as any, value: macd[i] }))
+      )
+      macdSignalRef.current.setData(
+        candles.map((c, i) => ({ time: c.time as any, value: signal[i] }))
+      )
+      macdHistRef.current.setData(
+        candles.map((c, i) => ({
+          time: c.time as any,
+          value: histogram[i],
+          color: histogram[i] >= 0 ? '#0ecb81' : '#f6465d',
+        }))
+      )
+    }
+  }
+
+  // Helper: update indicator data for a single new candle during replay
+  function updateIndicatorsForNewCandle(candles: KlineData[], newIndex: number): void {
+    if (newIndex < 0 || newIndex >= candles.length) return
+    const visible = candles.slice(0, newIndex + 1)
+    const closes = visible.map(c => c.close)
+    const newCandle = candles[newIndex]
+
+    // EMA 20
+    if (ema20SeriesRef.current) {
+      const ema20Arr = ema(closes, 20)
+      ema20SeriesRef.current.update({ time: newCandle.time as any, value: ema20Arr[ema20Arr.length - 1] })
+    }
+
+    // EMA 50
+    if (ema50SeriesRef.current) {
+      const ema50Arr = ema(closes, 50)
+      ema50SeriesRef.current.update({ time: newCandle.time as any, value: ema50Arr[ema50Arr.length - 1] })
+    }
+
+    // RSI
+    if (rsiSeriesRef.current) {
+      const rsiArr = rsiSeries(closes, 14)
+      rsiSeriesRef.current.update({ time: newCandle.time as any, value: rsiArr[rsiArr.length - 1] })
+    }
+
+    // MACD
+    if (macdLineRef.current && macdSignalRef.current && macdHistRef.current) {
+      const { macd, signal, histogram } = macdSeries(closes)
+      const lastMacd = macd[macd.length - 1]
+      const lastSignal = signal[signal.length - 1]
+      const lastHist = histogram[histogram.length - 1]
+      macdLineRef.current.update({ time: newCandle.time as any, value: lastMacd })
+      macdSignalRef.current.update({ time: newCandle.time as any, value: lastSignal })
+      macdHistRef.current.update({
+        time: newCandle.time as any,
+        value: lastHist,
+        color: lastHist >= 0 ? '#0ecb81' : '#f6465d',
+      })
+    }
+  }
+
   // Render chart when klines change
   useEffect(() => {
     if (klines.length === 0 || !containerRef.current) return
@@ -94,6 +235,10 @@ export default function Backtester() {
     if (chartRef.current) {
       chartRef.current.remove()
       chartRef.current = null
+      candleSeriesRef.current = null
+      volumeSeriesRef.current = null
+      ema20SeriesRef.current = null
+      ema50SeriesRef.current = null
     }
 
     const chart = createChart(containerRef.current, {
@@ -159,6 +304,25 @@ export default function Backtester() {
       }))
     )
 
+    // EMA 20 overlay on main chart
+    const ema20Series = chart.addSeries(LineSeries, {
+      color: '#f0b90b',
+      lineWidth: 1,
+      lastValueVisible: false,
+      priceLineVisible: false,
+    })
+
+    // EMA 50 overlay on main chart
+    const ema50Series = chart.addSeries(LineSeries, {
+      color: '#e040fb',
+      lineWidth: 1,
+      lastValueVisible: false,
+      priceLineVisible: false,
+    })
+
+    ema20SeriesRef.current = ema20Series
+    ema50SeriesRef.current = ema50Series
+
     chart.timeScale().fitContent()
     chartRef.current = chart
     candleSeriesRef.current = candleSeries
@@ -183,6 +347,12 @@ export default function Backtester() {
     const handleResize = () => {
       if (containerRef.current) {
         chart.applyOptions({ width: containerRef.current.clientWidth })
+        if (rsiChartRef.current && rsiContainerRef.current) {
+          rsiChartRef.current.applyOptions({ width: rsiContainerRef.current.clientWidth })
+        }
+        if (macdChartRef.current && macdContainerRef.current) {
+          macdChartRef.current.applyOptions({ width: macdContainerRef.current.clientWidth })
+        }
       }
     }
     window.addEventListener('resize', handleResize)
@@ -198,8 +368,180 @@ export default function Backtester() {
       chartRef.current = null
       candleSeriesRef.current = null
       volumeSeriesRef.current = null
+      ema20SeriesRef.current = null
+      ema50SeriesRef.current = null
     }
   }, [klines])
+
+  // EMA visibility toggle
+  useEffect(() => {
+    if (emaEnabled) {
+      setIndicatorData(klines)
+    } else {
+      if (ema20SeriesRef.current) ema20SeriesRef.current.setData([])
+      if (ema50SeriesRef.current) ema50SeriesRef.current.setData([])
+    }
+  }, [emaEnabled, klines])
+
+  // RSI sub-chart effect
+  useEffect(() => {
+    if (!rsiEnabled) {
+      // Cleanup
+      if (rsiChartRef.current) {
+        rsiChartRef.current.remove()
+        rsiChartRef.current = null
+        rsiSeriesRef.current = null
+      }
+      return
+    }
+
+    // Need container and main chart to exist
+    if (!rsiContainerRef.current || !chartRef.current) return
+
+    // Create RSI chart
+    const rsiChart = createSubChart(rsiContainerRef.current, 150)
+    const rsiLine = rsiChart.addSeries(LineSeries, {
+      color: '#f0b90b',
+      lineWidth: 1,
+      lastValueVisible: false,
+      priceLineVisible: false,
+    })
+
+    // 30/70 reference lines
+    rsiLine.createPriceLine({ price: 30, color: '#0ecb81', lineWidth: 1, lineStyle: 2, axisLabelVisible: true })
+    rsiLine.createPriceLine({ price: 70, color: '#f6465d', lineWidth: 1, lineStyle: 2, axisLabelVisible: true })
+
+    rsiChartRef.current = rsiChart
+    rsiSeriesRef.current = rsiLine
+
+    // Set initial RSI data
+    setIndicatorData(klines)
+
+    // Time scale sync (bidirectional) with main chart
+    let isSyncing = false
+    const mainChart = chartRef.current
+
+    const onMainRangeChange = (range: any) => {
+      if (isSyncing || !range) return
+      isSyncing = true
+      rsiChart.timeScale().setVisibleRange(range)
+      isSyncing = false
+    }
+
+    const onRsiRangeChange = (range: any) => {
+      if (isSyncing || !range) return
+      isSyncing = true
+      mainChart.timeScale().setVisibleRange(range)
+      isSyncing = false
+    }
+
+    mainChart.timeScale().subscribeVisibleTimeRangeChange(onMainRangeChange)
+    rsiChart.timeScale().subscribeVisibleTimeRangeChange(onRsiRangeChange)
+
+    const handleResize = () => {
+      if (rsiContainerRef.current) {
+        rsiChart.applyOptions({ width: rsiContainerRef.current.clientWidth })
+      }
+    }
+    window.addEventListener('resize', handleResize)
+
+    return () => {
+      window.removeEventListener('resize', handleResize)
+      mainChart.timeScale().unsubscribeVisibleTimeRangeChange(onMainRangeChange)
+      rsiChart.timeScale().unsubscribeVisibleTimeRangeChange(onRsiRangeChange)
+      if (rsiChartRef.current) {
+        rsiChartRef.current.remove()
+        rsiChartRef.current = null
+        rsiSeriesRef.current = null
+      }
+    }
+  }, [rsiEnabled, klines])
+
+  // MACD sub-chart effect
+  useEffect(() => {
+    if (!macdEnabled) {
+      // Cleanup
+      if (macdChartRef.current) {
+        macdChartRef.current.remove()
+        macdChartRef.current = null
+        macdLineRef.current = null
+        macdSignalRef.current = null
+        macdHistRef.current = null
+      }
+      return
+    }
+
+    // Need container and main chart to exist
+    if (!macdContainerRef.current || !chartRef.current) return
+
+    // Create MACD chart
+    const macdChart = createSubChart(macdContainerRef.current, 150)
+    const macdLine = macdChart.addSeries(LineSeries, {
+      color: '#2196f3',
+      lineWidth: 1,
+      lastValueVisible: false,
+      priceLineVisible: false,
+    })
+    const macdSignalLine = macdChart.addSeries(LineSeries, {
+      color: '#ff9800',
+      lineWidth: 1,
+      lastValueVisible: false,
+      priceLineVisible: false,
+    })
+    const macdHist = macdChart.addSeries(HistogramSeries, {
+      lastValueVisible: false,
+      priceLineVisible: false,
+    })
+
+    macdChartRef.current = macdChart
+    macdLineRef.current = macdLine
+    macdSignalRef.current = macdSignalLine
+    macdHistRef.current = macdHist
+
+    // Set initial MACD data
+    setIndicatorData(klines)
+
+    // Time scale sync (bidirectional) with main chart
+    let isSyncing = false
+    const mainChart = chartRef.current
+
+    const onMainRangeChangeMacd = (range: any) => {
+      if (isSyncing || !range) return
+      isSyncing = true
+      macdChart.timeScale().setVisibleRange(range)
+      isSyncing = false
+    }
+
+    const onMacdRangeChange = (range: any) => {
+      if (isSyncing || !range) return
+      isSyncing = true
+      mainChart.timeScale().setVisibleRange(range)
+      isSyncing = false
+    }
+
+    mainChart.timeScale().subscribeVisibleTimeRangeChange(onMainRangeChangeMacd)
+    macdChart.timeScale().subscribeVisibleTimeRangeChange(onMacdRangeChange)
+
+    const handleResize = () => {
+      if (macdContainerRef.current) {
+        macdChart.applyOptions({ width: macdContainerRef.current.clientWidth })
+      }
+    }
+    window.addEventListener('resize', handleResize)
+
+    return () => {
+      window.removeEventListener('resize', handleResize)
+      mainChart.timeScale().unsubscribeVisibleTimeRangeChange(onMainRangeChangeMacd)
+      macdChart.timeScale().unsubscribeVisibleTimeRangeChange(onMacdRangeChange)
+      if (macdChartRef.current) {
+        macdChartRef.current.remove()
+        macdChartRef.current = null
+        macdLineRef.current = null
+        macdSignalRef.current = null
+        macdHistRef.current = null
+      }
+    }
+  }, [macdEnabled, klines])
 
   // Auto-play useEffect
   useEffect(() => {
@@ -227,6 +569,7 @@ export default function Backtester() {
         if (volumeSeriesRef.current) {
           volumeSeriesRef.current.update({ time: k.time as any, value: k.volume, color: k.close >= k.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)' })
         }
+        updateIndicatorsForNewCandle(allCandles, next)
         chartRef.current?.timeScale().scrollToRealTime()
         return next
       })
@@ -269,6 +612,7 @@ export default function Backtester() {
         color: k.close >= k.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)',
       }))
     )
+    setIndicatorData(visible)
     chartRef.current?.timeScale().scrollToRealTime()
   }
 
@@ -311,6 +655,7 @@ export default function Backtester() {
     if (volumeSeriesRef.current) {
       volumeSeriesRef.current.update({ time: k.time as any, value: k.volume, color: k.close >= k.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)' })
     }
+    updateIndicatorsForNewCandle(allCandles, next)
     chartRef.current?.timeScale().scrollToRealTime()
   }
 
@@ -443,8 +788,28 @@ export default function Backtester() {
         onExit={handleExitReplay}
       />
 
+      {/* Indicator toolbar */}
+      <IndicatorToolbar
+        emaEnabled={emaEnabled}
+        rsiEnabled={rsiEnabled}
+        macdEnabled={macdEnabled}
+        onToggleEma={() => setEmaEnabled(v => !v)}
+        onToggleRsi={() => setRsiEnabled(v => !v)}
+        onToggleMacd={() => setMacdEnabled(v => !v)}
+      />
+
       {/* Chart container */}
       <div ref={containerRef} className="rounded-lg overflow-hidden border border-card" />
+
+      {/* RSI sub-chart */}
+      {rsiEnabled && (
+        <div ref={rsiContainerRef} className="rounded-lg overflow-hidden border border-card mt-1" />
+      )}
+
+      {/* MACD sub-chart */}
+      {macdEnabled && (
+        <div ref={macdContainerRef} className="rounded-lg overflow-hidden border border-card mt-1" />
+      )}
     </div>
   )
 }
