@@ -12,7 +12,7 @@ import { ema, rsiSeries, macdSeries } from '../lib/indicators'
 
 const SESSION_KEY = 'backtest_session'
 
-const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1D']
+const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1D', 'M']
 
 function getStorageKey(sym: string): string {
   return `drawings_${sym}`
@@ -1091,7 +1091,7 @@ export default function Backtester() {
 
       {/* Chart container — shrink when sub-charts are active */}
       <div ref={containerRef} className="border border-card" style={{
-        height: `calc(100vh - 160px${rsiEnabled ? ' - 155px' : ''}${macdEnabled ? ' - 155px' : ''})`
+        height: `calc(100vh - ${replayMode ? 200 : 160}px${rsiEnabled ? ' - 155px' : ''}${macdEnabled ? ' - 155px' : ''})`
       }} />
 
       {/* RSI sub-chart */}

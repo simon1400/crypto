@@ -14,6 +14,7 @@ const INTERVAL_MAP: Record<string, string> = {
   '1h': '60',
   '4h': '240',
   '1D': 'D',
+  'M': 'M',
 }
 
 export const VALID_INTERVALS = Object.keys(INTERVAL_MAP)
