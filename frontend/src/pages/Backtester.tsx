@@ -527,7 +527,6 @@ export default function Backtester() {
       if (containerRef.current) {
         chart.applyOptions({
           width: containerRef.current.clientWidth,
-          height: containerRef.current.clientHeight || Math.max(300, window.innerHeight - 160),
         })
         if (rsiChartRef.current && rsiContainerRef.current) {
           rsiChartRef.current.applyOptions({ width: rsiContainerRef.current.clientWidth })
@@ -555,14 +554,15 @@ export default function Backtester() {
     }
   }, [klines])
 
-  // Resize main chart when sub-charts toggle
+  // Trigger resize when sub-charts toggle (autoSize picks up container change)
   useEffect(() => {
-    if (chartRef.current && containerRef.current) {
-      chartRef.current.applyOptions({
-        width: containerRef.current.clientWidth,
-        height: containerRef.current.clientHeight,
-      })
-    }
+    // Small delay to let CSS recalculate container height
+    const timer = setTimeout(() => {
+      if (chartRef.current) {
+        chartRef.current.timeScale().fitContent()
+      }
+    }, 50)
+    return () => clearTimeout(timer)
   }, [rsiEnabled, macdEnabled])
 
   // EMA visibility toggle
