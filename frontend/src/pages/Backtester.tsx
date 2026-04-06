@@ -200,22 +200,30 @@ export default function Backtester() {
 
     // EMA 20
     if (ema20SeriesRef.current) {
-      const ema20Arr = ema(closes, 20)
-      ema20SeriesRef.current.setData(
-        candles.map((c, i) => ({ time: c.time as any, value: ema20Arr[i] }))
-      )
+      if (emaEnabled) {
+        const ema20Arr = ema(closes, 20)
+        ema20SeriesRef.current.setData(
+          candles.map((c, i) => ({ time: c.time as any, value: ema20Arr[i] }))
+        )
+      } else {
+        ema20SeriesRef.current.setData([])
+      }
     }
 
     // EMA 50
     if (ema50SeriesRef.current) {
-      const ema50Arr = ema(closes, 50)
-      ema50SeriesRef.current.setData(
-        candles.map((c, i) => ({ time: c.time as any, value: ema50Arr[i] }))
-      )
+      if (emaEnabled) {
+        const ema50Arr = ema(closes, 50)
+        ema50SeriesRef.current.setData(
+          candles.map((c, i) => ({ time: c.time as any, value: ema50Arr[i] }))
+        )
+      } else {
+        ema50SeriesRef.current.setData([])
+      }
     }
 
     // RSI
-    if (rsiSeriesRef.current) {
+    if (rsiSeriesRef.current && rsiEnabled) {
       const rsiArr = rsiSeries(closes, 14)
       rsiSeriesRef.current.setData(
         candles.map((c, i) => ({ time: c.time as any, value: rsiArr[i] }))
@@ -223,7 +231,7 @@ export default function Backtester() {
     }
 
     // MACD
-    if (macdLineRef.current && macdSignalRef.current && macdHistRef.current) {
+    if (macdLineRef.current && macdSignalRef.current && macdHistRef.current && macdEnabled) {
       const { macd, signal, histogram } = macdSeries(closes)
       macdLineRef.current.setData(
         candles.map((c, i) => ({ time: c.time as any, value: macd[i] }))
@@ -249,25 +257,25 @@ export default function Backtester() {
     const newCandle = candles[newIndex]
 
     // EMA 20
-    if (ema20SeriesRef.current) {
+    if (ema20SeriesRef.current && emaEnabled) {
       const ema20Arr = ema(closes, 20)
       ema20SeriesRef.current.update({ time: newCandle.time as any, value: ema20Arr[ema20Arr.length - 1] })
     }
 
     // EMA 50
-    if (ema50SeriesRef.current) {
+    if (ema50SeriesRef.current && emaEnabled) {
       const ema50Arr = ema(closes, 50)
       ema50SeriesRef.current.update({ time: newCandle.time as any, value: ema50Arr[ema50Arr.length - 1] })
     }
 
     // RSI
-    if (rsiSeriesRef.current) {
+    if (rsiSeriesRef.current && rsiEnabled) {
       const rsiArr = rsiSeries(closes, 14)
       rsiSeriesRef.current.update({ time: newCandle.time as any, value: rsiArr[rsiArr.length - 1] })
     }
 
     // MACD
-    if (macdLineRef.current && macdSignalRef.current && macdHistRef.current) {
+    if (macdLineRef.current && macdSignalRef.current && macdHistRef.current && macdEnabled) {
       const { macd, signal, histogram } = macdSeries(closes)
       const lastMacd = macd[macd.length - 1]
       const lastSignal = signal[signal.length - 1]
