@@ -201,7 +201,7 @@ function SignalCard({ signal, onStatusChange }: {
               value={amount}
               onChange={e => setAmount(e.target.value)}
               placeholder="100"
-              className="flex-1 bg-bg-primary text-text-primary rounded px-3 py-1.5 text-sm font-mono"
+              className="flex-1 bg-input text-text-primary rounded px-3 py-1.5 text-sm font-mono"
             />
             <button onClick={handleTake} disabled={loading || !amount} className="px-3 py-1.5 text-sm rounded bg-long/20 text-long hover:bg-long/30 disabled:opacity-50">
               {loading ? '...' : 'Подтвердить'}
@@ -223,7 +223,7 @@ function SignalCard({ signal, onStatusChange }: {
                 value={closePrice}
                 onChange={e => setClosePrice(e.target.value)}
                 placeholder={String(tps[0]?.price || signal.entry)}
-                className="w-full bg-bg-primary text-text-primary rounded px-3 py-1.5 text-sm font-mono mt-0.5"
+                className="w-full bg-input text-text-primary rounded px-3 py-1.5 text-sm font-mono mt-0.5"
                 step="any"
               />
             </div>
@@ -233,7 +233,7 @@ function SignalCard({ signal, onStatusChange }: {
                 type="number"
                 value={closePercent}
                 onChange={e => setClosePercent(e.target.value)}
-                className="w-full bg-bg-primary text-text-primary rounded px-3 py-1.5 text-sm font-mono mt-0.5"
+                className="w-full bg-input text-text-primary rounded px-3 py-1.5 text-sm font-mono mt-0.5"
                 min={1} max={100 - signal.closedPct}
               />
             </div>
