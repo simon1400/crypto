@@ -27,17 +27,6 @@ function saveDrawings(manager: DrawingManager, sym: string): void {
   }
 }
 
-// Save that guards against cleanup overwrite
-function saveDrawingsGuarded(manager: DrawingManager, sym: string): void {
-  try {
-    const data = manager.exportDrawings()
-    if (data.length === 0) return // cleanup — don't overwrite
-    localStorage.setItem(getStorageKey(sym), JSON.stringify(data))
-  } catch (e) {
-    console.warn('[Backtester] Failed to save drawings:', e)
-  }
-}
-
 function loadDrawings(manager: DrawingManager, sym: string): void {
   try {
     const raw = localStorage.getItem(getStorageKey(sym))
@@ -529,12 +518,14 @@ export default function Backtester() {
     // Restore drawings from localStorage
     loadDrawings(manager, symbol)
 
-    // Auto-save on any drawing change
+    // Track if we're rebuilding chart (block saves during rebuild)
+    let isAlive = true
+
+    // Auto-save on user drawing changes only (not during rebuild)
     const unsubs = [
-      manager.on('drawing:added', () => saveDrawings(manager, symbol)),
-      manager.on('drawing:updated', () => saveDrawings(manager, symbol)),
-      manager.on('drawing:removed', () => saveDrawings(manager, symbol)),
-      manager.on('drawing:cleared', () => saveDrawings(manager, symbol)),
+      manager.on('drawing:added', () => { if (isAlive) saveDrawings(manager, symbol) }),
+      manager.on('drawing:updated', () => { if (isAlive) saveDrawings(manager, symbol) }),
+      manager.on('drawing:removed', () => { if (isAlive) saveDrawings(manager, symbol) }),
     ]
 
     const handleResize = () => {
@@ -553,11 +544,10 @@ export default function Backtester() {
     window.addEventListener('resize', handleResize)
 
     return () => {
+      isAlive = false // Block all auto-saves during cleanup
       window.removeEventListener('resize', handleResize)
       unsubs.forEach(fn => fn())
       if (managerRef.current) {
-        // Save drawings BEFORE detaching — guarded to not overwrite with empty
-        saveDrawingsGuarded(managerRef.current, symbol)
         managerRef.current.detach()
         managerRef.current = null
       }
