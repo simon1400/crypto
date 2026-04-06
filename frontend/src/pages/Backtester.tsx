@@ -294,14 +294,7 @@ export default function Backtester() {
   useEffect(() => {
     if (klines.length === 0 || !containerRef.current) return
 
-    // Save drawings before chart rebuild
-    if (managerRef.current) {
-      saveDrawings(managerRef.current, symbol)
-      managerRef.current.detach()
-      managerRef.current = null
-    }
-
-    // Cleanup previous chart
+    // Cleanup previous chart (drawings saved in useEffect cleanup)
     if (chartRef.current) {
       chartRef.current.remove()
       chartRef.current = null
@@ -542,6 +535,8 @@ export default function Backtester() {
       window.removeEventListener('resize', handleResize)
       unsubs.forEach(fn => fn())
       if (managerRef.current) {
+        // Save drawings BEFORE detaching
+        saveDrawings(managerRef.current, symbol)
         managerRef.current.detach()
         managerRef.current = null
       }
@@ -563,7 +558,7 @@ export default function Backtester() {
       }
     }, 50)
     return () => clearTimeout(timer)
-  }, [rsiEnabled, macdEnabled])
+  }, [rsiEnabled, macdEnabled, replayMode])
 
   // EMA visibility toggle
   useEffect(() => {
