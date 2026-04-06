@@ -162,9 +162,19 @@ export default function Backtester() {
 
   // Load data when symbol or tf changes
   useEffect(() => {
+    // Load enough candles to cover ~6 months on any timeframe
+    const candleCount: Record<string, number> = {
+      '1m': 2000,  // ~1.4 days
+      '5m': 2000,  // ~7 days
+      '15m': 2000, // ~21 days
+      '1h': 4000,  // ~166 days
+      '4h': 2000,  // ~333 days
+      '1D': 1000,  // ~2.7 years
+      'M': 500,    // ~41 years
+    }
     setLoading(true)
     setError('')
-    getKlines(symbol, tf, 1000)
+    getKlines(symbol, tf, candleCount[tf] || 1000)
       .then(response => {
         setKlines(response.data)
         setAllCandles(response.data)
