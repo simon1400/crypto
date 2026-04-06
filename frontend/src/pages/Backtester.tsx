@@ -367,8 +367,13 @@ export default function Backtester() {
       wickDownColor: '#f6465d',
     })
 
+    // In replay mode, show only candles up to currentIndex
+    const visibleCandles = replayMode && currentIndex > 0
+      ? klines.slice(0, currentIndex + 1)
+      : klines
+
     candleSeries.setData(
-      klines.map(k => ({
+      visibleCandles.map(k => ({
         time: k.time as any,
         open: k.open,
         high: k.high,
@@ -387,7 +392,7 @@ export default function Backtester() {
     })
 
     volumeSeries.setData(
-      klines.map(k => ({
+      visibleCandles.map(k => ({
         time: k.time as any,
         value: k.volume,
         color: k.close >= k.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)',
