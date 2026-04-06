@@ -305,7 +305,7 @@ export default function Backtester() {
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: Math.max(300, window.innerHeight - 180),
+      height: Math.max(300, window.innerHeight - 160),
       layout: {
         background: { color: '#0b0e11' },
         textColor: '#848e9c',
@@ -396,6 +396,38 @@ export default function Backtester() {
     manager.attach(chart, candleSeries, containerRef.current!)
     managerRef.current = manager
 
+    // Disable chart dragging when a drawing is selected (prevents conflict)
+    manager.on('drawing:selected', () => {
+      chart.applyOptions({
+        handleScroll: { mouseWheel: true, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
+        handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: false },
+      })
+    })
+    manager.on('drawing:deselected', () => {
+      // Only re-enable if no active tool
+      if (!managerRef.current?.getActiveTool()) {
+        chart.applyOptions({
+          handleScroll: true,
+          handleScale: true,
+        })
+      }
+    })
+    manager.on('tool:changed', (e: any) => {
+      if (e.toolType) {
+        // Tool activated — disable drag
+        chart.applyOptions({
+          handleScroll: { mouseWheel: true, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
+          handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: false },
+        })
+      } else {
+        // Tool deactivated — re-enable drag
+        chart.applyOptions({
+          handleScroll: true,
+          handleScale: true,
+        })
+      }
+    })
+
     // Handle chart clicks for drawing tool placement with live preview
     let previewDrawingId: string | null = null
 
@@ -465,6 +497,9 @@ export default function Backtester() {
       previewDrawingId = '__preview__'
       const preview = registry.createDrawing(tool, previewDrawingId, previewAnchors.slice(0, needed), { lineColor: 'rgba(255,255,255,0.5)', lineWidth: 1 })
       if (preview && managerRef.current) {
+        if (tool === 'fib-retracement' && 'setFibOptions' in preview) {
+          (preview as any).setFibOptions({ levels: fibLevels })
+        }
         managerRef.current.addDrawing(preview)
       }
     })
@@ -484,7 +519,7 @@ export default function Backtester() {
       if (containerRef.current) {
         chart.applyOptions({
           width: containerRef.current.clientWidth,
-          height: containerRef.current.clientHeight || Math.max(300, window.innerHeight - 180),
+          height: containerRef.current.clientHeight || Math.max(300, window.innerHeight - 160),
         })
         if (rsiChartRef.current && rsiContainerRef.current) {
           rsiChartRef.current.applyOptions({ width: rsiContainerRef.current.clientWidth })
@@ -1037,7 +1072,7 @@ export default function Backtester() {
       />
 
       {/* Chart container */}
-      <div ref={containerRef} className="border border-card" style={{ height: "calc(100vh - 180px)" }} />
+      <div ref={containerRef} className="border border-card" style={{ height: "calc(100vh - 160px)" }} />
 
       {/* RSI sub-chart */}
       {rsiEnabled && (
