@@ -174,14 +174,30 @@ export default function Backtester() {
     }
     setLoading(true)
     setError('')
+    // Remember replay position (timestamp) before reload
+    const wasReplaying = replayMode
+    const replayTime = wasReplaying && allCandles[currentIndex]
+      ? allCandles[currentIndex].time
+      : null
+
     getKlines(symbol, tf, candleCount[tf] || 1000)
       .then(response => {
         setKlines(response.data)
         setAllCandles(response.data)
-        // Exit replay mode when data reloads
-        setReplayMode(false)
-        setIsPlaying(false)
-        setCurrentIndex(0)
+
+        if (wasReplaying && replayTime && response.data.length > 0) {
+          // Find nearest candle to the replay timestamp in new TF
+          let idx = response.data.findIndex((c: KlineData) => c.time >= replayTime)
+          if (idx === -1) idx = response.data.length - 1
+          if (idx === 0) idx = 1
+          setCurrentIndex(idx)
+          setIsPlaying(false)
+          // replayMode stays true
+        } else {
+          setReplayMode(false)
+          setIsPlaying(false)
+          setCurrentIndex(0)
+        }
         setLoading(false)
       })
       .catch(err => {
