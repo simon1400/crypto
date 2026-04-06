@@ -555,6 +555,16 @@ export default function Backtester() {
     }
   }, [klines])
 
+  // Resize main chart when sub-charts toggle
+  useEffect(() => {
+    if (chartRef.current && containerRef.current) {
+      chartRef.current.applyOptions({
+        width: containerRef.current.clientWidth,
+        height: containerRef.current.clientHeight,
+      })
+    }
+  }, [rsiEnabled, macdEnabled])
+
   // EMA visibility toggle
   useEffect(() => {
     if (emaEnabled) {
@@ -1079,17 +1089,19 @@ export default function Backtester() {
         onToggleMacd={() => setMacdEnabled(v => !v)}
       />
 
-      {/* Chart container */}
-      <div ref={containerRef} className="border border-card" style={{ height: "calc(100vh - 160px)" }} />
+      {/* Chart container — shrink when sub-charts are active */}
+      <div ref={containerRef} className="border border-card" style={{
+        height: `calc(100vh - 160px${rsiEnabled ? ' - 155px' : ''}${macdEnabled ? ' - 155px' : ''})`
+      }} />
 
       {/* RSI sub-chart */}
       {rsiEnabled && (
-        <div ref={rsiContainerRef} className="overflow-hidden border border-card flex-shrink-0" />
+        <div ref={rsiContainerRef} className="overflow-hidden border border-card" style={{ height: '150px' }} />
       )}
 
       {/* MACD sub-chart */}
       {macdEnabled && (
-        <div ref={macdContainerRef} className="overflow-hidden border border-card flex-shrink-0" />
+        <div ref={macdContainerRef} className="overflow-hidden border border-card" style={{ height: '150px' }} />
       )}
 
       {/* Floating trading panel — bottom-left overlay */}
