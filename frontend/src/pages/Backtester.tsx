@@ -305,7 +305,7 @@ export default function Backtester() {
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: Math.max(300, window.innerHeight - 160),
+      height: window.innerHeight - 260,
       layout: {
         background: { color: '#0b0e11' },
         textColor: '#848e9c',
