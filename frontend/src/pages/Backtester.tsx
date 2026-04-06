@@ -14,22 +14,22 @@ const SESSION_KEY = 'backtest_session'
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1D']
 
-function getStorageKey(sym: string, interval: string): string {
-  return `drawings_${sym}_${interval}`
+function getStorageKey(sym: string): string {
+  return `drawings_${sym}`
 }
 
-function saveDrawings(manager: DrawingManager, sym: string, interval: string): void {
+function saveDrawings(manager: DrawingManager, sym: string): void {
   try {
     const data = manager.exportDrawings()
-    localStorage.setItem(getStorageKey(sym, interval), JSON.stringify(data))
+    localStorage.setItem(getStorageKey(sym), JSON.stringify(data))
   } catch (e) {
     console.warn('[Backtester] Failed to save drawings:', e)
   }
 }
 
-function loadDrawings(manager: DrawingManager, sym: string, interval: string): void {
+function loadDrawings(manager: DrawingManager, sym: string): void {
   try {
-    const raw = localStorage.getItem(getStorageKey(sym, interval))
+    const raw = localStorage.getItem(getStorageKey(sym))
     if (!raw) return
     const data: SerializedDrawing[] = JSON.parse(raw)
     const registry = getToolRegistry()
@@ -296,7 +296,7 @@ export default function Backtester() {
 
     // Save drawings before chart rebuild
     if (managerRef.current) {
-      saveDrawings(managerRef.current, symbol, tf)
+      saveDrawings(managerRef.current, symbol)
       managerRef.current.detach()
       managerRef.current = null
     }
@@ -513,14 +513,14 @@ export default function Backtester() {
     })
 
     // Restore drawings from localStorage
-    loadDrawings(manager, symbol, tf)
+    loadDrawings(manager, symbol)
 
     // Auto-save on any drawing change
     const unsubs = [
-      manager.on('drawing:added', () => saveDrawings(manager, symbol, tf)),
-      manager.on('drawing:updated', () => saveDrawings(manager, symbol, tf)),
-      manager.on('drawing:removed', () => saveDrawings(manager, symbol, tf)),
-      manager.on('drawing:cleared', () => saveDrawings(manager, symbol, tf)),
+      manager.on('drawing:added', () => saveDrawings(manager, symbol)),
+      manager.on('drawing:updated', () => saveDrawings(manager, symbol)),
+      manager.on('drawing:removed', () => saveDrawings(manager, symbol)),
+      manager.on('drawing:cleared', () => saveDrawings(manager, symbol)),
     ]
 
     const handleResize = () => {
@@ -950,7 +950,7 @@ export default function Backtester() {
   function handleClearAll() {
     if (!managerRef.current) return
     managerRef.current.clearAll()
-    localStorage.removeItem(getStorageKey(symbol, tf))
+    localStorage.removeItem(getStorageKey(symbol))
   }
 
   function loadSymbol() {
