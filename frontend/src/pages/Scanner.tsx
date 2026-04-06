@@ -223,7 +223,7 @@ function SignalCard({ signal, onStatusChange }: {
                 value={closePrice}
                 onChange={e => setClosePrice(e.target.value)}
                 placeholder={String(tps[0]?.price || signal.entry)}
-                className="w-full bg-input text-text-primary rounded px-3 py-1.5 text-sm font-mono mt-0.5"
+                className="w-full bg-input text-text-primary border border-card rounded px-3 py-1.5 text-sm font-mono mt-0.5 focus:outline-none focus:border-accent"
                 step="any"
               />
             </div>
@@ -233,7 +233,7 @@ function SignalCard({ signal, onStatusChange }: {
                 type="number"
                 value={closePercent}
                 onChange={e => setClosePercent(e.target.value)}
-                className="w-full bg-input text-text-primary rounded px-3 py-1.5 text-sm font-mono mt-0.5"
+                className="w-full bg-input text-text-primary border border-card rounded px-3 py-1.5 text-sm font-mono mt-0.5 focus:outline-none focus:border-accent"
                 min={1} max={100 - signal.closedPct}
               />
             </div>
