@@ -21,7 +21,17 @@ function getStorageKey(sym: string): string {
 function saveDrawings(manager: DrawingManager, sym: string): void {
   try {
     const data = manager.exportDrawings()
-    console.log('[Backtester] saveDrawings:', sym, 'count:', data.length, data)
+    localStorage.setItem(getStorageKey(sym), JSON.stringify(data))
+  } catch (e) {
+    console.warn('[Backtester] Failed to save drawings:', e)
+  }
+}
+
+// Save that guards against cleanup overwrite
+function saveDrawingsGuarded(manager: DrawingManager, sym: string): void {
+  try {
+    const data = manager.exportDrawings()
+    if (data.length === 0) return // cleanup — don't overwrite
     localStorage.setItem(getStorageKey(sym), JSON.stringify(data))
   } catch (e) {
     console.warn('[Backtester] Failed to save drawings:', e)
@@ -31,16 +41,12 @@ function saveDrawings(manager: DrawingManager, sym: string): void {
 function loadDrawings(manager: DrawingManager, sym: string): void {
   try {
     const raw = localStorage.getItem(getStorageKey(sym))
-    console.log('[Backtester] loadDrawings:', sym, 'raw length:', raw?.length ?? 0)
     if (!raw) return
     const data: SerializedDrawing[] = JSON.parse(raw)
-    console.log('[Backtester] loadDrawings parsed:', data.length, 'drawings')
     const registry = getToolRegistry()
     manager.importDrawings(data, (type, d) => {
-      console.log('[Backtester] importing drawing:', type, d.id, d.anchors)
       return registry.createDrawing(type, d.id, d.anchors, d.style, d.options)
     })
-    console.log('[Backtester] loadDrawings complete, manager drawings:', manager.getAllDrawings().length)
   } catch (e) {
     console.warn('[Backtester] Failed to load drawings:', e)
   }
@@ -550,8 +556,8 @@ export default function Backtester() {
       window.removeEventListener('resize', handleResize)
       unsubs.forEach(fn => fn())
       if (managerRef.current) {
-        // Save drawings BEFORE detaching
-        saveDrawings(managerRef.current, symbol)
+        // Save drawings BEFORE detaching — guarded to not overwrite with empty
+        saveDrawingsGuarded(managerRef.current, symbol)
         managerRef.current.detach()
         managerRef.current = null
       }
@@ -959,8 +965,8 @@ export default function Backtester() {
 
   function handleClearAll() {
     if (!managerRef.current) return
-    managerRef.current.clearAll()
     localStorage.removeItem(getStorageKey(symbol))
+    managerRef.current.clearAll()
   }
 
   function loadSymbol() {
