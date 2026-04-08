@@ -353,6 +353,84 @@ router.put('/:id', async (req: Request, res: Response) => {
   }
 })
 
+// POST /api/trades/close-all — закрыть все открытые сделки по рынку
+router.post('/close-all', async (_req: Request, res: Response) => {
+  try {
+    const trades = await prisma.trade.findMany({
+      where: { status: { in: ['OPEN', 'PARTIALLY_CLOSED', 'PENDING_ENTRY'] } },
+    })
+
+    if (!trades.length) return res.json({ closed: 0 })
+
+    // Fetch current prices
+    const coins = [...new Set(trades.map(t => t.coin))]
+    const prices: Record<string, number | null> = {}
+    await Promise.all(coins.map(async coin => {
+      prices[coin] = await fetchCurrentPrice(coin)
+    }))
+
+    let closed = 0
+    for (const trade of trades) {
+      // PENDING_ENTRY — just cancel
+      if (trade.status === 'PENDING_ENTRY') {
+        await prisma.trade.update({
+          where: { id: trade.id },
+          data: { status: 'CANCELLED', closedAt: new Date() },
+        })
+        closed++
+        continue
+      }
+
+      const price = prices[trade.coin]
+      if (!price) continue
+
+      const remainingPct = 100 - trade.closedPct
+      if (remainingPct <= 0) continue
+
+      const direction = trade.type === 'LONG' ? 1 : -1
+      const priceDiff = (price - trade.entryPrice) * direction
+      const pnlPercent = (priceDiff / trade.entryPrice) * 100 * trade.leverage
+      const portionAmount = trade.amount * (remainingPct / 100)
+      const pnlUsdt = portionAmount * (pnlPercent / 100)
+
+      const closes = Array.isArray(trade.closes) ? [...(trade.closes as any[])] : []
+      closes.push({
+        price,
+        percent: remainingPct,
+        pnl: Math.round(pnlUsdt * 100) / 100,
+        pnlPercent: Math.round(pnlPercent * 100) / 100,
+        closedAt: new Date().toISOString(),
+      })
+
+      await prisma.trade.update({
+        where: { id: trade.id },
+        data: {
+          closes,
+          closedPct: 100,
+          realizedPnl: Math.round((trade.realizedPnl + pnlUsdt) * 100) / 100,
+          status: 'CLOSED',
+          closedAt: new Date(),
+        },
+      })
+      closed++
+    }
+
+    res.json({ closed })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/trades/all — удалить все сделки
+router.delete('/all', async (_req: Request, res: Response) => {
+  try {
+    const { count } = await prisma.trade.deleteMany({})
+    res.json({ deleted: count })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // DELETE /api/trades/:id
 router.delete('/:id', async (req: Request, res: Response) => {
   try {

@@ -1,5 +1,6 @@
 import { MultiTFIndicators } from '../../services/indicators'
 import { MarketRegime } from '../marketRegime'
+import { CoinRegimeContext } from '../coinRegime'
 import { trendFollow } from './trendFollow'
 import { meanRevert } from './meanRevert'
 import { breakout } from './breakout'
@@ -14,7 +15,7 @@ export interface RawSignal {
   indicators: MultiTFIndicators
 }
 
-type StrategyFn = (coin: string, ind: MultiTFIndicators, regime: MarketRegime) => RawSignal | null
+type StrategyFn = (coin: string, ind: MultiTFIndicators, regime: MarketRegime, coinRegime?: CoinRegimeContext) => RawSignal | null
 
 const strategies: StrategyFn[] = [
   trendFollow,
@@ -26,12 +27,13 @@ const strategies: StrategyFn[] = [
 export function runStrategies(
   coin: string,
   indicators: MultiTFIndicators,
-  regime: MarketRegime
+  regime: MarketRegime,
+  coinRegime?: CoinRegimeContext,
 ): RawSignal | null {
   const signals: RawSignal[] = []
 
   for (const strategy of strategies) {
-    const signal = strategy(coin, indicators, regime)
+    const signal = strategy(coin, indicators, regime, coinRegime)
     if (signal) signals.push(signal)
   }
 

@@ -214,6 +214,28 @@ export async function deleteTrade(id: number): Promise<void> {
   if (!res.ok) throw new Error('Failed to delete trade')
 }
 
+export async function closeAllTrades(): Promise<{ closed: number }> {
+  const res = await fetch(`${BASE}/api/trades/close-all`, {
+    method: 'POST', headers: getHeaders(),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteAllTrades(): Promise<{ deleted: number }> {
+  const res = await fetch(`${BASE}/api/trades/all`, {
+    method: 'DELETE', headers: getHeaders(),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function getSignalPrices(coins: string[]): Promise<Record<string, number | null>> {
   const res = await fetch(`${BASE}/api/signals/prices`, {
     method: 'POST',
@@ -273,6 +295,13 @@ export interface EntryModel {
   viable: boolean
 }
 
+export interface TriggerState {
+  triggerType: string
+  triggerLevel: number
+  triggerTf: string
+  invalidIf: string
+}
+
 export interface ScanSignal {
   savedId: number | null
   coin: string
@@ -280,7 +309,10 @@ export interface ScanSignal {
   strategy: string
   score: number
   category: string
-  scoreBreakdown: { technical: number; multiTF: number; volume: number; marketContext: number; patterns: number }
+  scoreBand: string    // STRONG | ACTIONABLE | CONDITIONAL | OBSERVATIONAL | LOW_QUALITY
+  entryQuality: string // GOOD | FAIR | POOR | CHASING
+  triggerState: TriggerState | null
+  scoreBreakdown: { trend: number; momentum: number; volatility: number; meanRevStretch: number; levelInteraction: number; volume: number; marketContext: number; mtfMultiplier: number; patternBonus: number }
   entry: number
   stopLoss: number
   slPercent: number
@@ -337,6 +369,53 @@ export async function triggerScan(coins?: string[], minScore?: number, useGPT?: 
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Scan failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+// === Scalp Scanner ===
+export interface ScalpSignal {
+  coin: string
+  type: string
+  strategy: string
+  score: number
+  category: string
+  scoreBreakdown: { signal: number; alignment: number; volatility: number; volume: number; context: number }
+  entry: number
+  stopLoss: number
+  takeProfit: number
+  slPercent: number
+  tpPercent: number
+  riskReward: number
+  leverage: number
+  positionPct: number
+  reasons: string[]
+}
+
+export interface ScalpResponse {
+  total: number
+  funnel: {
+    coinsScanned: number
+    fetchErrors: number
+    strategyCandidates: number
+    passedScoring: number
+    passedRisk: number
+    byStrategy: Record<string, number>
+    byCategory: Record<string, number>
+    final: number
+  }
+  signals: ScalpSignal[]
+}
+
+export async function triggerScalpScan(coins?: string[], minScore?: number): Promise<ScalpResponse> {
+  const res = await fetch(`${BASE}/api/scanner/scalp`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ coins, minScore }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Scalp scan failed' }))
     throw new Error(err.error || `HTTP ${res.status}`)
   }
   return res.json()
@@ -410,6 +489,24 @@ export async function deleteSignal(id: number): Promise<void> {
     headers: getHeaders(),
   })
   if (!res.ok) throw new Error('Failed to delete signal')
+}
+
+export async function deleteAllSignals(): Promise<{ deleted: number }> {
+  const res = await fetch(`${BASE}/api/scanner/signals/all`, {
+    method: 'DELETE',
+    headers: getHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to delete signals')
+  return res.json()
+}
+
+export async function deleteUnusedSignals(): Promise<{ deleted: number }> {
+  const res = await fetch(`${BASE}/api/scanner/signals/unused`, {
+    method: 'DELETE',
+    headers: getHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to delete unused signals')
+  return res.json()
 }
 
 export async function getScannerCoins(): Promise<string[]> {

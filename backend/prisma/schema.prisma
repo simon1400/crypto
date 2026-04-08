@@ -86,7 +86,7 @@ model GeneratedSignal {
   positionPct   Float                            // % of deposit to risk
   amount        Float    @default(0)             // actual position size in USDT (set when TAKEN)
   indicators    Json                             // snapshot of multi-TF indicators
-  marketContext Json                             // fear&greed, regime, funding, OI, news
+  marketContext Json                             // fear&greed, regime, funding, OI, news, category, coinRegime
   aiAnalysis    String?                          // GPT review text
   closes        Json     @default("[]")          // [{price, percent, pnl, pnlPercent, closedAt}]
   closedPct     Float    @default(0)             // total % closed (0-100)
@@ -96,6 +96,15 @@ model GeneratedSignal {
   createdAt     DateTime @default(now())
   takenAt       DateTime?
   closedAt      DateTime?
+  // === Outcome tracking (for confidence calibration) ===
+  mfe           Float?                           // Max Favorable Excursion (% from entry to best price)
+  mae           Float?                           // Max Adverse Excursion (% from entry to worst price)
+  outcomeAt     DateTime?                        // when outcome was determined (TP hit or SL hit)
+  hitTp1        Boolean  @default(false)         // did price reach TP1
+  hitTp2        Boolean  @default(false)         // did price reach TP2
+  hitTp3        Boolean  @default(false)         // did price reach TP3
+  hitSl         Boolean  @default(false)         // did price hit SL
+  bestModel     String?                          // which entry model turned out best by hindsight
 }
 
 model Trade {

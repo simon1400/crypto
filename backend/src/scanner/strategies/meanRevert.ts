@@ -1,50 +1,74 @@
 import { MultiTFIndicators } from '../../services/indicators'
 import { MarketRegime } from '../marketRegime'
+import { CoinRegimeContext } from '../coinRegime'
 import { RawSignal } from './index'
 
 // Mean Reversion Strategy
 // Best when: RANGING regime
 // Logic: Buy at oversold levels near support, sell at overbought near resistance
 // Key: RSI extremes + Bollinger Band touch + Support/Resistance + divergences
+//
+// Coin-relative regime: if coin has its own momentum (outperforming/underperforming BTC),
+// don't gate on BTC trend — the coin is moving independently.
 
 export function meanRevert(
   coin: string,
   ind: MultiTFIndicators,
-  regime: MarketRegime
+  regime: MarketRegime,
+  coinRegime?: CoinRegimeContext,
 ): RawSignal | null {
   const { tf15m, tf1h, tf4h } = ind
 
   // Hard filter: block mean reversion in strong trends
   if (regime === 'TRENDING_UP' || regime === 'TRENDING_DOWN') return null
 
-  // Block LONG mean reversion when BTC bearish (checked via 4h trend)
-  // Block SHORT mean reversion when BTC bullish
+  // Block LONG mean reversion when BTC bearish / SHORT when BTC bullish
+  // BUT allow if coin has its own momentum (relative strength)
+  const hasOwnMomentum = coinRegime?.ownMomentum ?? false
   const btcBearish = ind.tf4h.trend === 'BEARISH'
   const btcBullish = ind.tf4h.trend === 'BULLISH'
 
-  const longConditions = btcBearish ? { score: 0, reasons: [] } : checkLong(tf15m, tf1h, tf4h)
-  const shortConditions = btcBullish ? { score: 0, reasons: [] } : checkShort(tf15m, tf1h, tf4h)
+  let blockLong = btcBearish
+  let blockShort = btcBullish
+
+  // If coin has own momentum, relax BTC gate
+  if (hasOwnMomentum) {
+    // Only block if coin itself is trending against the signal direction
+    blockLong = ind.tf4h.trend === 'BEARISH' && ind.tf4h.adx > 30 // coin's OWN strong downtrend
+    blockShort = ind.tf4h.trend === 'BULLISH' && ind.tf4h.adx > 30
+  }
+
+  const longConditions = blockLong ? { score: 0, reasons: [] } : checkLong(tf15m, tf1h, tf4h)
+  const shortConditions = blockShort ? { score: 0, reasons: [] } : checkShort(tf15m, tf1h, tf4h)
 
   if (longConditions.score > shortConditions.score && longConditions.score >= 3) {
+    const reasons = [...longConditions.reasons]
+    if (hasOwnMomentum && coinRegime) {
+      reasons.push(`Собственный импульс: ${coinRegime.relativeStrength} vs BTC`)
+    }
     return {
       coin,
       type: 'LONG',
       strategy: 'mean_revert',
       confidence: longConditions.score,
       maxConfidence: 10,
-      reasons: longConditions.reasons,
+      reasons,
       indicators: ind,
     }
   }
 
   if (shortConditions.score > longConditions.score && shortConditions.score >= 3) {
+    const reasons = [...shortConditions.reasons]
+    if (hasOwnMomentum && coinRegime) {
+      reasons.push(`Собственный импульс: ${coinRegime.relativeStrength} vs BTC`)
+    }
     return {
       coin,
       type: 'SHORT',
       strategy: 'mean_revert',
       confidence: shortConditions.score,
       maxConfidence: 10,
-      reasons: shortConditions.reasons,
+      reasons,
       indicators: ind,
     }
   }
@@ -87,7 +111,6 @@ function checkLong(tf15m: MultiTFIndicators['tf15m'], tf1h: MultiTFIndicators['t
   }
 
   // RSI divergence: price making lower low but RSI higher low
-  // Simplified: RSI on 15m recovering while price still low
   if (tf15m.rsi > tf1h.rsi && tf1h.rsi < 40) {
     score += 1
     reasons.push('Возможная бычья дивергенция RSI (15m > 1h)')

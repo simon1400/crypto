@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { runScan, isScannerRunning, SCAN_COINS, expireOldSignals } from '../scanner/coinScanner'
+import { runScalpScan, isScalpScannerRunning } from '../scanner/scalp/scalpScanner'
 import { prisma } from '../db/prisma'
 
 const router = Router()
@@ -34,6 +35,9 @@ router.post('/scan', async (req, res) => {
         strategy: r.signal.strategy,
         score: r.signal.score,
         category: r.category,
+        scoreBand: r.scoreBand,
+        entryQuality: r.entryQuality,
+        triggerState: r.triggerState,
         scoreBreakdown: r.signal.scoreBreakdown,
         // Best entry model
         entry: r.signal.entry,
@@ -50,7 +54,7 @@ router.post('/scan', async (req, res) => {
         // All entry models
         entryModels: r.signal.entryModels,
         reasons: r.signal.reasons,
-        // GPT annotation (not verdict)
+        // GPT annotation (overlay, not verdict)
         setupQuality: r.gptAnnotation.setupQuality,
         aiCommentary: r.gptAnnotation.commentary,
         aiRisks: r.gptAnnotation.risks,
@@ -66,9 +70,46 @@ router.post('/scan', async (req, res) => {
   }
 })
 
+// POST /api/scanner/scalp — trigger scalp scan
+router.post('/scalp', async (req, res) => {
+  try {
+    if (isScalpScannerRunning()) {
+      return res.status(409).json({ error: 'Scalp scanner already running' })
+    }
+
+    const { coins, minScore } = req.body || {}
+    const { results, funnel } = await runScalpScan(coins, minScore ?? 35)
+
+    res.json({
+      total: results.length,
+      funnel,
+      signals: results.map(r => ({
+        coin: r.signal.coin,
+        type: r.signal.type,
+        strategy: r.signal.strategy,
+        score: r.signal.score,
+        category: r.category,
+        scoreBreakdown: r.signal.scoreBreakdown,
+        entry: r.signal.entry,
+        stopLoss: r.signal.stopLoss,
+        takeProfit: r.signal.takeProfit,
+        slPercent: r.signal.slPercent,
+        tpPercent: r.signal.tpPercent,
+        riskReward: r.signal.riskReward,
+        leverage: r.signal.leverage,
+        positionPct: r.signal.positionPct,
+        reasons: r.signal.reasons,
+      })),
+    })
+  } catch (err: any) {
+    console.error('[Scalp Route] Error:', err)
+    res.status(500).json({ error: err.message || 'Scalp scan failed' })
+  }
+})
+
 // GET /api/scanner/status — check if scanner is running
 router.get('/status', (_req, res) => {
-  res.json({ running: isScannerRunning() })
+  res.json({ running: isScannerRunning(), scalpRunning: isScalpScannerRunning() })
 })
 
 // GET /api/scanner/signals — get saved signals with pagination
@@ -321,6 +362,28 @@ router.put('/signals/:id/status', async (req, res) => {
       data: { status },
     })
     res.json(signal)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/scanner/signals/all — delete all signals
+router.delete('/signals/all', async (_req, res) => {
+  try {
+    const { count } = await prisma.generatedSignal.deleteMany({})
+    res.json({ deleted: count })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/scanner/signals/unused — delete signals not taken (NEW, EXPIRED)
+router.delete('/signals/unused', async (_req, res) => {
+  try {
+    const { count } = await prisma.generatedSignal.deleteMany({
+      where: { status: { in: ['NEW', 'EXPIRED'] } },
+    })
+    res.json({ deleted: count })
   } catch (err: any) {
     res.status(500).json({ error: err.message })
   }

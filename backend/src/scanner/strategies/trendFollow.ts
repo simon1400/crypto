@@ -1,5 +1,6 @@
 import { MultiTFIndicators } from '../../services/indicators'
 import { MarketRegime } from '../marketRegime'
+import { CoinRegimeContext } from '../coinRegime'
 import { RawSignal } from './index'
 
 // Trend Following Strategy
@@ -10,7 +11,8 @@ import { RawSignal } from './index'
 export function trendFollow(
   coin: string,
   ind: MultiTFIndicators,
-  regime: MarketRegime
+  regime: MarketRegime,
+  _coinRegime?: CoinRegimeContext,
 ): RawSignal | null {
   const { tf15m, tf1h, tf4h } = ind
 

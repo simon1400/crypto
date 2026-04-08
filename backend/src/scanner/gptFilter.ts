@@ -82,7 +82,7 @@ export async function gptAnnotateSignal(
 Направление: ${signal.type}
 Стратегия: ${signal.strategy}
 Score: ${signal.score}/100
-Breakdown: Tech=${signal.scoreBreakdown.technical}/35 | Multi-TF=${signal.scoreBreakdown.multiTF}/20 | Vol=${signal.scoreBreakdown.volume}/15 | Market=${signal.scoreBreakdown.marketContext}/15 | Patterns=${signal.scoreBreakdown.patterns}/15
+Breakdown: Trend=${signal.scoreBreakdown.trend}/15 (MTF×${signal.scoreBreakdown.mtfMultiplier}) | Momentum=${signal.scoreBreakdown.momentum}/15 | Volatility=${signal.scoreBreakdown.volatility}/10 | MeanRev=${signal.scoreBreakdown.meanRevStretch}/10 | Levels=${signal.scoreBreakdown.levelInteraction}/15 | Vol=${signal.scoreBreakdown.volume}/15 | Market=${signal.scoreBreakdown.marketContext}/15
 
 Entry: $${signal.entry}
 Stop Loss: $${signal.stopLoss} (${signal.slPercent}%)

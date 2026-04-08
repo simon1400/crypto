@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   getTrades, getTradeStats, createTrade, closeTrade, hitStopLoss, deleteTrade,
-  updateTrade, searchSymbols, getTradeLivePrices, Trade, TradeStats, TradeTP, TradeClose, TradeLive,
+  updateTrade, searchSymbols, getTradeLivePrices, closeAllTrades, deleteAllTrades,
+  Trade, TradeStats, TradeTP, TradeClose, TradeLive,
 } from '../api/client'
 
 function formatDate(d: string) {
@@ -726,6 +727,9 @@ export default function Trades() {
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [selected, setSelected] = useState<Trade | null>(null)
   const [closing, setClosing] = useState<Trade | null>(null)
+  const [confirmCloseAll, setConfirmCloseAll] = useState(false)
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false)
+  const [bulkLoading, setBulkLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -764,7 +768,38 @@ export default function Trades() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-text-primary">Журнал сделок</h1>
-        {/* Кнопка показывается внутри NewTradeForm когда форма закрыта */}
+        <div className="flex gap-2">
+          {confirmCloseAll ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-text-secondary">Закрыть все по рынку?</span>
+              <button onClick={async () => { setBulkLoading(true); try { await closeAllTrades(); load() } catch {} finally { setBulkLoading(false); setConfirmCloseAll(false) } }}
+                disabled={bulkLoading} className="px-3 py-1.5 bg-accent text-black rounded text-xs font-medium disabled:opacity-50">
+                {bulkLoading ? '...' : 'Да'}
+              </button>
+              <button onClick={() => setConfirmCloseAll(false)} className="px-3 py-1.5 bg-input text-text-secondary rounded text-xs">Нет</button>
+            </div>
+          ) : (
+            <button onClick={() => setConfirmCloseAll(true)}
+              className="px-3 py-1.5 bg-accent/10 text-accent rounded-lg text-xs font-medium hover:bg-accent/20 transition">
+              Закрыть все
+            </button>
+          )}
+          {confirmDeleteAll ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-short">Удалить ВСЕ сделки?</span>
+              <button onClick={async () => { setBulkLoading(true); try { await deleteAllTrades(); load() } catch {} finally { setBulkLoading(false); setConfirmDeleteAll(false) } }}
+                disabled={bulkLoading} className="px-3 py-1.5 bg-short text-white rounded text-xs font-medium disabled:opacity-50">
+                {bulkLoading ? '...' : 'Да, удалить'}
+              </button>
+              <button onClick={() => setConfirmDeleteAll(false)} className="px-3 py-1.5 bg-input text-text-secondary rounded text-xs">Отмена</button>
+            </div>
+          ) : (
+            <button onClick={() => setConfirmDeleteAll(true)}
+              className="px-3 py-1.5 bg-short/10 text-short rounded-lg text-xs font-medium hover:bg-short/20 transition">
+              Очистить историю
+            </button>
+          )}
+        </div>
       </div>
       <NewTradeForm onCreated={load} />
 
@@ -851,6 +886,9 @@ export default function Trades() {
                         ) : <span className="text-text-secondary">—</span>
                       })()}
                       <span className={`${t.type === 'LONG' ? 'text-long' : 'text-short'}`}>{t.coin.replace('USDT', '')} - {t.leverage}x</span>
+                      {t.source === 'SCALP' && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-400" title="Скальп-сканер">S</span>}
+                      {t.source === 'SCANNER' && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent" title="Свинг-сканер">W</span>}
+                      {t.source === 'SIGNAL' && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-blue-500/15 text-blue-400" title="Telegram-сигнал">T</span>}
                        
                       <a
                         href={`https://www.tradingview.com/chart/?symbol=BYBIT:${t.coin}.P`}

@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import {
-  getScannerSignals, triggerScan, takeSignalAsTrade, closeSignal, slHitSignal, skipSignal, deleteSignal,
-  ScannerSignal, ScanResponse, ScanSignal, SignalClose,
+  getScannerSignals, triggerScan, triggerScalpScan, takeSignalAsTrade, closeSignal, slHitSignal, skipSignal, deleteSignal, createTrade,
+  deleteAllSignals, deleteUnusedSignals, getScannerCoins, getBalance,
+  ScannerSignal, ScanResponse, ScanSignal, ScalpSignal, ScalpResponse, SignalClose,
 } from '../api/client'
 
 function formatDate(d: string) {
@@ -97,10 +98,12 @@ function AiAnalysisBlock({ text }: { text: string }) {
 }
 
 // === Signal Card ===
-function SignalCard({ signal, onStatusChange, onDelete }: {
+function SignalCard({ signal, onStatusChange, onDelete, balance, riskPct }: {
   signal: ScannerSignal
   onStatusChange: () => void
   onDelete: (id: number) => void
+  balance: number
+  riskPct: number
 }) {
   const [expanded, setExpanded] = useState(false)
   const [showTakeForm, setShowTakeForm] = useState(false)
@@ -118,6 +121,20 @@ function SignalCard({ signal, onStatusChange, onDelete }: {
   const tps = active?.takeProfits || (signal.takeProfits as { price: number; rr: number }[]) || []
   const closes = (signal.closes as SignalClose[]) || []
   const hasPnl = signal.closedPct > 0
+
+  function calcSignalRiskAmount(lev?: number) {
+    if (!balance || !riskPct) return ''
+    const sl = active?.slPercent || (Math.abs((signal.stopLoss - signal.entry) / signal.entry) * 100)
+    const leverage = lev || active?.leverage || signal.leverage
+    if (!sl || !leverage) return ''
+    return String(Math.floor((balance * riskPct / 100) / (sl / 100 * leverage)))
+  }
+
+  function openSignalTakeForm() {
+    setAmount(calcSignalRiskAmount())
+    setCustomLeverage('')
+    setShowTakeForm(true)
+  }
 
   async function handleTake() {
     if (!amount) return
@@ -286,17 +303,30 @@ function SignalCard({ signal, onStatusChange, onDelete }: {
               <input
                 type="number"
                 value={customLeverage || (active?.leverage ?? signal.leverage)}
-                onChange={e => setCustomLeverage(e.target.value)}
+                onChange={e => {
+                  setCustomLeverage(e.target.value)
+                  const calc = calcSignalRiskAmount(Number(e.target.value) || undefined)
+                  if (calc) setAmount(calc)
+                }}
                 min={1} max={125}
                 className="w-full bg-card text-text-primary rounded px-3 py-1.5 text-sm font-mono border border-card focus:border-accent/40 focus:outline-none"
               />
             </div>
           </div>
-          {amount && (
-            <div className="text-xs text-text-secondary">
-              Позиция: <span className="text-text-primary font-mono">${Number(amount) * (Number(customLeverage) || active?.leverage || signal.leverage)}</span>
-            </div>
-          )}
+          {amount && (() => {
+            const lev = Number(customLeverage) || active?.leverage || signal.leverage
+            const sl = active?.slPercent || (Math.abs((signal.stopLoss - signal.entry) / signal.entry) * 100)
+            const position = Number(amount) * lev
+            const riskUsd = Number(amount) * (sl / 100) * lev
+            return (
+              <div className="text-xs text-text-secondary space-y-0.5">
+                <div>Позиция: <span className="text-text-primary font-mono">${position}</span></div>
+                <div>Риск: <span className="text-short font-mono">${Math.round(riskUsd * 100) / 100}</span>
+                  {balance > 0 && <span className="ml-1">({(riskUsd / balance * 100).toFixed(1)}% депо)</span>}
+                </div>
+              </div>
+            )
+          })()}
           <div className="flex gap-2">
             <button onClick={handleTake} disabled={loading || !amount} className="px-3 py-1.5 text-sm rounded bg-long/20 text-long hover:bg-long/30 disabled:opacity-50">
               {loading ? '...' : 'Подтвердить'}
@@ -361,7 +391,7 @@ function SignalCard({ signal, onStatusChange, onDelete }: {
         <div className="flex gap-1">
           {signal.status === 'NEW' && !showTakeForm && (
             <>
-              <button onClick={() => setShowTakeForm(true)} className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20">Взять</button>
+              <button onClick={openSignalTakeForm} className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20">Взять</button>
               <button onClick={handleSkip} className="px-2 py-1 text-xs rounded bg-neutral/10 text-neutral hover:bg-neutral/20">Пропустить</button>
             </>
           )}
@@ -389,16 +419,35 @@ function SignalCard({ signal, onStatusChange, onDelete }: {
 // === Category badge ===
 const CATEGORY_STYLES: Record<string, { bg: string; text: string; label: string }> = {
   READY: { bg: 'bg-long/15', text: 'text-long', label: 'Ready' },
-  WATCHLIST: { bg: 'bg-accent/15', text: 'text-accent', label: 'Watchlist' },
-  WAIT_CONFIRMATION: { bg: 'bg-blue-500/15', text: 'text-blue-400', label: 'Wait' },
-  LATE_ENTRY: { bg: 'bg-orange-500/15', text: 'text-orange-400', label: 'Late' },
+  READY_AGGRESSIVE: { bg: 'bg-long/10', text: 'text-long', label: 'Ready (Aggr)' },
+  WATCHLIST: { bg: 'bg-neutral/15', text: 'text-neutral', label: 'Watchlist' },
+  WAIT_CONFIRMATION: { bg: 'bg-blue-500/15', text: 'text-blue-400', label: 'Wait Trigger' },
+  PULLBACK_WATCH: { bg: 'bg-accent/15', text: 'text-accent', label: 'Wait Pullback' },
+  LATE_ENTRY: { bg: 'bg-orange-500/15', text: 'text-orange-400', label: 'Late Entry' },
   CONFLICTED: { bg: 'bg-short/15', text: 'text-short', label: 'Conflicted' },
-  REJECTED: { bg: 'bg-neutral/15', text: 'text-neutral', label: 'Rejected' },
+  REJECTED: { bg: 'bg-neutral/10', text: 'text-neutral', label: 'Rejected' },
 }
 
 function CategoryBadge({ category }: { category: string }) {
   const style = CATEGORY_STYLES[category] || CATEGORY_STYLES.REJECTED
   return <span className={`px-2 py-0.5 rounded text-xs font-bold ${style.bg} ${style.text}`}>{style.label}</span>
+}
+
+// === Score band badge ===
+const BAND_STYLES: Record<string, { text: string; label: string }> = {
+  STRONG: { text: 'text-long', label: 'Strong' },
+  ACTIONABLE: { text: 'text-accent', label: 'Actionable' },
+  CONDITIONAL: { text: 'text-text-secondary', label: 'Conditional' },
+  OBSERVATIONAL: { text: 'text-neutral', label: 'Observational' },
+  LOW_QUALITY: { text: 'text-short', label: 'Low' },
+}
+
+// === Entry quality badge ===
+const ENTRY_Q_STYLES: Record<string, { text: string; label: string }> = {
+  GOOD: { text: 'text-long', label: 'Entry: Good' },
+  FAIR: { text: 'text-accent', label: 'Entry: Fair' },
+  POOR: { text: 'text-orange-400', label: 'Entry: Poor' },
+  CHASING: { text: 'text-short', label: 'Entry: Chasing' },
 }
 
 const QUALITY_COLORS: Record<string, string> = {
@@ -417,11 +466,13 @@ const MODEL_LABELS: Record<string, string> = {
 }
 
 // === Scan Results (from fresh scan) ===
-function ScanResultCard({ result, onTake, onSkip, onDelete }: {
+function ScanResultCard({ result, onTake, onSkip, onDelete, balance, riskPct }: {
   result: ScanSignal
   onTake: (id: number, amount: number, modelType?: string, leverage?: number) => void
   onSkip: (id: number) => void
   onDelete: (id: number) => void
+  balance: number
+  riskPct: number
 }) {
   const [selectedModel, setSelectedModel] = useState(0)
   const [showTakeForm, setShowTakeForm] = useState(false)
@@ -433,10 +484,26 @@ function ScanResultCard({ result, onTake, onSkip, onDelete }: {
   const active = models[selectedModel] || models[0]
   const tps = active?.takeProfits || result.takeProfits
 
+  function calcRiskAmount(lev?: number) {
+    if (!balance || !riskPct) return ''
+    const sl = active?.slPercent || result.slPercent
+    const leverage = lev || active?.leverage || result.leverage
+    if (!sl || !leverage) return ''
+    const amount = (balance * riskPct / 100) / (sl / 100 * leverage)
+    return String(Math.floor(amount))
+  }
+
+  function openTakeForm() {
+    const calc = calcRiskAmount()
+    setTakeAmount(calc)
+    setTakeLeverage('')
+    setShowTakeForm(true)
+  }
+
   return (
     <div className={`bg-card rounded-xl p-4 border ${isRejected ? 'border-short/20 opacity-60' : 'border-card hover:border-accent/30'} transition-colors`}>
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="font-mono font-bold text-lg text-text-primary">{result.coin}</span>
           <span className={`px-2 py-0.5 rounded text-sm font-bold ${isLong ? 'bg-long/10 text-long' : 'bg-short/10 text-short'}`}>
             {result.type}
@@ -450,13 +517,36 @@ function ScanResultCard({ result, onTake, onSkip, onDelete }: {
         <ScoreBadge score={result.score} />
       </div>
 
-      {/* Score breakdown */}
-      <div className="flex gap-2 mb-3 text-xs text-text-secondary">
-        <span>Tech: {result.scoreBreakdown.technical}/25</span>
-        <span>MTF: {result.scoreBreakdown.multiTF}/20</span>
+      {/* Signal quality vs Entry quality */}
+      <div className="flex items-center gap-3 mb-2 text-xs">
+        <span className={BAND_STYLES[result.scoreBand]?.text || 'text-neutral'}>
+          Signal: {BAND_STYLES[result.scoreBand]?.label || result.scoreBand}
+        </span>
+        <span className={ENTRY_Q_STYLES[result.entryQuality]?.text || 'text-neutral'}>
+          {ENTRY_Q_STYLES[result.entryQuality]?.label || `Entry: ${result.entryQuality}`}
+        </span>
+      </div>
+
+      {/* Trigger state for WAIT_CONFIRMATION */}
+      {result.triggerState && (
+        <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg px-3 py-2 mb-3 text-xs">
+          <div className="text-blue-400 font-bold mb-1">Trigger:</div>
+          <div className="text-text-primary">
+            {result.triggerState.triggerType.replace(/_/g, ' ')} ${result.triggerState.triggerLevel} на {result.triggerState.triggerTf}
+          </div>
+          <div className="text-short/80 mt-1">Отмена: {result.triggerState.invalidIf}</div>
+        </div>
+      )}
+
+      {/* Score breakdown — 7 feature groups */}
+      <div className="flex flex-wrap gap-2 mb-3 text-xs text-text-secondary">
+        <span>Trend: {result.scoreBreakdown.trend}/15</span>
+        <span>Mom: {result.scoreBreakdown.momentum}/15</span>
+        <span>Vol$: {result.scoreBreakdown.volatility}/10</span>
+        <span>MR: {result.scoreBreakdown.meanRevStretch}/10</span>
+        <span>Lvl: {result.scoreBreakdown.levelInteraction}/15</span>
         <span>Vol: {result.scoreBreakdown.volume}/15</span>
-        <span>Market: {result.scoreBreakdown.marketContext}/15</span>
-        <span>Patterns: {result.scoreBreakdown.patterns}/15</span>
+        <span>Mkt: {result.scoreBreakdown.marketContext}/15</span>
       </div>
 
       {/* Entry model selector */}
@@ -559,17 +649,30 @@ function ScanResultCard({ result, onTake, onSkip, onDelete }: {
               <input
                 type="number"
                 value={takeLeverage || (active?.leverage || result.leverage)}
-                onChange={e => setTakeLeverage(e.target.value)}
+                onChange={e => {
+                  setTakeLeverage(e.target.value)
+                  const calc = calcRiskAmount(Number(e.target.value) || undefined)
+                  if (calc) setTakeAmount(calc)
+                }}
                 min={1} max={125}
                 className="w-full bg-card text-text-primary rounded px-3 py-1.5 text-sm font-mono border border-card focus:border-accent/40 focus:outline-none"
               />
             </div>
           </div>
-          {takeAmount && (
-            <div className="text-xs text-text-secondary">
-              Позиция: <span className="text-text-primary font-mono">${Number(takeAmount) * (Number(takeLeverage) || active?.leverage || result.leverage)}</span>
-            </div>
-          )}
+          {takeAmount && (() => {
+            const lev = Number(takeLeverage) || active?.leverage || result.leverage
+            const sl = active?.slPercent || result.slPercent
+            const position = Number(takeAmount) * lev
+            const riskUsd = Number(takeAmount) * (sl / 100) * lev
+            return (
+              <div className="text-xs text-text-secondary space-y-0.5">
+                <div>Позиция: <span className="text-text-primary font-mono">${position}</span></div>
+                <div>Риск: <span className="text-short font-mono">${Math.round(riskUsd * 100) / 100}</span>
+                  {balance > 0 && <span className="ml-1">({(riskUsd / balance * 100).toFixed(1)}% депо)</span>}
+                </div>
+              </div>
+            )
+          })()}
           <div className="flex gap-2">
             <button
               onClick={() => {
@@ -598,7 +701,7 @@ function ScanResultCard({ result, onTake, onSkip, onDelete }: {
           ) : !showTakeForm ? (
             <>
               <button
-                onClick={() => setShowTakeForm(true)}
+                onClick={openTakeForm}
                 className="px-3 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20 transition-colors"
               >
                 Взять
@@ -642,10 +745,12 @@ const LOADING_MESSAGES = [
 export default function Scanner() {
   const [signals, setSignals] = useState<ScannerSignal[]>([])
   const [scanResults, setScanResults] = useState<ScanResponse | null>(null)
+  const [scalpResults, setScalpResults] = useState<ScalpResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadingMsg, setLoadingMsg] = useState('')
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'saved' | 'scan'>('saved')
+  const [scanMode, setScanMode] = useState<'swing' | 'scalp'>('swing')
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
@@ -655,6 +760,19 @@ export default function Scanner() {
   const [sortBy, setSortBy] = useState<'score' | 'date'>('score')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false)
+  const [confirmDeleteUnused, setConfirmDeleteUnused] = useState(false)
+  const [bulkLoading, setBulkLoading] = useState(false)
+  const [coinCount, setCoinCount] = useState(0)
+  const [balance, setBalance] = useState(0)
+  const [manualBalance, setManualBalance] = useState('')
+  const [riskPct, setRiskPct] = useState(5)
+
+  // Load coin count & balance
+  useEffect(() => {
+    getScannerCoins().then(c => setCoinCount(c.length)).catch(() => {})
+    getBalance().then(r => { if (r.balance) setBalance(r.balance) }).catch(() => {})
+  }, [])
 
   // Load saved signals
   useEffect(() => {
@@ -711,6 +829,24 @@ export default function Scanner() {
     } catch {}
   }
 
+  async function handleScalpTake(signal: ScalpSignal, amount: number) {
+    try {
+      await createTrade({
+        coin: `${signal.coin}USDT`,
+        type: signal.type,
+        leverage: signal.leverage,
+        entryPrice: signal.entry,
+        amount,
+        stopLoss: signal.stopLoss,
+        takeProfits: [{ price: signal.takeProfit, percent: 100 }],
+        source: 'SCALP',
+        notes: `${signal.strategy} | Score: ${signal.score} | R:R 1:${signal.riskReward}`,
+      })
+    } catch (err: any) {
+      alert(err.message || 'Не удалось создать сделку')
+    }
+  }
+
   const sortedSignals = [...signals].sort((a, b) => {
     if (sortBy === 'score') return b.score - a.score
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -719,25 +855,33 @@ export default function Scanner() {
   const visibleSignals = showAll ? sortedSignals : sortedSignals.slice(0, INITIAL_LIMIT)
   const hasMore = sortedSignals.length > INITIAL_LIMIT
 
+  const SCALP_MESSAGES = ['Загружаю 1m/5m/15m данные...', 'Ищу перепроданные монеты...', 'Проверяю BB и RSI...', 'Считаю точки входа...']
+
   // Run scan
   async function handleScan() {
     setLoading(true)
     setError('')
     setScanResults(null)
+    setScalpResults(null)
     setTab('scan')
 
+    const msgs = scanMode === 'scalp' ? SCALP_MESSAGES : LOADING_MESSAGES
     let msgIdx = 0
-    setLoadingMsg(LOADING_MESSAGES[0])
+    setLoadingMsg(msgs[0])
     const interval = setInterval(() => {
-      msgIdx = (msgIdx + 1) % LOADING_MESSAGES.length
-      setLoadingMsg(LOADING_MESSAGES[msgIdx])
-    }, 3000)
+      msgIdx = (msgIdx + 1) % msgs.length
+      setLoadingMsg(msgs[msgIdx])
+    }, scanMode === 'scalp' ? 2000 : 3000)
 
     try {
-      const res = await triggerScan(undefined, minScore, useGPT)
-      setScanResults(res)
-      // Reload saved signals too
-      loadSignals()
+      if (scanMode === 'scalp') {
+        const res = await triggerScalpScan(undefined, minScore)
+        setScalpResults(res)
+      } else {
+        const res = await triggerScan(undefined, minScore, useGPT)
+        setScanResults(res)
+        loadSignals()
+      }
     } catch (err: any) {
       setError(err.message || 'Scan failed')
     } finally {
@@ -753,11 +897,53 @@ export default function Scanner() {
         <div>
           <h1 className="text-2xl font-semibold text-text-primary">Сканер сигналов</h1>
           <p className="text-sm text-text-secondary mt-1">
-            Автоматический поиск торговых возможностей по 125 монетам
+            Автоматический поиск торговых возможностей по {coinCount || '...'} монетам
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Balance & Risk */}
+          <div className="flex items-center gap-2 bg-input rounded-lg px-3 py-1.5">
+            <label className="text-xs text-text-secondary">Депо:</label>
+            {balance > 0 ? (
+              <span className="text-sm font-mono text-text-primary">${Math.round(balance)}</span>
+            ) : (
+              <input
+                type="number"
+                value={manualBalance}
+                onChange={e => { setManualBalance(e.target.value); setBalance(Number(e.target.value) || 0) }}
+                placeholder="0"
+                className="w-20 bg-card text-text-primary rounded px-2 py-0.5 text-sm font-mono border border-card focus:border-accent/40 focus:outline-none"
+              />
+            )}
+            <span className="text-text-secondary text-xs">|</span>
+            <label className="text-xs text-text-secondary">Риск:</label>
+            <input
+              type="number"
+              value={riskPct}
+              onChange={e => setRiskPct(Number(e.target.value) || 0)}
+              min={0.5} max={20} step={0.5}
+              className="w-14 bg-card text-text-primary rounded px-2 py-0.5 text-sm font-mono border border-card focus:border-accent/40 focus:outline-none"
+            />
+            <span className="text-xs text-text-secondary">%</span>
+          </div>
+
+          {/* Mode toggle */}
+          <div className="flex bg-input rounded-lg p-0.5">
+            <button
+              onClick={() => setScanMode('swing')}
+              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${scanMode === 'swing' ? 'bg-accent/20 text-accent' : 'text-text-secondary hover:text-text-primary'}`}
+            >
+              Свинг
+            </button>
+            <button
+              onClick={() => setScanMode('scalp')}
+              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${scanMode === 'scalp' ? 'bg-purple-500/20 text-purple-400' : 'text-text-secondary hover:text-text-primary'}`}
+            >
+              Скальп
+            </button>
+          </div>
+
           {/* Settings */}
           <div className="flex items-center gap-2">
             <label className="text-xs text-text-secondary">Min Score:</label>
@@ -770,21 +956,27 @@ export default function Scanner() {
               max={100}
             />
           </div>
-          <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
-            <input
-              type="checkbox"
-              checked={useGPT}
-              onChange={e => setUseGPT(e.target.checked)}
-              className="accent-accent"
-            />
-            GPT-5.4 фильтр
-          </label>
+          {scanMode === 'swing' && (
+            <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+              <input
+                type="checkbox"
+                checked={useGPT}
+                onChange={e => setUseGPT(e.target.checked)}
+                className="accent-accent"
+              />
+              GPT-5.4 фильтр
+            </label>
+          )}
           <button
             onClick={handleScan}
             disabled={loading}
-            className="px-4 py-2 rounded-lg bg-accent text-bg-primary font-medium text-sm hover:bg-accent/90 disabled:opacity-50 transition-colors"
+            className={`px-4 py-2 rounded-lg font-medium text-sm disabled:opacity-50 transition-colors ${
+              scanMode === 'scalp'
+                ? 'bg-purple-500 text-white hover:bg-purple-500/90'
+                : 'bg-accent text-bg-primary hover:bg-accent/90'
+            }`}
           >
-            {loading ? 'Сканирую...' : 'Сканировать'}
+            {loading ? 'Сканирую...' : scanMode === 'scalp' ? 'Скальп-скан' : 'Сканировать'}
           </button>
         </div>
       </div>
@@ -816,7 +1008,7 @@ export default function Scanner() {
             onClick={() => setTab('scan')}
             className={`px-4 py-2 text-sm font-medium transition-colors ${tab === 'scan' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary hover:text-text-primary'}`}
           >
-            Результаты скана {scanResults ? `(${scanResults.total})` : ''}
+            Результаты скана {scanResults ? `(${scanResults.total})` : scalpResults ? `(${scalpResults.total})` : ''}
           </button>
         </div>
       )}
@@ -828,7 +1020,7 @@ export default function Scanner() {
           <div className="flex flex-wrap items-center gap-3">
             {/* Status filter */}
             <div className="flex gap-1">
-              {['', 'NEW', 'TAKEN', 'PARTIALLY_CLOSED', 'CLOSED', 'SL_HIT', 'EXPIRED'].map(s => (
+              {['', 'NEW'].map(s => (
                 <button
                   key={s}
                   onClick={() => { setStatusFilter(s); setPage(1); setShowAll(false) }}
@@ -866,7 +1058,7 @@ export default function Scanner() {
             </div>
           </div>
 
-          {/* Sort controls */}
+          {/* Sort controls + bulk actions */}
           {signals.length > 0 && (
             <div className="flex items-center gap-2">
               <span className="text-xs text-text-secondary">Сортировка:</span>
@@ -883,6 +1075,36 @@ export default function Scanner() {
                 По дате
               </button>
               <span className="text-xs text-text-secondary ml-auto">{signals.length} сигналов</span>
+
+              {/* Bulk actions */}
+              <div className="flex items-center gap-2 ml-2">
+                {confirmDeleteUnused ? (
+                  <>
+                    <span className="text-xs text-text-secondary">Удалить невзятые?</span>
+                    <button disabled={bulkLoading} onClick={async () => { setBulkLoading(true); try { await deleteUnusedSignals(); loadSignals() } catch {} finally { setBulkLoading(false); setConfirmDeleteUnused(false) } }}
+                      className="px-2 py-0.5 bg-accent text-black rounded text-xs font-medium disabled:opacity-50">{bulkLoading ? '...' : 'Да'}</button>
+                    <button onClick={() => setConfirmDeleteUnused(false)} className="px-2 py-0.5 bg-input text-text-secondary rounded text-xs">Нет</button>
+                  </>
+                ) : (
+                  <button onClick={() => setConfirmDeleteUnused(true)}
+                    className="px-2.5 py-1 bg-accent/10 text-accent rounded-lg text-xs font-medium hover:bg-accent/20 transition">
+                    Удалить невзятые
+                  </button>
+                )}
+                {confirmDeleteAll ? (
+                  <>
+                    <span className="text-xs text-short">Удалить ВСЕ?</span>
+                    <button disabled={bulkLoading} onClick={async () => { setBulkLoading(true); try { await deleteAllSignals(); loadSignals() } catch {} finally { setBulkLoading(false); setConfirmDeleteAll(false) } }}
+                      className="px-2 py-0.5 bg-short text-white rounded text-xs font-medium disabled:opacity-50">{bulkLoading ? '...' : 'Да'}</button>
+                    <button onClick={() => setConfirmDeleteAll(false)} className="px-2 py-0.5 bg-input text-text-secondary rounded text-xs">Нет</button>
+                  </>
+                ) : (
+                  <button onClick={() => setConfirmDeleteAll(true)}
+                    className="px-2.5 py-1 bg-short/10 text-short rounded-lg text-xs font-medium hover:bg-short/20 transition">
+                    Очистить всё
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -894,7 +1116,7 @@ export default function Scanner() {
             <>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 {visibleSignals.map(s => (
-                  <SignalCard key={s.id} signal={s} onStatusChange={loadSignals} onDelete={handleDelete} />
+                  <SignalCard key={s.id} signal={s} onStatusChange={loadSignals} onDelete={handleDelete} balance={balance} riskPct={riskPct} />
                 ))}
               </div>
               {hasMore && !showAll && (
@@ -984,11 +1206,204 @@ export default function Scanner() {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {scanResults.signals.map((s, i) => (
-                <ScanResultCard key={i} result={s} onTake={handleScanTake} onSkip={handleScanSkip} onDelete={handleScanDelete} />
+                <ScanResultCard key={i} result={s} onTake={handleScanTake} onSkip={handleScanSkip} onDelete={handleScanDelete} balance={balance} riskPct={riskPct} />
               ))}
             </div>
           )}
         </>
+      )}
+
+      {/* Scalp results */}
+      {tab === 'scan' && !loading && scalpResults && (
+        <>
+          <div className="bg-card rounded-xl p-4 flex flex-wrap gap-4 text-sm">
+            <div>
+              <span className="text-text-secondary">Режим: </span>
+              <span className="text-purple-400 font-medium">Скальп (1m/5m/15m)</span>
+            </div>
+            <div>
+              <span className="text-text-secondary">Монет: </span>
+              <span className="text-text-primary">{scalpResults.funnel.coinsScanned}</span>
+            </div>
+            <div>
+              <span className="text-text-secondary">Кандидатов: </span>
+              <span className="text-text-primary">{scalpResults.funnel.strategyCandidates}</span>
+            </div>
+            <div className="ml-auto flex gap-2 text-xs">
+              {Object.entries(scalpResults.funnel.byCategory).filter(([, v]) => v > 0).map(([cat, count]) => {
+                const styles: Record<string, string> = {
+                  SCALP_READY: 'text-long',
+                  SCALP_WATCH: 'text-accent',
+                  SCALP_RISKY: 'text-orange-400',
+                  SCALP_REJECTED: 'text-neutral',
+                }
+                const labels: Record<string, string> = {
+                  SCALP_READY: 'Ready',
+                  SCALP_WATCH: 'Watch',
+                  SCALP_RISKY: 'Risky',
+                  SCALP_REJECTED: 'Rejected',
+                }
+                return <span key={cat} className={styles[cat] || 'text-neutral'}>{count} {labels[cat] || cat}</span>
+              })}
+            </div>
+          </div>
+
+          {scalpResults.signals.length === 0 ? (
+            <div className="bg-card rounded-xl p-8 text-center text-text-secondary">
+              Скальп-сигналов не найдено. Рынок спокойный или нет экстремумов.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+              {scalpResults.signals.map((s, i) => (
+                <ScalpResultCard key={i} result={s} onTake={handleScalpTake} onDismiss={() => {}} />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// === Scalp Result Card ===
+const SCALP_CATEGORY_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  SCALP_READY: { bg: 'bg-long/15', text: 'text-long', label: 'Скальп Ready' },
+  SCALP_WATCH: { bg: 'bg-accent/15', text: 'text-accent', label: 'Наблюдать' },
+  SCALP_RISKY: { bg: 'bg-orange-500/15', text: 'text-orange-400', label: 'Рискованный' },
+  SCALP_REJECTED: { bg: 'bg-neutral/15', text: 'text-neutral', label: 'Отклонён' },
+}
+
+const SCALP_STRATEGY_LABELS: Record<string, { label: string; color: string }> = {
+  bb_bounce: { label: 'BB Отскок', color: 'text-purple-400 bg-purple-400/10' },
+  rsi_snap: { label: 'RSI Snap', color: 'text-blue-400 bg-blue-400/10' },
+  vwap_revert: { label: 'VWAP Rev', color: 'text-cyan-400 bg-cyan-400/10' },
+}
+
+function ScalpResultCard({ result, onTake, onDismiss }: {
+  result: ScalpSignal
+  onTake: (signal: ScalpSignal, amount: number) => void
+  onDismiss: () => void
+}) {
+  const isLong = result.type === 'LONG'
+  const catStyle = SCALP_CATEGORY_STYLES[result.category] || SCALP_CATEGORY_STYLES.SCALP_REJECTED
+  const stratStyle = SCALP_STRATEGY_LABELS[result.strategy] || { label: result.strategy, color: 'text-neutral bg-neutral/10' }
+  const [showTakeForm, setShowTakeForm] = useState(false)
+  const [takeAmount, setTakeAmount] = useState('')
+  const [taken, setTaken] = useState(false)
+  const [dismissed, setDismissed] = useState(false)
+
+  if (dismissed) return null
+
+  return (
+    <div className={`bg-card rounded-xl p-4 border ${taken ? 'border-long/30 opacity-70' : result.category === 'SCALP_READY' ? 'border-long/20' : 'border-card'} transition-colors`}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="font-mono font-bold text-lg text-text-primary">{result.coin}</span>
+          <span className={`px-2 py-0.5 rounded text-sm font-bold ${isLong ? 'bg-long/10 text-long' : 'bg-short/10 text-short'}`}>
+            {result.type}
+          </span>
+          <span className={`px-2 py-0.5 rounded text-xs font-medium ${stratStyle.color}`}>{stratStyle.label}</span>
+          <span className={`px-2 py-0.5 rounded text-xs font-bold ${catStyle.bg} ${catStyle.text}`}>{catStyle.label}</span>
+        </div>
+        <ScoreBadge score={result.score} />
+      </div>
+
+      {/* Score breakdown */}
+      <div className="flex flex-wrap gap-2 mb-3 text-xs text-text-secondary">
+        <span>Sig: {result.scoreBreakdown.signal}/25</span>
+        <span>Align: {result.scoreBreakdown.alignment}/20</span>
+        <span>Vol$: {result.scoreBreakdown.volatility}/15</span>
+        <span>Vol: {result.scoreBreakdown.volume}/15</span>
+        <span>Ctx: {result.scoreBreakdown.context}/10</span>
+      </div>
+
+      {/* Price levels */}
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        <div className="bg-input rounded-lg p-2">
+          <div className="text-xs text-text-secondary">Вход</div>
+          <div className={`font-mono font-bold text-sm ${isLong ? 'text-long' : 'text-short'}`}>
+            ${result.entry}
+          </div>
+        </div>
+        <div className="bg-input rounded-lg p-2">
+          <div className="text-xs text-text-secondary">SL ({result.slPercent}%)</div>
+          <div className="font-mono font-bold text-sm text-short">${result.stopLoss}</div>
+        </div>
+        <div className="bg-input rounded-lg p-2">
+          <div className="text-xs text-text-secondary">TP ({result.tpPercent}%)</div>
+          <div className="font-mono font-bold text-sm text-long">${result.takeProfit}</div>
+        </div>
+      </div>
+
+      {/* Info row */}
+      <div className="flex gap-3 text-xs text-text-secondary mb-3">
+        <span>Lev: <b className="text-text-primary">{result.leverage}x</b></span>
+        <span>Pos: <b className="text-text-primary">{result.positionPct}%</b></span>
+        <span>R:R: <b className="text-text-primary">1:{result.riskReward}</b></span>
+      </div>
+
+      {/* Reasons */}
+      <div className="text-xs text-text-secondary space-y-0.5 mb-3">
+        {result.reasons.map((r, i) => (
+          <div key={i}>• {r}</div>
+        ))}
+      </div>
+
+      {/* Take form */}
+      {showTakeForm && !taken && (
+        <div className="flex items-center gap-2 mb-3">
+          <input
+            type="number"
+            placeholder="USDT"
+            value={takeAmount}
+            onChange={e => setTakeAmount(e.target.value)}
+            className="flex-1 bg-input text-text-primary rounded px-3 py-1.5 text-sm font-mono"
+          />
+          <button
+            onClick={() => {
+              const amt = Number(takeAmount)
+              if (amt > 0) {
+                onTake(result, amt)
+                setTaken(true)
+                setShowTakeForm(false)
+              }
+            }}
+            className="px-3 py-1.5 rounded bg-long/20 text-long text-sm font-medium hover:bg-long/30"
+          >
+            OK
+          </button>
+          <button
+            onClick={() => setShowTakeForm(false)}
+            className="px-3 py-1.5 rounded bg-input text-text-secondary text-sm hover:text-text-primary"
+          >
+            Отмена
+          </button>
+        </div>
+      )}
+
+      {/* Action buttons */}
+      {!taken && (
+        <div className="flex items-center justify-end gap-2 pt-2 border-t border-card">
+          <button
+            onClick={() => setShowTakeForm(true)}
+            className="px-4 py-1.5 rounded-lg bg-long/10 text-long text-sm font-medium hover:bg-long/20 transition-colors"
+          >
+            Взять
+          </button>
+          <button
+            onClick={() => setDismissed(true)}
+            className="px-4 py-1.5 rounded-lg text-text-secondary text-sm hover:text-text-primary transition-colors"
+          >
+            Пропустить
+          </button>
+        </div>
+      )}
+
+      {taken && (
+        <div className="text-center text-xs text-long font-medium pt-2 border-t border-card">
+          Взят — записан в сделки
+        </div>
       )}
     </div>
   )

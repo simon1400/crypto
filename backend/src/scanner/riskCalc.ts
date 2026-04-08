@@ -1,10 +1,11 @@
 import { MultiTFIndicators } from '../services/indicators'
-import { ScoredSignal } from './scoring'
+import { ScoredSignal, ScoreBreakdown } from './scoring'
 
 // Phase C: Trade Construction
-// Setup zone → entry models → R:R per model
-// Show max 2 models to user: primary (recommended) + alternative
-// R:R minimum is strategy-aware
+// Strategy-specific SL/TP behavior:
+// - Trend Follow: wider stop, partial TP, trailing remainder expected
+// - Breakout: tighter invalidation + aggressive move-to-BE after TP1
+// - Mean Revert: tighter TP, smaller expectations for continuation
 
 // Strategy-aware R:R minimums
 const RR_MINIMUMS: Record<string, number> = {
@@ -13,8 +14,30 @@ const RR_MINIMUMS: Record<string, number> = {
   mean_revert: 1.3,    // mean revert has short SL, high probability
 }
 
+// Strategy-specific TP multipliers (risk multiples)
+const TP_MULTIPLIERS: Record<string, { tp1: number; tp2: number; tp3: number }> = {
+  trend_follow: { tp1: 2, tp2: 4, tp3: 7 },      // wider TPs — trend can run
+  breakout: { tp1: 2, tp2: 3, tp3: 4.5 },         // tighter — post-breakout often pulls back
+  mean_revert: { tp1: 1.5, tp2: 2.5, tp3: 3.5 },  // tight TPs — mean revert has limited continuation
+}
+
+// Strategy-specific SL multipliers (ATR multiples for base SL distance)
+const SL_ATR_MULTIPLIERS: Record<string, number> = {
+  trend_follow: 1.8,   // wider stop — give trend room to breathe
+  breakout: 1.2,       // tighter invalidation — if breakout fails, exit fast
+  mean_revert: 1.5,    // moderate — standard reversion stop
+}
+
 function getMinRR(strategy: string): number {
   return RR_MINIMUMS[strategy] || 1.5
+}
+
+function getTPMultipliers(strategy: string) {
+  return TP_MULTIPLIERS[strategy] || TP_MULTIPLIERS.trend_follow
+}
+
+function getSLATRMultiplier(strategy: string): number {
+  return SL_ATR_MULTIPLIERS[strategy] || 1.5
 }
 
 export interface EntryModel {
@@ -34,7 +57,7 @@ export interface SignalWithRisk {
   type: 'LONG' | 'SHORT'
   strategy: string
   score: number
-  scoreBreakdown: ScoredSignal['scoreBreakdown']
+  scoreBreakdown: ScoreBreakdown
   reasons: string[]
   indicators: MultiTFIndicators
   // Best entry model (primary)
@@ -49,7 +72,7 @@ export interface SignalWithRisk {
   tp3Percent: number
   riskReward: number
   // Entry models: max 2 shown (primary + alternative)
-  entryModels: EntryModel[]  // only viable/relevant models, max 2
+  entryModels: EntryModel[]
   bestEntryType: 'aggressive' | 'confirmation' | 'pullback'
 }
 
@@ -77,7 +100,7 @@ export function calculateRisk(signal: ScoredSignal): SignalWithRisk {
   // Pick alternative: second best viable model (different type from primary)
   const alternative = viable.find(m => m.type !== primary.type) || null
 
-  // Export max 2 models: primary + alternative (if exists and viable)
+  // Export max 2 models: primary + alternative
   const entryModels: EntryModel[] = [primary]
   if (alternative && alternative.viable) {
     entryModels.push(alternative)
@@ -185,9 +208,10 @@ function buildEntryModel(
     }
   }
 
-  // === Stop Loss ===
+  // === Stop Loss — strategy-specific ATR multiplier ===
+  const slAtrMult = getSLATRMultiplier(strategy)
   const minSLDistance = entry * 0.01
-  const slDistance = Math.max(atr * 1.5, minSLDistance)
+  const slDistance = Math.max(atr * slAtrMult, minSLDistance)
 
   let stopLoss: number
   if (type === 'LONG') {
@@ -204,26 +228,30 @@ function buildEntryModel(
 
   const slPercent = round(Math.abs((stopLoss - entry) / entry) * 100)
 
-  // === Take Profits ===
+  // === Take Profits — strategy-specific multipliers ===
   const riskAmount = Math.abs(entry - stopLoss)
+  const tpMult = getTPMultipliers(strategy)
   const takeProfits: { price: number; rr: number }[] = []
 
   if (type === 'LONG') {
+    // TP1: strategy-aware minimum + structural levels
     const tp1Candidates = [
-      entry + riskAmount * 2,
+      entry + riskAmount * tpMult.tp1,
       tf1h.resistance,
       tf1h.pivotR1,
-    ].filter(p => p >= entry + riskAmount * 2)
-    const tp1 = tp1Candidates.length > 0 ? round(Math.min(...tp1Candidates)) : round(entry + riskAmount * 2)
+    ].filter(p => p >= entry + riskAmount * tpMult.tp1)
+    const tp1 = tp1Candidates.length > 0 ? round(Math.min(...tp1Candidates)) : round(entry + riskAmount * tpMult.tp1)
 
+    // TP2: strategy-aware + higher levels
     const tp2Candidates = [
-      entry + riskAmount * 3.5,
+      entry + riskAmount * tpMult.tp2,
       tf1h.pivotR2,
       tf4h.resistance,
     ].filter(p => p > tp1)
-    const tp2 = tp2Candidates.length > 0 ? round(Math.min(...tp2Candidates)) : round(entry + riskAmount * 3.5)
+    const tp2 = tp2Candidates.length > 0 ? round(Math.min(...tp2Candidates)) : round(entry + riskAmount * tpMult.tp2)
 
-    const tp3 = round(entry + riskAmount * 5)
+    // TP3: strategy-aware stretch target
+    const tp3 = round(entry + riskAmount * tpMult.tp3)
 
     takeProfits.push(
       { price: tp1, rr: round((tp1 - entry) / riskAmount) },
@@ -232,20 +260,20 @@ function buildEntryModel(
     )
   } else {
     const tp1Candidates = [
-      entry - riskAmount * 2,
+      entry - riskAmount * tpMult.tp1,
       tf1h.support,
       tf1h.pivotS1,
-    ].filter(p => p <= entry - riskAmount * 2 && p > 0)
-    const tp1 = tp1Candidates.length > 0 ? round(Math.max(...tp1Candidates)) : round(entry - riskAmount * 2)
+    ].filter(p => p <= entry - riskAmount * tpMult.tp1 && p > 0)
+    const tp1 = tp1Candidates.length > 0 ? round(Math.max(...tp1Candidates)) : round(entry - riskAmount * tpMult.tp1)
 
     const tp2Candidates = [
-      entry - riskAmount * 3.5,
+      entry - riskAmount * tpMult.tp2,
       tf1h.pivotS2,
       tf4h.support,
     ].filter(p => p < tp1 && p > 0)
-    const tp2 = tp2Candidates.length > 0 ? round(Math.max(...tp2Candidates)) : round(entry - riskAmount * 3.5)
+    const tp2 = tp2Candidates.length > 0 ? round(Math.max(...tp2Candidates)) : round(entry - riskAmount * tpMult.tp2)
 
-    const tp3 = round(Math.max(entry - riskAmount * 5, 0.0001))
+    const tp3 = round(Math.max(entry - riskAmount * tpMult.tp3, 0.0001))
 
     takeProfits.push(
       { price: tp1, rr: round((entry - tp1) / riskAmount) },
@@ -254,7 +282,7 @@ function buildEntryModel(
     )
   }
 
-  // === Leverage ===
+  // === Leverage — ATR-based with score adjustment ===
   const atrPercent = (atr / price) * 100
   let leverage: number
   if (atrPercent > 5) leverage = 2
