@@ -5,3 +5,6 @@ dist/
 .DS_Store
 Thumbs.db
 .planning/
+.claude/
+dev.sh
+DEPLOY.md

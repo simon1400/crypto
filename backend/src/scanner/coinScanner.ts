@@ -183,7 +183,7 @@ export async function runScan(
   coins: string[] = SCAN_COINS,
   minScore = 40, // lowered from 55 — we now show WATCHLIST/WAIT signals too
   useGPT = true,
-): Promise<{ results: ScanResult[]; funnel: ScanFunnel }> {
+): Promise<{ results: ScanResult[]; funnel: ScanFunnel; savedIds: Record<string, number> }> {
   if (isScanning) throw new Error('Scanner already running')
   isScanning = true
 
@@ -369,10 +369,11 @@ export async function runScan(
 
     // === Save all non-REJECTED signals to DB ===
     const saveable = results.filter(r => r.category !== 'REJECTED')
+    const savedIds: Record<string, number> = {} // coin -> DB id
 
     for (const r of saveable) {
       try {
-        await prisma.generatedSignal.create({
+        const saved = await prisma.generatedSignal.create({
           data: {
             coin: r.signal.coin,
             type: r.signal.type,
@@ -404,6 +405,7 @@ export async function runScan(
             expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
           },
         })
+        savedIds[r.signal.coin] = saved.id
       } catch (err) {
         console.error(`[Scanner] Failed to save signal for ${r.signal.coin}:`, err)
       }
@@ -423,7 +425,7 @@ export async function runScan(
     console.log(`[Scanner] Saved to DB: ${saveable.length}`)
     console.log(`[Scanner] ========================`)
 
-    return { results, funnel }
+    return { results, funnel, savedIds }
   } finally {
     isScanning = false
   }

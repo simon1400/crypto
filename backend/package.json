@@ -21,8 +21,8 @@
     "telegram": "^2.26.22"
   },
   "devDependencies": {
-    "@types/cors": "^2.8.17",
-    "@types/express": "^5.0.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.13.10",
     "@types/supertest": "^7.2.0",
     "prisma": "^6.4.1",

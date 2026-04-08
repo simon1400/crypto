@@ -15,6 +15,7 @@ import { startTtlChecker } from './trading/tradingService'
 import { reconcilePositions } from './trading/positionManager'
 import { startAutoListener } from './trading/autoListener'
 import { seedTickerMappings } from './trading/tickerMapper'
+import { trackScannerTrades } from './services/scannerTracker'
 import { prisma } from './db/prisma'
 import klinesRouter from './routes/klines'
 
@@ -56,6 +57,11 @@ app.listen(PORT, () => {
   setInterval(() => {
     expireOldSignals().catch(err => console.error('[Scanner] Expire error:', err))
   }, 30 * 60 * 1000)
+
+  // Track scanner trades (entry fill, SL/TP) every 2 seconds
+  setInterval(() => {
+    trackScannerTrades().catch(err => console.error('[ScannerTracker] Error:', err))
+  }, 2000)
 
   // Start WebSocket listener for real-time Bybit events
   startWsListener().catch(err =>

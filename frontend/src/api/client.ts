@@ -129,6 +129,20 @@ export async function searchSymbols(q = ''): Promise<string[]> {
   return res.json()
 }
 
+export interface TradeLive {
+  id: number
+  status: string
+  currentPrice: number | null
+  unrealizedPnl: number
+  unrealizedPnlPct: number
+}
+
+export async function getTradeLivePrices(): Promise<TradeLive[]> {
+  const res = await fetch(`${BASE}/api/trades/live`, { headers: getHeaders() })
+  if (!res.ok) return []
+  return res.json()
+}
+
 export async function getTrades(params: { status?: string; coin?: string; source?: string; page?: number } = {}): Promise<TradesResponse> {
   const q = new URLSearchParams()
   if (params.status) q.set('status', params.status)
@@ -260,6 +274,7 @@ export interface EntryModel {
 }
 
 export interface ScanSignal {
+  savedId: number | null
   coin: string
   type: string
   strategy: string
@@ -327,9 +342,11 @@ export async function triggerScan(coins?: string[], minScore?: number, useGPT?: 
   return res.json()
 }
 
-export async function getScannerSignals(page = 1, status?: string): Promise<{ data: ScannerSignal[]; total: number; page: number; totalPages: number }> {
+export async function getScannerSignals(page = 1, status?: string, dateFrom?: string, dateTo?: string): Promise<{ data: ScannerSignal[]; total: number; page: number; totalPages: number }> {
   const q = new URLSearchParams({ page: String(page), limit: '20' })
   if (status) q.set('status', status)
+  if (dateFrom) q.set('dateFrom', dateFrom)
+  if (dateTo) q.set('dateTo', dateTo)
   const res = await fetch(`${BASE}/api/scanner/signals?${q}`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch scanner signals')
   return res.json()
@@ -342,6 +359,19 @@ export async function takeSignal(id: number, amount: number): Promise<ScannerSig
     body: JSON.stringify({ amount }),
   })
   if (!res.ok) throw new Error('Failed to take signal')
+  return res.json()
+}
+
+export async function takeSignalAsTrade(id: number, amount: number, modelType?: string, leverage?: number): Promise<{ trade: Trade; signal: { id: number; status: string } }> {
+  const res = await fetch(`${BASE}/api/scanner/signals/${id}/take-trade`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ amount, modelType, leverage }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
   return res.json()
 }
 
@@ -372,6 +402,14 @@ export async function skipSignal(id: number): Promise<ScannerSignal> {
   })
   if (!res.ok) throw new Error('Failed to skip signal')
   return res.json()
+}
+
+export async function deleteSignal(id: number): Promise<void> {
+  const res = await fetch(`${BASE}/api/scanner/signals/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to delete signal')
 }
 
 export async function getScannerCoins(): Promise<string[]> {

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { prisma } from '../db/prisma'
+import { fetchCurrentPrice } from '../services/market'
 
 const router = Router()
 
@@ -59,6 +60,50 @@ router.get('/', async (req: Request, res: Response) => {
     ])
 
     res.json({ data, total, page: p, totalPages: Math.ceil(total / l) })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/trades/live — live prices & unrealized P&L for open trades
+router.get('/live', async (_req: Request, res: Response) => {
+  try {
+    const trades = await prisma.trade.findMany({
+      where: { status: { in: ['PENDING_ENTRY', 'OPEN', 'PARTIALLY_CLOSED'] } },
+    })
+
+    const prices: Record<string, number | null> = {}
+    const coins = [...new Set(trades.map(t => t.coin))]
+    await Promise.all(coins.map(async coin => {
+      prices[coin] = await fetchCurrentPrice(coin)
+    }))
+
+    const result = trades.map(t => {
+      const price = prices[t.coin]
+      if (!price) return { id: t.id, status: t.status, currentPrice: null, unrealizedPnl: 0, unrealizedPnlPct: 0 }
+
+      // PENDING_ENTRY — show price but no P&L (not yet in position)
+      if (t.status === 'PENDING_ENTRY') {
+        return { id: t.id, status: t.status, currentPrice: price, unrealizedPnl: 0, unrealizedPnlPct: 0 }
+      }
+
+      const direction = t.type === 'LONG' ? 1 : -1
+      const remainingPct = 100 - t.closedPct
+      const priceDiff = (price - t.entryPrice) * direction
+      const pnlPct = (priceDiff / t.entryPrice) * 100 * t.leverage
+      const remainingAmount = t.amount * (remainingPct / 100)
+      const unrealizedPnl = Math.round(remainingAmount * (pnlPct / 100) * 100) / 100
+
+      return {
+        id: t.id,
+        status: t.status,
+        currentPrice: price,
+        unrealizedPnl,
+        unrealizedPnlPct: Math.round(pnlPct * 100) / 100,
+      }
+    })
+
+    res.json(result)
   } catch (err: any) {
     res.status(500).json({ error: err.message })
   }

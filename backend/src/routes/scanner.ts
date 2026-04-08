@@ -17,7 +17,7 @@ router.post('/scan', async (req, res) => {
       useGPT?: boolean
     }
 
-    const { results, funnel } = await runScan(
+    const { results, funnel, savedIds } = await runScan(
       coins || SCAN_COINS,
       minScore ?? 40,
       useGPT ?? true,
@@ -28,6 +28,7 @@ router.post('/scan', async (req, res) => {
       funnel,
       regime: results[0]?.regime || null,
       signals: results.map(r => ({
+        savedId: savedIds[r.signal.coin] || null,
         coin: r.signal.coin,
         type: r.signal.type,
         strategy: r.signal.strategy,
@@ -79,9 +80,21 @@ router.get('/signals', async (req, res) => {
     const coin = req.query.coin as string | undefined
     const category = req.query.category as string | undefined
 
+    const dateFrom = req.query.dateFrom as string | undefined
+    const dateTo = req.query.dateTo as string | undefined
+
     const where: any = {}
     if (status) where.status = status
     if (coin) where.coin = { contains: coin.toUpperCase() }
+    if (dateFrom || dateTo) {
+      where.createdAt = {}
+      if (dateFrom) where.createdAt.gte = new Date(dateFrom)
+      if (dateTo) {
+        const end = new Date(dateTo)
+        end.setDate(end.getDate() + 1)
+        where.createdAt.lt = end
+      }
+    }
     // Category is stored inside marketContext JSON — filter in app layer if needed
 
     const [data, total] = await Promise.all([
@@ -133,6 +146,70 @@ router.post('/signals/:id/take', async (req, res) => {
       },
     })
     res.json(updated)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/scanner/signals/:id/take-trade — take signal and create a tracked Trade
+router.post('/signals/:id/take-trade', async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    const { amount, modelType, leverage: customLeverage } = req.body as { amount: number; modelType?: string; leverage?: number }
+
+    if (!amount || amount <= 0) return res.status(400).json({ error: 'amount required (USDT)' })
+
+    const signal = await prisma.generatedSignal.findUnique({ where: { id } })
+    if (!signal) return res.status(404).json({ error: 'Signal not found' })
+    if (signal.status !== 'NEW') return res.status(400).json({ error: 'Signal already taken or closed' })
+
+    // Pick entry model if specified
+    const mc = signal.marketContext as any
+    const models = (mc?.entryModels as any[]) || []
+    const model = modelType
+      ? models.find((m: any) => m.type === modelType && m.viable) || models[0]
+      : models[0]
+
+    const entry = model?.entry ?? signal.entry
+    const stopLoss = model?.stopLoss ?? signal.stopLoss
+    const leverage = customLeverage || model?.leverage || signal.leverage
+    const tps = model?.takeProfits ?? signal.takeProfits as any[]
+
+    // Build TP array with percent distribution
+    const tpCount = tps.length
+    const tpPercents = tpCount <= 1 ? [100]
+      : tpCount === 2 ? [50, 50]
+      : tpCount === 3 ? [40, 30, 30]
+      : [30, 25, 25, 20]
+    const takeProfits = tps.map((tp: any, i: number) => ({
+      price: tp.price,
+      percent: tpPercents[i] || Math.floor(100 / tpCount),
+    }))
+
+    // Create Trade with PENDING_ENTRY — waits for price to reach entry
+    const trade = await prisma.trade.create({
+      data: {
+        coin: signal.coin.toUpperCase().replace('USDT', '') + 'USDT',
+        type: signal.type,
+        leverage,
+        entryPrice: entry,
+        amount,
+        stopLoss,
+        takeProfits,
+        status: 'PENDING_ENTRY',
+        source: 'SCANNER',
+        notes: `Scanner signal #${signal.id} | ${signal.strategy} | Score: ${signal.score}${model ? ` | Model: ${model.type}` : ''}`,
+      },
+    })
+
+    // Mark signal as TAKEN
+    await prisma.generatedSignal.update({
+      where: { id },
+      data: { status: 'TAKEN', amount, takenAt: new Date() },
+    })
+
+    console.log(`[Scanner] Signal #${id} taken as Trade #${trade.id} (${trade.coin} ${trade.type} $${entry}, ${leverage}x, $${amount})`)
+    res.json({ trade, signal: { id, status: 'TAKEN' } })
   } catch (err: any) {
     res.status(500).json({ error: err.message })
   }

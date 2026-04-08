@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   getTrades, getTradeStats, createTrade, closeTrade, hitStopLoss, deleteTrade,
-  updateTrade, searchSymbols, Trade, TradeStats, TradeTP, TradeClose,
+  updateTrade, searchSymbols, getTradeLivePrices, Trade, TradeStats, TradeTP, TradeClose, TradeLive,
 } from '../api/client'
 
 function formatDate(d: string) {
@@ -14,6 +14,7 @@ function pnlColor(v: number) {
 
 function statusBadge(status: string) {
   const map: Record<string, { bg: string; text: string; label: string }> = {
+    PENDING_ENTRY: { bg: 'bg-purple-500/10', text: 'text-purple-400', label: 'Ожидание входа' },
     OPEN: { bg: 'bg-accent/10', text: 'text-accent', label: 'Открыта' },
     PARTIALLY_CLOSED: { bg: 'bg-blue-500/10', text: 'text-blue-400', label: 'Частично' },
     CLOSED: { bg: 'bg-long/10', text: 'text-long', label: 'Закрыта' },
@@ -232,6 +233,7 @@ function CloseModal({ trade, onClose, onDone }: { trade: Trade; onClose: () => v
   const [price, setPrice] = useState('')
   const [percent, setPercent] = useState(String(100 - trade.closedPct))
   const [loading, setLoading] = useState(false)
+  const [marketPrice, setMarketPrice] = useState<number | null>(null)
 
   // Предзаполнить цену из следующего TP
   useEffect(() => {
@@ -244,6 +246,18 @@ function CloseModal({ trade, onClose, onDone }: { trade: Trade; onClose: () => v
       setPercent(String(Math.min(nextTP.percent, 100 - trade.closedPct)))
     }
   }, [trade])
+
+  // Fetch market price
+  useEffect(() => {
+    async function fetchPrice() {
+      const data = await getTradeLivePrices()
+      const live = data.find(d => d.id === trade.id)
+      if (live?.currentPrice) setMarketPrice(live.currentPrice)
+    }
+    fetchPrice()
+    const interval = setInterval(fetchPrice, 3000)
+    return () => clearInterval(interval)
+  }, [trade.id])
 
   async function submit() {
     setLoading(true)
@@ -261,7 +275,20 @@ function CloseModal({ trade, onClose, onDone }: { trade: Trade; onClose: () => v
     } catch { } finally { setLoading(false) }
   }
 
+  function setMarket() {
+    if (marketPrice) setPrice(String(marketPrice))
+  }
+
   const remaining = 100 - trade.closedPct
+
+  // Preview P&L
+  const previewPnl = price ? (() => {
+    const dir = trade.type === 'LONG' ? 1 : -1
+    const diff = (Number(price) - trade.entryPrice) * dir
+    const pct = (diff / trade.entryPrice) * 100 * trade.leverage
+    const portion = trade.amount * (Number(percent) / 100)
+    return { usd: Math.round(portion * (pct / 100) * 100) / 100, pct: Math.round(pct * 100) / 100 }
+  })() : null
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -283,8 +310,12 @@ function CloseModal({ trade, onClose, onDone }: { trade: Trade; onClose: () => v
           </div>
         </div>
 
-        {/* Быстрые кнопки TP */}
+        {/* Быстрые кнопки: рыночная цена */}
         <div className="flex gap-2 flex-wrap">
+          <button type="button" onClick={setMarket}
+            className={`px-3 py-1 rounded text-xs font-medium transition ${marketPrice ? 'bg-accent/15 text-accent hover:bg-accent/25' : 'bg-input text-text-secondary opacity-50'}`}>
+            По рынку{marketPrice ? `: $${marketPrice}` : ''}
+          </button>
           {(trade.takeProfits as TradeTP[]).map((tp, i) => (
             <button key={i} type="button"
               onClick={() => { setPrice(String(tp.price)); setPercent(String(Math.min(tp.percent, remaining))) }}
@@ -293,6 +324,26 @@ function CloseModal({ trade, onClose, onDone }: { trade: Trade; onClose: () => v
             </button>
           ))}
         </div>
+
+        {/* Быстрые кнопки % */}
+        <div className="flex gap-2">
+          {[25, 50, 75, 100].map(p => {
+            const val = Math.min(p, remaining)
+            return (
+              <button key={p} type="button" onClick={() => setPercent(String(val))}
+                className={`flex-1 py-1 rounded text-xs transition ${Number(percent) === val ? 'bg-accent/15 text-accent' : 'bg-input text-text-secondary hover:text-text-primary'}`}>
+                {p}%
+              </button>
+            )
+          })}
+        </div>
+
+        {/* P&L preview */}
+        {previewPnl && (
+          <div className={`text-center font-mono font-bold ${previewPnl.usd >= 0 ? 'text-long' : 'text-short'}`}>
+            {previewPnl.usd >= 0 ? '+' : ''}{previewPnl.usd}$ ({previewPnl.pct >= 0 ? '+' : ''}{previewPnl.pct}%)
+          </div>
+        )}
 
         <div className="flex gap-2">
           <button onClick={submit} disabled={loading || !price || !percent}
@@ -612,8 +663,11 @@ function TradeDetail({ trade, onClose, onRefresh }: { trade: Trade; onClose: () 
 }
 
 // ===================== STATS PANEL =====================
-function StatsPanel({ stats }: { stats: TradeStats | null }) {
+function StatsPanel({ stats, livePrices }: { stats: TradeStats | null; livePrices: Record<number, TradeLive> }) {
   if (!stats) return null
+
+  const unrealizedTotal = Math.round(Object.values(livePrices).reduce((sum, lp) => sum + lp.unrealizedPnl, 0) * 100) / 100
+  const totalPnl = Math.round((stats.totalPnl + unrealizedTotal) * 100) / 100
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
@@ -629,9 +683,14 @@ function StatsPanel({ stats }: { stats: TradeStats | null }) {
       </div>
       <div className="bg-card rounded-xl p-4">
         <div className="text-xs text-text-secondary">Общий P&L</div>
-        <div className={`text-2xl font-bold font-mono ${pnlColor(stats.totalPnl)}`}>
-          {stats.totalPnl > 0 ? '+' : ''}{stats.totalPnl}$
+        <div className={`text-2xl font-bold font-mono ${pnlColor(totalPnl)}`}>
+          {totalPnl > 0 ? '+' : ''}{totalPnl}$
         </div>
+        {unrealizedTotal !== 0 && (
+          <div className={`text-xs font-mono ${pnlColor(unrealizedTotal)}`}>
+            unrealized: {unrealizedTotal > 0 ? '+' : ''}{unrealizedTotal}$
+          </div>
+        )}
       </div>
       <div className="bg-card rounded-xl p-4">
         <div className="text-xs text-text-secondary">Средний Win</div>
@@ -660,6 +719,7 @@ function StatsPanel({ stats }: { stats: TradeStats | null }) {
 export default function Trades() {
   const [trades, setTrades] = useState<Trade[]>([])
   const [stats, setStats] = useState<TradeStats | null>(null)
+  const [livePrices, setLivePrices] = useState<Record<number, TradeLive>>({})
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
@@ -682,9 +742,22 @@ export default function Trades() {
 
   useEffect(() => { load() }, [load])
 
-  const statuses = ['ALL', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSED', 'SL_HIT']
+  // Poll live prices for open trades every 15 seconds
+  useEffect(() => {
+    async function fetchLive() {
+      const data = await getTradeLivePrices()
+      const map: Record<number, TradeLive> = {}
+      data.forEach(d => { map[d.id] = d })
+      setLivePrices(map)
+    }
+    fetchLive()
+    const interval = setInterval(fetchLive, 3000)
+    return () => clearInterval(interval)
+  }, [trades])
+
+  const statuses = ['ALL', 'PENDING_ENTRY', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSED', 'SL_HIT']
   const statusLabels: Record<string, string> = {
-    ALL: 'Все', OPEN: 'Открытые', PARTIALLY_CLOSED: 'Частичные', CLOSED: 'Закрытые', SL_HIT: 'Стоп-лосс',
+    ALL: 'Все', PENDING_ENTRY: 'Ожидание', OPEN: 'Открытые', PARTIALLY_CLOSED: 'Частичные', CLOSED: 'Закрытые', SL_HIT: 'Стоп-лосс',
   }
 
   return (
@@ -695,7 +768,7 @@ export default function Trades() {
       </div>
       <NewTradeForm onCreated={load} />
 
-      <StatsPanel stats={stats} />
+      <StatsPanel stats={stats} livePrices={livePrices} />
 
       {/* Монеты P&L */}
       {stats && Object.keys(stats.byCoin).length > 0 && (
@@ -731,15 +804,29 @@ export default function Trades() {
         <div className="text-center py-12 text-text-secondary">Нет сделок</div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm table-fixed">
+            <colgroup>
+              <col className="w-[85px]" />
+              <col className="w-[130px]" />
+              <col className="w-[60px]" />
+              <col className="w-[60px]" />
+              <col className="w-[60px]" />
+              <col className="w-[70px]" />
+              <col className="w-[70px]" />
+              <col className="w-[55px]" />
+              <col className="w-[120px]" />
+              <col className="w-[100px]" />
+              <col className="w-[30px]" />
+            </colgroup>
             <thead>
               <tr className="text-text-secondary text-xs border-b border-input">
                 <th className="text-left py-3 px-2">Дата</th>
                 <th className="text-left py-3 px-2">Монета</th>
-                <th className="text-left py-3 px-2">Тип</th>
                 <th className="text-right py-3 px-2">Вход</th>
-                <th className="text-right py-3 px-2">SL</th>
+                <th className="text-right py-3 px-2">Цена</th>
                 <th className="text-right py-3 px-2">Размер</th>
+                <th className="text-right py-3 px-2">SL</th>
+                <th className="text-right py-3 px-2">TP</th>
                 <th className="text-center py-3 px-2">Закрыто</th>
                 <th className="text-right py-3 px-2">P&L</th>
                 <th className="text-center py-3 px-2">Статус</th>
@@ -747,29 +834,109 @@ export default function Trades() {
               </tr>
             </thead>
             <tbody>
-              {trades.map(t => (
+              {[...trades].sort((a, b) => {
+                const scoreA = Number(a.notes?.match(/Score:\s*(\d+)/)?.[1] || 0)
+                const scoreB = Number(b.notes?.match(/Score:\s*(\d+)/)?.[1] || 0)
+                return scoreB - scoreA
+              }).map(t => (
                 <tr key={t.id} className="border-b border-input/50 hover:bg-card/50 cursor-pointer"
                   onClick={() => setSelected(t)}>
                   <td className="py-3 px-2 text-text-secondary text-xs">{formatDate(t.openedAt)}</td>
-                  <td className="py-3 px-2 font-mono font-medium text-text-primary">{t.coin.replace('USDT', '')}</td>
-                  <td className="py-3 px-2">
-                    <span className={`text-xs font-bold ${t.type === 'LONG' ? 'text-long' : 'text-short'}`}>
-                      {t.type} {t.leverage}x
+                  <td className="py-3 px-2 font-mono font-medium text-text-primary">
+                    <span className="flex items-center gap-1">
+                      {(() => {
+                        const scoreMatch = t.notes?.match(/Score:\s*(\d+)/)
+                        return scoreMatch ? (
+                          <span className="font-mono text-xs text-accent">{scoreMatch[1]}</span>
+                        ) : <span className="text-text-secondary">—</span>
+                      })()}
+                      <span className={`${t.type === 'LONG' ? 'text-long' : 'text-short'}`}>{t.coin.replace('USDT', '')} - {t.leverage}x</span>
+                       
+                      <a
+                        href={`https://www.tradingview.com/chart/?symbol=BYBIT:${t.coin}.P`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={e => e.stopPropagation()}
+                        className="text-text-secondary hover:text-accent transition-colors"
+                        title="TradingView"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                      </a>
                     </span>
                   </td>
                   <td className="py-3 px-2 text-right font-mono text-text-primary">${t.entryPrice}</td>
-                  <td className="py-3 px-2 text-right font-mono text-short">${t.stopLoss}</td>
-                  <td className="py-3 px-2 text-right font-mono text-text-primary">${t.amount}</td>
+                  <td className="py-3 px-2 text-right font-mono">
+                    {livePrices[t.id]?.currentPrice ? (
+                      <span className={pnlColor(livePrices[t.id].unrealizedPnl)}>
+                        ${livePrices[t.id].currentPrice}
+                      </span>
+                    ) : (
+                      <span className="text-text-secondary">—</span>
+                    )}
+                  </td>
+                  <td className="py-3 px-2 text-right font-mono">
+                    <span className="text-text-primary">${t.amount}</span>
+                    {t.leverage > 1 && (
+                      <div className="text-xs text-text-secondary">${t.amount * t.leverage}</div>
+                    )}
+                  </td>
+                  <td className="py-3 px-2 text-right font-mono">
+                    {(() => {
+                      const dir = t.type === 'LONG' ? 1 : -1
+                      const diff = (t.stopLoss - t.entryPrice) * dir
+                      const pct = (diff / t.entryPrice) * 100 * t.leverage
+                      const remaining = t.amount * ((100 - t.closedPct) / 100)
+                      const loss = Math.round(remaining * (pct / 100) * 100) / 100
+                      const pctR = Math.round(pct * 100) / 100
+                      return (
+                        <span title={`${loss}$ (${pctR}%)`} className="cursor-help">
+                          <span className="text-short">${t.stopLoss}</span>
+                          <div className="text-xs text-short/70">{pctR}%</div>
+                        </span>
+                      )
+                    })()}
+                  </td>
+                  <td className="py-3 px-2 text-right font-mono">
+                    {(() => {
+                      const tps = (t.takeProfits as { price: number; percent?: number }[]) || []
+                      const maxTp = tps.length > 0 ? tps[tps.length - 1] : null
+                      if (!maxTp) return <span className="text-text-secondary">—</span>
+                      const dir = t.type === 'LONG' ? 1 : -1
+                      const diff = (maxTp.price - t.entryPrice) * dir
+                      const pct = (diff / t.entryPrice) * 100 * t.leverage
+                      const remaining = t.amount * ((100 - t.closedPct) / 100)
+                      const profit = Math.round(remaining * (pct / 100) * 100) / 100
+                      const pctR = Math.round(pct * 100) / 100
+                      return (
+                        <span title={`+${profit}$ (+${pctR}%)`} className="cursor-help">
+                          <span className="text-long">${maxTp.price}</span>
+                          <div className="text-xs text-long/70">+{pctR}%</div>
+                        </span>
+                      )
+                    })()}
+                  </td>
+                  
                   <td className="py-3 px-2 text-center text-text-secondary">{t.closedPct}%</td>
-                  <td className={`py-3 px-2 text-right font-mono font-semibold ${pnlColor(t.realizedPnl - (t.fees || 0))}`}>
-                    {(t.realizedPnl - (t.fees || 0)) > 0 ? '+' : ''}{Math.round((t.realizedPnl - (t.fees || 0)) * 100) / 100}$
+                  <td className="py-3 px-2 text-right font-mono font-semibold">
+                    {(t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && livePrices[t.id] ? (
+                      <span className={pnlColor(livePrices[t.id].unrealizedPnl)}>
+                        {livePrices[t.id].unrealizedPnl > 0 ? '+' : ''}{livePrices[t.id].unrealizedPnl}$
+                        <span className="text-xs ml-1 opacity-70">
+                          ({livePrices[t.id].unrealizedPnlPct > 0 ? '+' : ''}{livePrices[t.id].unrealizedPnlPct}%)
+                        </span>
+                      </span>
+                    ) : (
+                      <span className={pnlColor(t.realizedPnl - (t.fees || 0))}>
+                        {(t.realizedPnl - (t.fees || 0)) > 0 ? '+' : ''}{Math.round((t.realizedPnl - (t.fees || 0)) * 100) / 100}$
+                      </span>
+                    )}
                   </td>
                   <td className="py-3 px-2 text-center">{statusBadge(t.status)}</td>
                   <td className="py-3 px-2 text-right">
                     {(t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && (
                       <button onClick={e => { e.stopPropagation(); setClosing(t) }}
-                        className="px-2 py-1 bg-accent/10 text-accent rounded text-xs hover:bg-accent/20 transition">
-                        Закрыть
+                        className="p-1.5 bg-accent/10 text-accent rounded hover:bg-accent/20 transition" title="Закрыть">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                       </button>
                     )}
                   </td>

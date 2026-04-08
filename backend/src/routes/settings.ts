@@ -183,8 +183,9 @@ router.get('/balance', async (_req, res) => {
   try {
     const client = await createBybitClient()
     const response = await client.getWalletBalance({ accountType: 'UNIFIED', coin: 'USDT' })
+    const list = response.result?.list
     const balance =
-      response.result.list[0]?.coin?.find((c: any) => c.coin === 'USDT')?.walletBalance || '0'
+      list?.[0]?.coin?.find((c: any) => c.coin === 'USDT')?.walletBalance || '0'
     res.json({ balance })
   } catch (err: any) {
     if (err.message?.includes('not configured')) {
