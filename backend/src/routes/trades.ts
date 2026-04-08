@@ -4,22 +4,25 @@ import { fetchCurrentPrice } from '../services/market'
 
 const router = Router()
 
-// Кэш символов с биржи (обновляется раз в час)
+// Кэш символов с бирж (обновляется раз в час)
 let symbolsCache: string[] = []
 let symbolsCacheTime = 0
 const CACHE_TTL = 60 * 60 * 1000
 
 async function loadSymbols(): Promise<string[]> {
   if (symbolsCache.length && Date.now() - symbolsCacheTime < CACHE_TTL) return symbolsCache
+
   try {
-    const res = await fetch('https://api.mexc.com/api/v3/exchangeInfo')
-    const data = await res.json() as { symbols: { symbol: string; status: string; quoteAsset: string }[] }
-    symbolsCache = data.symbols
-      .filter(s => s.status === 'ENABLED' && s.quoteAsset === 'USDT')
+    const res = await fetch('https://api.bybit.com/v5/market/instruments-info?category=linear&limit=1000')
+    const data = await res.json() as { result: { list: { symbol: string; status: string; quoteCoin: string }[] } }
+    symbolsCache = data.result.list
+      .filter(s => s.status === 'Trading' && s.quoteCoin === 'USDT')
       .map(s => s.symbol.replace('USDT', ''))
       .sort()
-    symbolsCacheTime = Date.now()
-  } catch { /* keep old cache */ }
+  } catch {
+    console.warn('[Symbols] Bybit fetch failed')
+  }
+  symbolsCacheTime = Date.now()
   return symbolsCache
 }
 
@@ -29,7 +32,12 @@ router.get('/symbols', async (req: Request, res: Response) => {
     const q = (String(req.query.q || '')).toUpperCase()
     const symbols = await loadSymbols()
     const filtered = q
-      ? symbols.filter(s => s.startsWith(q)).slice(0, 30)
+      ? symbols.filter(s => s.includes(q)).sort((a, b) => {
+          // Prioritize startsWith matches
+          const aStarts = a.startsWith(q) ? 0 : 1
+          const bStarts = b.startsWith(q) ? 0 : 1
+          return aStarts - bStarts || a.localeCompare(b)
+        }).slice(0, 30)
       : symbols.slice(0, 50)
     res.json(filtered)
   } catch (err: any) {
@@ -373,6 +381,7 @@ router.post('/close-all', async (_req: Request, res: Response) => {
     for (const trade of trades) {
       // PENDING_ENTRY — just cancel
       if (trade.status === 'PENDING_ENTRY') {
+        console.log(`[Trades] close-all: cancelling PENDING trade #${trade.id} ${trade.coin}`)
         await prisma.trade.update({
           where: { id: trade.id },
           data: { status: 'CANCELLED', closedAt: new Date() },

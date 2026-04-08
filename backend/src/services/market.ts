@@ -77,10 +77,12 @@ export async function fetchOHLCV_MEXC(
 
 export async function fetchCurrentPrice(symbol: string): Promise<number | null> {
   try {
-    const res = await fetch(`https://api.mexc.com/api/v3/ticker/price?symbol=${symbol}`)
-    if (!res.ok) return null
-    const data = await res.json() as any
-    if (data.price) return parseFloat(data.price)
+    const res = await fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${symbol}`)
+    if (res.ok) {
+      const data = await res.json() as any
+      const price = data.result?.list?.[0]?.lastPrice
+      if (price) return parseFloat(price)
+    }
   } catch {}
   return null
 }

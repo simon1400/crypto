@@ -4,6 +4,7 @@ import { fetchCurrentPrice } from './market'
 // Tracks SCANNER trades every 2 seconds:
 // 1. PENDING_ENTRY — waits for price to reach or cross entry, then activates
 // 2. OPEN/PARTIALLY_CLOSED — monitors SL/TP levels, auto-closes
+// 3. ENTRY_ANALYZER pairs — auto-merges when both entries fill
 
 // Store last known price per coin to detect crossings
 const lastPrices: Record<string, number> = {}
@@ -34,17 +35,6 @@ export async function trackScannerTrades() {
 
       // === Phase 1: Wait for entry fill ===
       if (trade.status === 'PENDING_ENTRY') {
-        // Cancel if price already past SL
-        const pastSL = isLong ? price <= trade.stopLoss : price >= trade.stopLoss
-        if (pastSL) {
-          await prisma.trade.update({
-            where: { id: trade.id },
-            data: { status: 'CANCELLED', closedAt: new Date() },
-          })
-          console.log(`[ScannerTracker] ${trade.coin} cancelled — price $${price} past SL $${trade.stopLoss}`)
-          continue
-        }
-
         // Entry fills when price equals or crosses entry level
         let entryFilled = false
         if (prevPrice != null) {
@@ -66,6 +56,11 @@ export async function trackScannerTrades() {
             data: { status: 'OPEN', openedAt: new Date() },
           })
           console.log(`[ScannerTracker] ${trade.coin} entry filled at $${price} (target $${trade.entryPrice})`)
+
+          // Check if this is an ENTRY_ANALYZER pair — auto-merge if both filled
+          if (trade.source === 'ENTRY_ANALYZER' && trade.notes) {
+            await tryMergeEntryPair(trade.id, trade.notes)
+          }
         }
         lastPrices[trade.coin] = price
         continue
@@ -111,6 +106,67 @@ export async function trackScannerTrades() {
       console.error(`[ScannerTracker] Error tracking ${trade.coin}:`, err)
     }
   }
+}
+
+// Auto-merge ENTRY_ANALYZER pair when both entries are filled
+async function tryMergeEntryPair(filledTradeId: number, notes: string) {
+  // Extract group ID from notes: "group:EA-1234567890 | ..."
+  const groupMatch = notes.match(/group:(EA-\d+)/)
+  if (!groupMatch) return
+
+  const groupId = groupMatch[1]
+
+  // Find all trades in this group
+  const groupTrades = await prisma.trade.findMany({
+    where: {
+      source: 'ENTRY_ANALYZER',
+      notes: { contains: `group:${groupId}` },
+    },
+  })
+
+  if (groupTrades.length !== 2) return
+
+  // Both must be OPEN (just filled)
+  const allOpen = groupTrades.every(t => t.status === 'OPEN')
+  if (!allOpen) return
+
+  const [t1, t2] = groupTrades.sort((a, b) => a.id - b.id)
+
+  // Calculate weighted average entry
+  const totalAmount = t1.amount + t2.amount
+  const avgEntry = Math.round(((t1.entryPrice * t1.amount + t2.entryPrice * t2.amount) / totalAmount) * 10000) / 10000
+
+  // Recalculate TP R:R from averaged entry
+  const tps = t1.takeProfits as any[]
+  const riskAmount = Math.abs(avgEntry - t1.stopLoss)
+  const direction = t1.type === 'LONG' ? 1 : -1
+  const newTPs = tps.map((tp: any) => ({
+    price: tp.price,
+    percent: tp.percent,
+    rr: riskAmount > 0 ? Math.round(((tp.price - avgEntry) * direction / riskAmount) * 100) / 100 : 0,
+  }))
+
+  // Delete both old trades
+  await prisma.trade.deleteMany({ where: { id: { in: [t1.id, t2.id] } } })
+
+  // Create merged trade
+  const merged = await prisma.trade.create({
+    data: {
+      coin: t1.coin,
+      type: t1.type,
+      leverage: t1.leverage,
+      entryPrice: avgEntry,
+      amount: totalAmount,
+      stopLoss: t1.stopLoss,
+      takeProfits: newTPs,
+      status: 'OPEN',
+      source: 'ENTRY_ANALYZER',
+      openedAt: new Date(),
+      notes: `Merged ${groupId}: #${t1.id} ($${t1.entryPrice}) + #${t2.id} ($${t2.entryPrice}) → avg $${avgEntry}`,
+    },
+  })
+
+  console.log(`[ScannerTracker] Auto-merged ${groupId}: #${t1.id} + #${t2.id} → #${merged.id} (avg entry: $${avgEntry}, total: $${totalAmount})`)
 }
 
 async function closeTradePortion(

@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { runScan, isScannerRunning, SCAN_COINS, expireOldSignals } from '../scanner/coinScanner'
-import { runScalpScan, isScalpScannerRunning } from '../scanner/scalp/scalpScanner'
+import { analyzeEntries, isEntryAnalyzerRunning } from '../scanner/entryAnalyzer'
 import { prisma } from '../db/prisma'
 
 const router = Router()
@@ -70,46 +70,10 @@ router.post('/scan', async (req, res) => {
   }
 })
 
-// POST /api/scanner/scalp — trigger scalp scan
-router.post('/scalp', async (req, res) => {
-  try {
-    if (isScalpScannerRunning()) {
-      return res.status(409).json({ error: 'Scalp scanner already running' })
-    }
-
-    const { coins, minScore } = req.body || {}
-    const { results, funnel } = await runScalpScan(coins, minScore ?? 35)
-
-    res.json({
-      total: results.length,
-      funnel,
-      signals: results.map(r => ({
-        coin: r.signal.coin,
-        type: r.signal.type,
-        strategy: r.signal.strategy,
-        score: r.signal.score,
-        category: r.category,
-        scoreBreakdown: r.signal.scoreBreakdown,
-        entry: r.signal.entry,
-        stopLoss: r.signal.stopLoss,
-        takeProfit: r.signal.takeProfit,
-        slPercent: r.signal.slPercent,
-        tpPercent: r.signal.tpPercent,
-        riskReward: r.signal.riskReward,
-        leverage: r.signal.leverage,
-        positionPct: r.signal.positionPct,
-        reasons: r.signal.reasons,
-      })),
-    })
-  } catch (err: any) {
-    console.error('[Scalp Route] Error:', err)
-    res.status(500).json({ error: err.message || 'Scalp scan failed' })
-  }
-})
 
 // GET /api/scanner/status — check if scanner is running
 router.get('/status', (_req, res) => {
-  res.json({ running: isScannerRunning(), scalpRunning: isScalpScannerRunning() })
+  res.json({ running: isScannerRunning() })
 })
 
 // GET /api/scanner/signals — get saved signals with pagination
@@ -405,6 +369,284 @@ router.post('/expire', async (_req, res) => {
   try {
     const count = await expireOldSignals()
     res.json({ expired: count })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/scanner/analyze-entry — analyze limit order entry points
+router.post('/analyze-entry', async (req, res) => {
+  try {
+    if (isEntryAnalyzerRunning()) {
+      return res.status(409).json({ error: 'Entry analyzer already running' })
+    }
+
+    const { coins, useGPT } = req.body as { coins: string[]; useGPT?: boolean }
+    if (!coins || !Array.isArray(coins) || coins.length === 0) {
+      return res.status(400).json({ error: 'coins required (array of 1-5 tickers)' })
+    }
+    if (coins.length > 5) {
+      return res.status(400).json({ error: 'Maximum 5 coins per analysis' })
+    }
+
+    const { results, errors } = await analyzeEntries(coins, useGPT ?? true)
+
+    // Save results to DB as GeneratedSignals
+    const savedIds: Record<string, number> = {}
+    for (const r of results) {
+      const entry1Data = {
+        price: r.entry1.price,
+        positionPercent: r.entry1.positionPercent,
+        label: r.entry1.label,
+        sources: r.entry1.cluster.sources,
+        totalWeight: r.entry1.cluster.totalWeight,
+        distancePercent: r.entry1.cluster.distancePercent,
+        fillProbability: Math.round(r.entry1.cluster.fillProbability * 100),
+      }
+      const entry2Data = {
+        price: r.entry2.price,
+        positionPercent: r.entry2.positionPercent,
+        label: r.entry2.label,
+        sources: r.entry2.cluster.sources,
+        totalWeight: r.entry2.cluster.totalWeight,
+        distancePercent: r.entry2.cluster.distancePercent,
+        fillProbability: Math.round(r.entry2.cluster.fillProbability * 100),
+      }
+
+      const saved = await prisma.generatedSignal.create({
+        data: {
+          coin: r.coin,
+          type: r.type,
+          strategy: 'entry_analysis',
+          score: r.score,
+          entry: r.entry1.price,
+          stopLoss: r.stopLoss,
+          takeProfits: r.takeProfits,
+          leverage: r.leverage,
+          positionPct: r.positionPct,
+          indicators: {},
+          marketContext: JSON.parse(JSON.stringify({
+            source: 'ENTRY_ANALYZER',
+            entry1: entry1Data,
+            entry2: entry2Data,
+            avgEntry: r.avgEntry,
+            slPercent: r.slPercent,
+            riskReward: r.riskReward,
+            currentPrice: r.currentPrice,
+            regime: r.regime,
+            reasons: r.reasons,
+            gpt: r.gpt,
+            funding: r.funding ? { rate: r.funding.fundingRate } : null,
+            oi: r.oi ? { value: r.oi.openInterest } : null,
+          })),
+          aiAnalysis: r.gpt ? JSON.stringify(r.gpt) : null,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24h expiry
+        },
+      })
+      savedIds[r.coin] = saved.id
+    }
+
+    res.json({
+      total: results.length,
+      errors,
+      results: results.map(r => ({
+        savedId: savedIds[r.coin] || null,
+        coin: r.coin,
+        type: r.type,
+        strategy: r.strategy,
+        score: r.score,
+        currentPrice: r.currentPrice,
+        entry1: {
+          price: r.entry1.price,
+          positionPercent: r.entry1.positionPercent,
+          label: r.entry1.label,
+          sources: r.entry1.cluster.sources,
+          totalWeight: r.entry1.cluster.totalWeight,
+          distancePercent: r.entry1.cluster.distancePercent,
+          fillProbability: Math.round(r.entry1.cluster.fillProbability * 100),
+        },
+        entry2: {
+          price: r.entry2.price,
+          positionPercent: r.entry2.positionPercent,
+          label: r.entry2.label,
+          sources: r.entry2.cluster.sources,
+          totalWeight: r.entry2.cluster.totalWeight,
+          distancePercent: r.entry2.cluster.distancePercent,
+          fillProbability: Math.round(r.entry2.cluster.fillProbability * 100),
+        },
+        avgEntry: r.avgEntry,
+        stopLoss: r.stopLoss,
+        slPercent: r.slPercent,
+        takeProfits: r.takeProfits,
+        leverage: r.leverage,
+        positionPct: r.positionPct,
+        riskReward: r.riskReward,
+        reasons: r.reasons,
+        regime: r.regime,
+        gpt: r.gpt,
+        funding: r.funding ? { rate: r.funding.fundingRate } : null,
+        oi: r.oi ? { value: r.oi.openInterest } : null,
+      })),
+    })
+  } catch (err: any) {
+    console.error('[EntryAnalyzer Route] Error:', err)
+    res.status(500).json({ error: err.message || 'Entry analysis failed' })
+  }
+})
+
+// GET /api/scanner/entry-signals — get saved entry analyses
+router.get('/entry-signals', async (req, res) => {
+  try {
+    const signals = await prisma.generatedSignal.findMany({
+      where: { strategy: 'entry_analysis' },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    })
+    res.json(signals)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/scanner/entry-signals/:id — delete a saved entry analysis
+router.delete('/entry-signals/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    const signal = await prisma.generatedSignal.findUnique({ where: { id } })
+    if (!signal || signal.strategy !== 'entry_analysis') {
+      return res.status(404).json({ error: 'Entry signal not found' })
+    }
+    await prisma.generatedSignal.delete({ where: { id } })
+    res.json({ ok: true })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/scanner/take-entry — take entry analysis as 2 trades
+router.post('/take-entry', async (req, res) => {
+  try {
+    const { coin, type, amount, leverage, entry1, entry2, stopLoss, score, signalId, takeProfits } = req.body as {
+      coin: string
+      type: string
+      amount: number
+      leverage: number
+      entry1: number
+      entry2: number
+      stopLoss: number
+      score?: number
+      signalId?: number
+      takeProfits: { price: number; percent: number }[]
+    }
+
+    if (!coin || !type || !amount || !entry1 || !entry2 || !stopLoss) {
+      return res.status(400).json({ error: 'Missing required fields' })
+    }
+
+    const groupId = `EA-${Date.now()}`
+    const symbol = coin.toUpperCase().includes('USDT') ? coin.toUpperCase() : `${coin.toUpperCase()}USDT`
+
+    const amount1 = Math.round(amount * 0.6 * 100) / 100
+    const amount2 = Math.round(amount * 0.4 * 100) / 100
+    const scoreStr = score ? ` | Score: ${score}` : ''
+
+    // Create Trade 1 (основной вход, 60%)
+    const trade1 = await prisma.trade.create({
+      data: {
+        coin: symbol,
+        type,
+        leverage,
+        entryPrice: entry1,
+        amount: amount1,
+        stopLoss,
+        takeProfits,
+        status: 'PENDING_ENTRY',
+        source: 'ENTRY_ANALYZER',
+        notes: `group:${groupId} | Entry 1 (основной)${scoreStr} | Entry 2: $${entry2}`,
+      },
+    })
+
+    // Create Trade 2 (усреднение, 40%)
+    const trade2 = await prisma.trade.create({
+      data: {
+        coin: symbol,
+        type,
+        leverage,
+        entryPrice: entry2,
+        amount: amount2,
+        stopLoss,
+        takeProfits,
+        status: 'PENDING_ENTRY',
+        source: 'ENTRY_ANALYZER',
+        notes: `group:${groupId} | Entry 2 (усреднение)${scoreStr} | Entry 1: $${entry1}`,
+      },
+    })
+
+    // Mark saved signal as TAKEN
+    if (signalId) {
+      await prisma.generatedSignal.update({
+        where: { id: signalId },
+        data: { status: 'TAKEN', amount, takenAt: new Date() },
+      }).catch(() => {})
+    }
+
+    console.log(`[EntryAnalyzer] Created trades #${trade1.id} + #${trade2.id} (${symbol} ${type}, group: ${groupId})`)
+    res.json({ trade1, trade2, groupId })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/scanner/merge-entry — merge 2 entry trades into 1 averaged trade
+router.post('/merge-entry', async (req, res) => {
+  try {
+    const { trade1Id, trade2Id } = req.body as { trade1Id: number; trade2Id: number }
+
+    const [t1, t2] = await Promise.all([
+      prisma.trade.findUnique({ where: { id: trade1Id } }),
+      prisma.trade.findUnique({ where: { id: trade2Id } }),
+    ])
+
+    if (!t1 || !t2) return res.status(404).json({ error: 'Trades not found' })
+    if (t1.source !== 'ENTRY_ANALYZER' || t2.source !== 'ENTRY_ANALYZER') {
+      return res.status(400).json({ error: 'Both trades must be ENTRY_ANALYZER source' })
+    }
+
+    // Calculate weighted average entry
+    const totalAmount = t1.amount + t2.amount
+    const avgEntry = Math.round(((t1.entryPrice * t1.amount + t2.entryPrice * t2.amount) / totalAmount) * 10000) / 10000
+
+    // Recalculate TP R:R from averaged entry
+    const tps = t1.takeProfits as any[]
+    const riskAmount = Math.abs(avgEntry - t1.stopLoss)
+    const direction = t1.type === 'LONG' ? 1 : -1
+    const newTPs = tps.map((tp: any) => ({
+      price: tp.price,
+      percent: tp.percent,
+      rr: riskAmount > 0 ? Math.round(((tp.price - avgEntry) * direction / riskAmount) * 100) / 100 : 0,
+    }))
+
+    // Delete both old trades
+    await prisma.trade.deleteMany({ where: { id: { in: [trade1Id, trade2Id] } } })
+
+    // Create merged trade
+    const merged = await prisma.trade.create({
+      data: {
+        coin: t1.coin,
+        type: t1.type,
+        leverage: t1.leverage,
+        entryPrice: avgEntry,
+        amount: totalAmount,
+        stopLoss: t1.stopLoss,
+        takeProfits: newTPs,
+        status: 'OPEN',
+        source: 'ENTRY_ANALYZER',
+        notes: `Merged from #${trade1Id} ($${t1.entryPrice}) + #${trade2Id} ($${t2.entryPrice}) → avg $${avgEntry}`,
+      },
+    })
+
+    console.log(`[EntryAnalyzer] Merged trades #${trade1Id}+#${trade2Id} → #${merged.id} (avg entry: $${avgEntry})`)
+    res.json(merged)
   } catch (err: any) {
     res.status(500).json({ error: err.message })
   }

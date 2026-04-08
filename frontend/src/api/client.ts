@@ -374,53 +374,6 @@ export async function triggerScan(coins?: string[], minScore?: number, useGPT?: 
   return res.json()
 }
 
-// === Scalp Scanner ===
-export interface ScalpSignal {
-  coin: string
-  type: string
-  strategy: string
-  score: number
-  category: string
-  scoreBreakdown: { signal: number; alignment: number; volatility: number; volume: number; context: number }
-  entry: number
-  stopLoss: number
-  takeProfit: number
-  slPercent: number
-  tpPercent: number
-  riskReward: number
-  leverage: number
-  positionPct: number
-  reasons: string[]
-}
-
-export interface ScalpResponse {
-  total: number
-  funnel: {
-    coinsScanned: number
-    fetchErrors: number
-    strategyCandidates: number
-    passedScoring: number
-    passedRisk: number
-    byStrategy: Record<string, number>
-    byCategory: Record<string, number>
-    final: number
-  }
-  signals: ScalpSignal[]
-}
-
-export async function triggerScalpScan(coins?: string[], minScore?: number): Promise<ScalpResponse> {
-  const res = await fetch(`${BASE}/api/scanner/scalp`, {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify({ coins, minScore }),
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Scalp scan failed' }))
-    throw new Error(err.error || `HTTP ${res.status}`)
-  }
-  return res.json()
-}
-
 export async function getScannerSignals(page = 1, status?: string, dateFrom?: string, dateTo?: string): Promise<{ data: ScannerSignal[]; total: number; page: number; totalPages: number }> {
   const q = new URLSearchParams({ page: String(page), limit: '20' })
   if (status) q.set('status', status)
@@ -519,6 +472,124 @@ export async function getScannerCoins(): Promise<string[]> {
 export async function getScannerStatus(): Promise<{ running: boolean }> {
   const res = await fetch(`${BASE}/api/scanner/status`, { headers: getHeaders() })
   if (!res.ok) return { running: false }
+  return res.json()
+}
+
+// ===================== Entry Analyzer =====================
+
+export interface EntryPointData {
+  price: number
+  positionPercent: number
+  label: string
+  sources: string[]
+  totalWeight: number
+  distancePercent: number
+  fillProbability: number
+}
+
+export interface EntryGPT {
+  setupQuality: string
+  commentary: string
+  entry1Quality: string
+  entry1Comment: string
+  entry2Quality: string
+  entry2Comment: string
+  risks: string[]
+  suggestedEntry1: number | null
+  suggestedEntry2: number | null
+  suggestedSL: number | null
+  keyLevels: string[]
+}
+
+export interface EntryAnalysisSignal {
+  coin: string
+  type: string
+  strategy: string
+  score: number
+  currentPrice: number
+  entry1: EntryPointData
+  entry2: EntryPointData
+  avgEntry: number
+  stopLoss: number
+  slPercent: number
+  takeProfits: { price: number; rr: number }[]
+  leverage: number
+  positionPct: number
+  riskReward: number
+  reasons: string[]
+  regime: { regime: string; confidence: number; btcTrend: string; fearGreedZone: string; volatility: string }
+  gpt: EntryGPT | null
+  funding: { rate: number } | null
+  oi: { value: number } | null
+}
+
+export interface EntryAnalysisResponse {
+  total: number
+  errors: string[]
+  results: EntryAnalysisSignal[]
+}
+
+export async function analyzeEntry(coins: string[], useGPT = true): Promise<EntryAnalysisResponse> {
+  const res = await fetch(`${BASE}/api/scanner/analyze-entry`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ coins, useGPT }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Entry analysis failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function takeEntry(data: {
+  coin: string
+  type: string
+  amount: number
+  leverage: number
+  entry1: number
+  entry2: number
+  stopLoss: number
+  score?: number
+  signalId?: number
+  takeProfits: { price: number; percent: number }[]
+}): Promise<{ trade1: Trade; trade2: Trade; groupId: string }> {
+  const res = await fetch(`${BASE}/api/scanner/take-entry`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to take entry' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function getSavedEntrySignals(): Promise<any[]> {
+  const res = await fetch(`${BASE}/api/scanner/entry-signals`, { headers: getHeaders() })
+  if (!res.ok) return []
+  return res.json()
+}
+
+export async function deleteEntrySignal(id: number): Promise<void> {
+  const res = await fetch(`${BASE}/api/scanner/entry-signals/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to delete')
+}
+
+export async function mergeEntryTrades(trade1Id: number, trade2Id: number): Promise<Trade> {
+  const res = await fetch(`${BASE}/api/scanner/merge-entry`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ trade1Id, trade2Id }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to merge trades' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
   return res.json()
 }
 

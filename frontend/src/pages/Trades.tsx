@@ -886,9 +886,12 @@ export default function Trades() {
                         ) : <span className="text-text-secondary">—</span>
                       })()}
                       <span className={`${t.type === 'LONG' ? 'text-long' : 'text-short'}`}>{t.coin.replace('USDT', '')} - {t.leverage}x</span>
-                      {t.source === 'SCALP' && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-400" title="Скальп-сканер">S</span>}
-                      {t.source === 'SCANNER' && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent" title="Свинг-сканер">W</span>}
+                      {t.source === 'SCANNER' && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent" title="Сканер">W</span>}
+                      {t.source === 'ENTRY_ANALYZER' && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent" title="Анализ входа">E</span>}
                       {t.source === 'SIGNAL' && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-blue-500/15 text-blue-400" title="Telegram-сигнал">T</span>}
+                      {t.notes?.includes('Model: aggressive') && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-long/15 text-long" title="Агрессивный вход">A</span>}
+                      {t.notes?.includes('Model: confirmation') && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent" title="Подтверждение">C</span>}
+                      {t.notes?.includes('Model: pullback') && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-blue-500/15 text-blue-400" title="Откат">P</span>}
                        
                       <a
                         href={`https://www.tradingview.com/chart/?symbol=BYBIT:${t.coin}.P`}
@@ -913,9 +916,9 @@ export default function Trades() {
                     )}
                   </td>
                   <td className="py-3 px-2 text-right font-mono">
-                    <span className="text-text-primary">${t.amount}</span>
+                    <span className="text-text-primary">${Math.round(t.amount * 100) / 100}</span>
                     {t.leverage > 1 && (
-                      <div className="text-xs text-text-secondary">${t.amount * t.leverage}</div>
+                      <div className="text-xs text-text-secondary">${Math.round(t.amount * t.leverage * 100) / 100}</div>
                     )}
                   </td>
                   <td className="py-3 px-2 text-right font-mono">

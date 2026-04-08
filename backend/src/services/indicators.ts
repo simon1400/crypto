@@ -99,6 +99,10 @@ export function rsi(closes: number[], period = 14): number {
 }
 
 function round2(v: number): number {
+  if (v === 0) return 0
+  // For very small values (cheap coins), preserve more precision
+  if (Math.abs(v) < 0.01) return Math.round(v * 1000000) / 1000000
+  if (Math.abs(v) < 1) return Math.round(v * 10000) / 10000
   return Math.round(v * 100) / 100
 }
 
