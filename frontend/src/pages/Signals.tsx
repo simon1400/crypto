@@ -3,6 +3,7 @@ import { Signal, SignalsResponse, getSignals, syncSignals, getSignalPrices, getS
 import SignalTable from '../components/SignalTable'
 import SignalBadge from '../components/SignalBadge'
 import SignalChart from '../components/SignalChart'
+import { formatPrice } from '../lib/formatters'
 
 function exportCSV(signals: Signal[], prices: Record<string, number | null>, channel: string) {
   const header = 'Дата,Тип,Монета,Цена,Плечо,Вход мин,Вход макс,SL,TP1,TP2,TP3,TP4,TP5,TP6,Статус,P&L %'
@@ -47,12 +48,6 @@ const CHANNELS = [
   { id: 'Near512-MidHigh', name: 'Near512 Mid-High', group: 'Near512' },
   { id: 'Near512-Spot', name: 'Near512 Spot', group: 'Near512' },
 ]
-
-function formatPrice(n: number): string {
-  if (n >= 1) return n.toFixed(2)
-  if (n >= 0.01) return n.toFixed(4)
-  return n.toFixed(5)
-}
 
 function SignalModal({ signal, onClose }: { signal: Signal; onClose: () => void }) {
   const entry = (signal.entryMin + signal.entryMax) / 2

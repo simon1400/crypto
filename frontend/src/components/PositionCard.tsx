@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { BybitPosition } from '../api/client'
 import ConfirmDialog from './ConfirmDialog'
+import { formatPricePrecise as formatPrice, formatPnl } from '../lib/formatters'
 
 interface Props {
   position: BybitPosition
@@ -34,18 +35,6 @@ function useElapsedTime(dateStr: string | null): string {
     return () => clearInterval(timer)
   }, [dateStr])
   return elapsed
-}
-
-function formatPrice(price: number | null): string {
-  if (price === null || price === undefined) return '-'
-  if (price >= 1000) return price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  if (price >= 1) return price.toFixed(4)
-  return price.toFixed(6)
-}
-
-function formatPnl(value: number): string {
-  const prefix = value >= 0 ? '+' : ''
-  return `${prefix}$${Math.abs(value).toFixed(2)}`
 }
 
 function calcPnlForecast(

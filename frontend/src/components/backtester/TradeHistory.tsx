@@ -1,27 +1,10 @@
 import { Trade } from '../../api/client'
+import { formatDate, pnlColor } from '../../lib/formatters'
+import { TradeStatusBadge } from '../StatusBadge'
 
 interface Props {
   trades: Trade[]
   sessionPnl: number
-}
-
-function formatDate(d: string) {
-  return new Date(d).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
-}
-
-function pnlColor(v: number) {
-  return v > 0 ? 'text-long' : v < 0 ? 'text-short' : 'text-text-secondary'
-}
-
-function statusBadge(status: string) {
-  const map: Record<string, { bg: string; text: string; label: string }> = {
-    OPEN: { bg: 'bg-accent/10', text: 'text-accent', label: 'Открыта' },
-    CLOSED: { bg: 'bg-long/10', text: 'text-long', label: 'Закрыта' },
-    SL_HIT: { bg: 'bg-short/10', text: 'text-short', label: 'Стоп-лосс' },
-    CANCELLED: { bg: 'bg-neutral/10', text: 'text-neutral', label: 'Отменена' },
-  }
-  const s = map[status] || map.CANCELLED
-  return <span className={`px-2 py-0.5 rounded text-xs font-medium ${s.bg} ${s.text}`}>{s.label}</span>
 }
 
 export default function TradeHistory({ trades, sessionPnl }: Props) {
@@ -75,7 +58,7 @@ export default function TradeHistory({ trades, sessionPnl }: Props) {
                       {t.realizedPnl >= 0 ? '+' : ''}{t.realizedPnl.toFixed(2)}$
                     </td>
                     <td className="py-1.5 text-right">
-                      {statusBadge(t.status)}
+                      <TradeStatusBadge status={t.status} />
                     </td>
                   </tr>
                 )

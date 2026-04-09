@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Signal } from '../api/client'
 import SignalBadge from './SignalBadge'
 import ConfirmDialog from './ConfirmDialog'
+import { formatPrice, formatDateShort as formatDate } from '../lib/formatters'
 
 interface Props {
   signals: Signal[]
@@ -17,22 +18,6 @@ const CHANNEL_LABELS: Record<string, string> = {
   'Near512-LowCap': 'Low-Cap',
   'Near512-MidHigh': 'Mid-High',
   'Near512-Spot': 'Spot',
-}
-
-function formatPrice(n: number): string {
-  if (n >= 1) return n.toFixed(2)
-  if (n >= 0.01) return n.toFixed(4)
-  return n.toFixed(5)
-}
-
-function formatDate(dateStr: string): string {
-  const d = new Date(dateStr)
-  return d.toLocaleDateString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }
 
 function pnl(signal: Signal): { text: string; color: string } | null {

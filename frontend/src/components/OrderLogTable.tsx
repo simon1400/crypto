@@ -1,4 +1,5 @@
 import { OrderLogEntry } from '../api/client'
+import { formatDate } from '../lib/formatters'
 
 export interface LogFilters {
   action?: string
@@ -38,17 +39,6 @@ function actionBadgeColor(action: string): string {
   if (action === 'SL_TRIGGERED' || action === 'KILL_SWITCH' || action === 'ERROR') return 'text-short bg-short/10'
   if (action === 'ORDER_CANCELLED') return 'text-accent bg-accent/10'
   return 'text-text-secondary bg-input'
-}
-
-function formatDate(dateStr: string): string {
-  const d = new Date(dateStr)
-  return d.toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }
 
 function extractCoin(log: OrderLogEntry): string {
