@@ -58,7 +58,7 @@ export default function TradeHistory({ trades, sessionPnl }: Props) {
                       {t.realizedPnl >= 0 ? '+' : ''}{t.realizedPnl.toFixed(2)}$
                     </td>
                     <td className="py-1.5 text-right">
-                      <TradeStatusBadge status={t.status} />
+                      <TradeStatusBadge status={t.status} pnl={t.realizedPnl} />
                     </td>
                   </tr>
                 )

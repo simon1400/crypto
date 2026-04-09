@@ -62,7 +62,7 @@ export default function TradeDetail({ trade, onClose, onRefresh }: { trade: Trad
             <span className={`px-2 py-0.5 rounded text-xs font-bold ${trade.type === 'LONG' ? 'bg-long/10 text-long' : 'bg-short/10 text-short'}`}>
               {trade.type} {trade.leverage}x
             </span>
-            <TradeStatusBadge status={trade.status} />
+            <TradeStatusBadge status={trade.status} pnl={trade.realizedPnl} />
           </div>
           <div className="flex items-center gap-2">
             {!editing && (

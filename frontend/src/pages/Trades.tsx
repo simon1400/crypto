@@ -276,7 +276,7 @@ export default function Trades() {
                       </span>
                     )}
                   </td>
-                  <td className="py-3 px-2 text-center"><TradeStatusBadge status={t.status} /></td>
+                  <td className="py-3 px-2 text-center"><TradeStatusBadge status={t.status} pnl={t.realizedPnl} /></td>
                   <td className="py-3 px-2 text-right">
                     {(t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && (
                       <button onClick={e => { e.stopPropagation(); setClosing(t) }}

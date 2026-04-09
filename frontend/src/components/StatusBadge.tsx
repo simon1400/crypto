@@ -23,7 +23,11 @@ export function ScannerStatusBadge({ status }: { status: string }) {
   return <span className={`px-2 py-0.5 rounded text-xs font-medium ${s.color}`}>{s.label}</span>
 }
 
-export function TradeStatusBadge({ status }: { status: string }) {
+export function TradeStatusBadge({ status, pnl }: { status: string; pnl?: number }) {
+  // SL_HIT with positive P&L = trailing SL closed in profit (breakeven or better)
+  if (status === 'SL_HIT' && pnl !== undefined && pnl > 0) {
+    return <span className="px-2 py-0.5 rounded text-xs font-medium bg-long/10 text-long">Закрыта (SL)</span>
+  }
   const s = TRADE_STATUS_MAP[status] || TRADE_STATUS_MAP.CANCELLED
   return <span className={`px-2 py-0.5 rounded text-xs font-medium ${s.bg} ${s.text}`}>{s.label}</span>
 }
