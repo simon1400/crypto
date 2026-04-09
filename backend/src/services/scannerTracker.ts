@@ -66,14 +66,33 @@ export async function trackScannerTrades() {
         continue
       }
 
-      // === Phase 2: Track SL/TP ===
+      // === Phase 2: Track SL/TP with Trailing Stop ===
       const tps = trade.takeProfits as { price: number; percent: number }[]
+      const closes = (trade.closes as any[]) || []
 
-      // Check SL
-      const slHit = isLong ? price <= trade.stopLoss : price >= trade.stopLoss
+      // Determine how many TPs already hit (for trailing SL)
+      const tpsSortedByPrice = [...tps].sort((a, b) => isLong ? a.price - b.price : b.price - a.price)
+      let tpsHitCount = 0
+      for (const tp of tpsSortedByPrice) {
+        const alreadyClosed = closes.some(c => Math.abs(c.price - tp.price) < 0.0001 && !c.isSL)
+        if (alreadyClosed) tpsHitCount++
+        else break
+      }
+
+      // Trailing SL: TP1 hit → SL = entry (BE), TP2 hit → SL = TP1, TPn hit → SL = TP(n-1)
+      let effectiveSL = trade.stopLoss
+      if (tpsHitCount === 1) {
+        effectiveSL = trade.entryPrice
+      } else if (tpsHitCount >= 2) {
+        effectiveSL = tpsSortedByPrice[tpsHitCount - 2].price
+      }
+
+      // Check SL (using effective trailing SL)
+      const slHit = isLong ? price <= effectiveSL : price >= effectiveSL
       if (slHit) {
-        await closeTradePortion(trade, trade.stopLoss, 100 - trade.closedPct, true)
-        console.log(`[ScannerTracker] ${trade.coin} SL hit at $${trade.stopLoss} (price: $${price})`)
+        await closeTradePortion(trade, effectiveSL, 100 - trade.closedPct, true)
+        const label = tpsHitCount > 0 ? `trailing SL (after TP${tpsHitCount})` : 'SL'
+        console.log(`[ScannerTracker] ${trade.coin} ${label} hit at $${effectiveSL} (price: $${price})`)
         lastPrices[trade.coin] = price
         continue
       }
@@ -84,7 +103,6 @@ export async function trackScannerTrades() {
       for (const tp of sortedTps) {
         const tpHit = isLong ? price >= tp.price : price <= tp.price
         if (tpHit) {
-          const closes = (trade.closes as any[]) || []
           const alreadyClosed = closes.some(c => Math.abs(c.price - tp.price) < 0.0001 && !c.isSL)
           if (alreadyClosed) continue
 
@@ -92,7 +110,14 @@ export async function trackScannerTrades() {
           if (pctToClose <= 0) continue
 
           await closeTradePortion(trade, tp.price, pctToClose, false)
-          console.log(`[ScannerTracker] ${trade.coin} TP hit at $${tp.price} (${pctToClose}%)`)
+
+          // Determine which TP number was hit
+          const tpIndex = tpsSortedByPrice.findIndex(t => Math.abs(t.price - tp.price) < 0.0001)
+          const tpNum = tpIndex >= 0 ? tpIndex + 1 : '?'
+          const newTpsHit = tpsHitCount + 1
+          let newSL = trade.entryPrice
+          if (newTpsHit >= 2) newSL = tpsSortedByPrice[0].price
+          console.log(`[ScannerTracker] ${trade.coin} TP${tpNum} hit at $${tp.price} (${pctToClose}%) → trailing SL moved to $${newSL}`)
 
           const updated = await prisma.trade.findUnique({ where: { id: trade.id } })
           if (updated) Object.assign(trade, updated)

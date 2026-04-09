@@ -461,15 +461,9 @@ function analyzeCoin(
 
   // Collect and cluster levels
   const allLevels = collectLevels(ind, type)
-  console.log(`[EntryAnalyzer] ${coin}: ${type} price=$${price} atr=$${round(atr)} levels=${allLevels.length}`)
-
-  if (allLevels.length === 0) {
-    console.log(`[EntryAnalyzer] ${coin}: no levels found ${type === 'LONG' ? 'below' : 'above'} price`)
-    return null
-  }
+  if (allLevels.length === 0) return null
 
   const clusters = clusterLevels(allLevels, price)
-  console.log(`[EntryAnalyzer] ${coin}: ${clusters.length} clusters, weights: [${clusters.map(c => c.totalWeight).join(', ')}]`)
 
   // Calculate fill probabilities
   for (const cluster of clusters) {
@@ -487,10 +481,7 @@ function analyzeCoin(
       return scoreB - scoreA
     })
 
-  if (ranked.length === 0) {
-    console.log(`[EntryAnalyzer] ${coin}: no clusters with weight >= 3`)
-    return null
-  }
+  if (ranked.length === 0) return null
 
   // Entry 1: best cluster
   const cluster1 = ranked[0]

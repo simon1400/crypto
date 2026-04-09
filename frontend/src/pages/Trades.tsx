@@ -849,6 +849,7 @@ export default function Trades() {
               <col className="w-[70px]" />
               <col className="w-[70px]" />
               <col className="w-[55px]" />
+              <col className="w-[90px]" />
               <col className="w-[120px]" />
               <col className="w-[100px]" />
               <col className="w-[30px]" />
@@ -863,6 +864,7 @@ export default function Trades() {
                 <th className="text-right py-3 px-2">SL</th>
                 <th className="text-right py-3 px-2">TP</th>
                 <th className="text-center py-3 px-2">Закрыто</th>
+                <th className="text-right py-3 px-2">Реализовано</th>
                 <th className="text-right py-3 px-2">P&L</th>
                 <th className="text-center py-3 px-2">Статус</th>
                 <th className="text-right py-3 px-2"></th>
@@ -958,6 +960,15 @@ export default function Trades() {
                   </td>
                   
                   <td className="py-3 px-2 text-center text-text-secondary">{t.closedPct}%</td>
+                  <td className="py-3 px-2 text-right font-mono text-sm">
+                    {t.closedPct > 0 && t.closedPct < 100 ? (
+                      <span className={pnlColor(t.realizedPnl - (t.fees || 0))}>
+                        {(t.realizedPnl - (t.fees || 0)) > 0 ? '+' : ''}{Math.round((t.realizedPnl - (t.fees || 0)) * 100) / 100}$
+                      </span>
+                    ) : (
+                      <span className="text-text-secondary">—</span>
+                    )}
+                  </td>
                   <td className="py-3 px-2 text-right font-mono font-semibold">
                     {(t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && livePrices[t.id] ? (
                       <span className={pnlColor(livePrices[t.id].unrealizedPnl)}>
