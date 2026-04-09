@@ -724,7 +724,7 @@ export default function Trades() {
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
-  const [statusFilter, setStatusFilter] = useState('ALL')
+  const [statusFilter, setStatusFilter] = useState('ACTIVE')
   const [selected, setSelected] = useState<Trade | null>(null)
   const [closing, setClosing] = useState<Trade | null>(null)
   const [confirmCloseAll, setConfirmCloseAll] = useState(false)
@@ -759,9 +759,9 @@ export default function Trades() {
     return () => clearInterval(interval)
   }, [trades])
 
-  const statuses = ['ALL', 'PENDING_ENTRY', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSED', 'SL_HIT']
+  const statuses = ['ALL', 'PENDING_ENTRY', 'ACTIVE', 'CLOSED', 'SL_HIT']
   const statusLabels: Record<string, string> = {
-    ALL: 'Все', PENDING_ENTRY: 'Ожидание', OPEN: 'Открытые', PARTIALLY_CLOSED: 'Частичные', CLOSED: 'Закрытые', SL_HIT: 'Стоп-лосс',
+    ALL: 'Все', PENDING_ENTRY: 'Ожидание', ACTIVE: 'Открытые', CLOSED: 'Закрытые', SL_HIT: 'Стоп-лосс',
   }
 
   return (
@@ -849,8 +849,8 @@ export default function Trades() {
               <col className="w-[70px]" />
               <col className="w-[70px]" />
               <col className="w-[55px]" />
-              <col className="w-[90px]" />
-              <col className="w-[120px]" />
+              <col className="w-[55px]" />
+              <col className="w-[100px]" />
               <col className="w-[100px]" />
               <col className="w-[30px]" />
             </colgroup>
@@ -864,7 +864,7 @@ export default function Trades() {
                 <th className="text-right py-3 px-2">SL</th>
                 <th className="text-right py-3 px-2">TP</th>
                 <th className="text-center py-3 px-2">Закрыто</th>
-                <th className="text-right py-3 px-2">Реализовано</th>
+                <th className="text-right py-3 px-2">Рлз.</th>
                 <th className="text-right py-3 px-2">P&L</th>
                 <th className="text-center py-3 px-2">Статус</th>
                 <th className="text-right py-3 px-2"></th>

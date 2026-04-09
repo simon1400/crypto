@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import {
-  getScannerSignals, triggerScan, takeSignalAsTrade, closeSignal, slHitSignal, skipSignal, deleteSignal, createTrade,
+  getScannerSignals, triggerScan, takeSignalAsTrade, skipSignal, deleteSignal, createTrade,
   deleteAllSignals, deleteUnusedSignals, getScannerCoins, getBalance,
   analyzeEntry, takeEntry, searchSymbols, getSavedEntrySignals, deleteEntrySignal,
   ScannerSignal, ScanResponse, ScanSignal, SignalClose,
@@ -109,12 +109,9 @@ function SignalCard({ signal, onStatusChange, onDelete, balance, riskPct }: {
 }) {
   const [expanded, setExpanded] = useState(false)
   const [showTakeForm, setShowTakeForm] = useState(false)
-  const [showCloseForm, setShowCloseForm] = useState(false)
   const [selectedModel, setSelectedModel] = useState(0)
   const [amount, setAmount] = useState('')
   const [customLeverage, setCustomLeverage] = useState('')
-  const [closePrice, setClosePrice] = useState('')
-  const [closePercent, setClosePercent] = useState('100')
   const [loading, setLoading] = useState(false)
   const isLong = signal.type === 'LONG'
   const mc = signal.marketContext as any
@@ -149,26 +146,6 @@ function SignalCard({ signal, onStatusChange, onDelete, balance, riskPct }: {
     } catch (err: any) {
       alert(err.message || 'Failed to take signal')
     } finally { setLoading(false) }
-  }
-
-  async function handleClose() {
-    if (!closePrice || !closePercent) return
-    setLoading(true)
-    try {
-      await closeSignal(signal.id, Number(closePrice), Number(closePercent))
-      setShowCloseForm(false)
-      setClosePrice('')
-      setClosePercent('100')
-      onStatusChange()
-    } catch {} finally { setLoading(false) }
-  }
-
-  async function handleSLHit() {
-    setLoading(true)
-    try {
-      await slHitSignal(signal.id)
-      onStatusChange()
-    } catch {} finally { setLoading(false) }
   }
 
   async function handleSkip() {
@@ -340,51 +317,6 @@ function SignalCard({ signal, onStatusChange, onDelete, balance, riskPct }: {
         </div>
       )}
 
-      {/* === Close Form === */}
-      {showCloseForm && (
-        <div className="bg-input rounded-lg p-3 mb-3 space-y-2">
-          <div className="text-xs text-text-secondary">Закрыть часть позиции:</div>
-          <div className="flex gap-2 flex-wrap">
-            <div className="flex-1 min-w-[120px]">
-              <label className="text-xs text-text-secondary">Цена закрытия</label>
-              <input
-                type="number"
-                value={closePrice}
-                onChange={e => setClosePrice(e.target.value)}
-                placeholder={String(tps[0]?.price || signal.entry)}
-                className="w-full bg-input text-text-primary border border-card rounded px-3 py-1.5 text-sm font-mono mt-0.5 focus:outline-none focus:border-accent"
-                step="any"
-              />
-            </div>
-            <div className="w-24">
-              <label className="text-xs text-text-secondary">% позиции</label>
-              <input
-                type="number"
-                value={closePercent}
-                onChange={e => setClosePercent(e.target.value)}
-                className="w-full bg-input text-text-primary border border-card rounded px-3 py-1.5 text-sm font-mono mt-0.5 focus:outline-none focus:border-accent"
-                min={1} max={100 - signal.closedPct}
-              />
-            </div>
-          </div>
-          {/* Quick TP buttons */}
-          <div className="flex gap-1 flex-wrap">
-            {tps.map((tp, i) => (
-              <button key={i} onClick={() => setClosePrice(String(tp.price))}
-                className="px-2 py-0.5 text-xs rounded bg-long/10 text-long hover:bg-long/20">
-                TP{i + 1}: ${tp.price}
-              </button>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <button onClick={handleClose} disabled={loading || !closePrice} className="px-3 py-1.5 text-sm rounded bg-accent/20 text-accent hover:bg-accent/30 disabled:opacity-50">
-              {loading ? '...' : 'Закрыть'}
-            </button>
-            <button onClick={() => setShowCloseForm(false)} className="px-3 py-1.5 text-sm rounded bg-neutral/10 text-neutral">Отмена</button>
-          </div>
-        </div>
-      )}
-
       {/* Footer: time + actions */}
       <div className="flex items-center justify-between border-t border-card pt-2">
         <span className="text-xs text-text-secondary">
@@ -397,13 +329,6 @@ function SignalCard({ signal, onStatusChange, onDelete, balance, riskPct }: {
             <>
               <button onClick={openSignalTakeForm} className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20">Взять</button>
               <button onClick={handleSkip} className="px-2 py-1 text-xs rounded bg-neutral/10 text-neutral hover:bg-neutral/20">Пропустить</button>
-            </>
-          )}
-
-          {(signal.status === 'TAKEN' || signal.status === 'PARTIALLY_CLOSED') && !showCloseForm && (
-            <>
-              <button onClick={() => setShowCloseForm(true)} className="px-2 py-1 text-xs rounded bg-accent/10 text-accent hover:bg-accent/20">Закрыть</button>
-              <button onClick={handleSLHit} disabled={loading} className="px-2 py-1 text-xs rounded bg-short/10 text-short hover:bg-short/20">SL Hit</button>
             </>
           )}
 
