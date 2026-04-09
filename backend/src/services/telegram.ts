@@ -91,6 +91,57 @@ export interface TelegramMessage {
   id: number
   date: number // unix timestamp
   text: string
+  hasMedia?: boolean
+}
+
+/**
+ * Download media (photo) from a Telegram message.
+ * Returns Buffer or null if no media.
+ */
+export async function downloadMessageMedia(
+  channelUsername: string,
+  messageId: number,
+  topicId?: number
+): Promise<Buffer | null> {
+  const tg = await getTelegramClient()
+  const peer = resolvePeer(channelUsername)
+
+  try {
+    let result: any
+
+    if (topicId) {
+      result = await tg.invoke(
+        new Api.messages.GetReplies({
+          peer,
+          msgId: topicId,
+          offsetId: messageId + 1,
+          limit: 1,
+          addOffset: 0,
+          maxId: messageId + 1,
+          minId: messageId - 1,
+          hash: BigInt(0) as any,
+        })
+      )
+    } else {
+      result = await tg.invoke(
+        new Api.channels.GetMessages({
+          channel: peer as any,
+          id: [new Api.InputMessageID({ id: messageId })],
+        })
+      )
+    }
+
+    if (!result?.messages?.[0]) return null
+    const msg = result.messages[0]
+
+    if (!(msg instanceof Api.Message) || !msg.media) return null
+
+    const buffer = await tg.downloadMedia(msg, {}) as Buffer
+    return buffer || null
+  } catch (err: any) {
+    console.error(`[Telegram] Failed to download media msg #${messageId}:`, err.message)
+    return null
+  }
 }
 
 function resolvePeer(channelUsername: string): string | number {
@@ -159,11 +210,12 @@ export async function getChannelMessages(
           reachedOldest = true
           break
         }
-        if (msg.message) {
+        if (msg.message || msg.media) {
           allMessages.push({
             id: msg.id,
             date: msg.date,
-            text: msg.message,
+            text: msg.message || '',
+            hasMedia: !!msg.media,
           })
         }
       }

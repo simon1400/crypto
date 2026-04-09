@@ -43,6 +43,7 @@ function exportCSV(signals: Signal[], prices: Record<string, number | null>, cha
 
 const CHANNELS = [
   { id: 'EveningTrader', name: 'Evening Trader' },
+  { id: 'BinanceKillers', name: 'Binance Killers' },
   { id: 'Near512-All', name: 'Near512 All', group: 'Near512' },
   { id: 'Near512-LowCap', name: 'Near512 Low-Cap', group: 'Near512' },
   { id: 'Near512-MidHigh', name: 'Near512 Mid-High', group: 'Near512' },

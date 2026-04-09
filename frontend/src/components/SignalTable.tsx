@@ -18,6 +18,7 @@ const CHANNEL_LABELS: Record<string, string> = {
   'Near512-LowCap': 'Low-Cap',
   'Near512-MidHigh': 'Mid-High',
   'Near512-Spot': 'Spot',
+  'BinanceKillers': 'BK',
 }
 
 function pnl(signal: Signal): { text: string; color: string } | null {
