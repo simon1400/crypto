@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createTrade, TradeTP } from '../../api/client'
+import { createTrade, getSignalPrices, TradeTP } from '../../api/client'
 import { useCoinSearch } from '../../hooks/useCoinSearch'
 
 export default function NewTradeForm({ onCreated }: { onCreated: () => void }) {
@@ -18,6 +18,18 @@ export default function NewTradeForm({ onCreated }: { onCreated: () => void }) {
   const [notes, setNotes] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [fetchingPrice, setFetchingPrice] = useState(false)
+
+  async function fetchMarketPrice() {
+    const coin = coinSearch.getValue()
+    if (!coin) return
+    setFetchingPrice(true)
+    try {
+      const prices = await getSignalPrices([coin])
+      const p = prices[coin]
+      if (p) setEntryPrice(String(p))
+    } catch {} finally { setFetchingPrice(false) }
+  }
 
   function addTP() {
     setTps([...tps, { price: '', percent: '' }])
@@ -119,7 +131,13 @@ export default function NewTradeForm({ onCreated }: { onCreated: () => void }) {
 
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="text-xs text-text-secondary">Цена входа</label>
+          <div className="flex items-center justify-between mb-0.5">
+            <label className="text-xs text-text-secondary">Цена входа</label>
+            <button type="button" onClick={fetchMarketPrice} disabled={fetchingPrice}
+              className="text-xs text-accent hover:text-accent/80 transition disabled:opacity-50">
+              {fetchingPrice ? '...' : 'По рынку'}
+            </button>
+          </div>
           <input type="number" value={entryPrice} onChange={e => setEntryPrice(e.target.value)}
             step="any" className="w-full bg-input rounded px-3 py-2 text-text-primary font-mono" required />
         </div>
