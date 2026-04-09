@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Signal, SignalsResponse, getSignals, syncSignals, getSignalPrices, getSettings, saveSettings, executeSignal } from '../api/client'
+import { Signal, SignalsResponse, getSignals, syncSignals, clearSignals, getSignalPrices, getSettings, saveSettings, executeSignal } from '../api/client'
 import SignalTable from '../components/SignalTable'
 import SignalBadge from '../components/SignalBadge'
 import SignalChart from '../components/SignalChart'
@@ -557,6 +557,19 @@ export default function Signals() {
     }
   }
 
+  const handleClear = async () => {
+    if (!confirm(`Удалить все сигналы ${channel} за ${days} дн.?`)) return
+    setError(null)
+    try {
+      const result = await clearSignals(channel, days)
+      setData(null)
+      setSyncedDays(null)
+      alert(`Удалено ${result.deleted} сигналов`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка удаления')
+    }
+  }
+
   // Stats & analytics
   const stats = data ? (() => {
     let totalPnl = 0
@@ -673,6 +686,13 @@ export default function Signals() {
             className="px-5 py-2.5 bg-accent text-primary font-bold rounded-lg text-sm hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {syncing ? 'Синхронизирую...' : 'Синхронизировать'}
+          </button>
+
+          <button
+            onClick={handleClear}
+            className="px-4 py-2.5 bg-short/20 text-short rounded-lg text-sm hover:bg-short/30 transition-colors"
+          >
+            Очистить
           </button>
         </div>
       </div>

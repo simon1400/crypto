@@ -199,4 +199,30 @@ router.post('/track', async (_req, res) => {
   }
 })
 
+// DELETE /api/signals/clear — delete signals by channel and period
+router.delete('/clear', async (req, res) => {
+  try {
+    const channel = req.query.channel as string
+    const days = parseInt(req.query.days as string) || 0
+
+    const where: any = {}
+    if (channel && channel !== 'all') {
+      if (channel === 'Near512-All') {
+        where.channel = { in: NEAR512_CHANNELS }
+      } else {
+        where.channel = channel
+      }
+    }
+    if (days > 0) {
+      where.publishedAt = { gte: new Date(Date.now() - days * 24 * 60 * 60 * 1000) }
+    }
+
+    const result = await prisma.signal.deleteMany({ where })
+    res.json({ deleted: result.count })
+  } catch (err: any) {
+    console.error('[Signals] Clear error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 export default router
