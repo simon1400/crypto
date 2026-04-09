@@ -256,6 +256,33 @@ router.post('/:id/close', async (req: Request, res: Response) => {
     const isFull = newClosedPct >= 100
     const newStatus = isFull ? 'CLOSED' : 'PARTIALLY_CLOSED'
 
+    // Trailing SL: move stop loss based on closed TPs
+    // After TP1 → SL moves to entry (breakeven)
+    // After TP2 → SL moves to TP1
+    // After TPn → SL moves to TP(n-1)
+    let newStopLoss = trade.stopLoss
+    if (!isFull) {
+      const tps = (trade.takeProfits as any[]).map((tp: any) => tp.price).sort(
+        (a: number, b: number) => trade.type === 'LONG' ? a - b : b - a
+      )
+      // Determine which TP level was just hit by matching close price
+      let tpHitIndex = tps.findIndex((tp: number) =>
+        Math.abs(closePrice - tp) / tp < 0.005 // 0.5% tolerance
+      )
+      // Fallback: count how many TPs are covered by closedPct
+      if (tpHitIndex === -1) {
+        tpHitIndex = Math.round(newClosedPct / (100 / tps.length)) - 1
+      }
+
+      if (tpHitIndex === 0) {
+        // After TP1 → SL moves to entry (breakeven)
+        newStopLoss = trade.entryPrice
+      } else if (tpHitIndex > 0) {
+        // After TPn → SL moves to TP(n-1)
+        newStopLoss = tps[tpHitIndex - 1]
+      }
+    }
+
     const updated = await prisma.trade.update({
       where: { id: trade.id },
       data: {
@@ -263,6 +290,7 @@ router.post('/:id/close', async (req: Request, res: Response) => {
         closedPct: newClosedPct,
         realizedPnl: newRealizedPnl,
         status: newStatus,
+        stopLoss: newStopLoss,
         closedAt: isFull ? new Date() : null,
       },
     })
