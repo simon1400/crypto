@@ -481,6 +481,22 @@ export async function getScannerCoins(): Promise<string[]> {
   return data.coins
 }
 
+export async function getScannerCoinList(): Promise<{ available: string[]; selected: string[] }> {
+  const res = await fetch(`${BASE}/api/scanner/coin-list`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch coin list')
+  return res.json()
+}
+
+export async function saveScannerCoinList(coins: string[]): Promise<{ saved: number }> {
+  const res = await fetch(`${BASE}/api/scanner/coin-list`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ coins }),
+  })
+  if (!res.ok) throw new Error('Failed to save coin list')
+  return res.json()
+}
+
 export async function getScannerStatus(): Promise<{ running: boolean }> {
   const res = await fetch(`${BASE}/api/scanner/status`, { headers: getHeaders() })
   if (!res.ok) return { running: false }

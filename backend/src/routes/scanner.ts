@@ -18,8 +18,16 @@ router.post('/scan', async (req, res) => {
       useGPT?: boolean
     }
 
+    // Use provided coins, or load from DB selection, or fallback to default
+    let scanCoins = coins
+    if (!scanCoins) {
+      const config = await prisma.botConfig.findUnique({ where: { id: 1 } })
+      const selected = (config?.scannerCoins as string[]) || []
+      scanCoins = selected.length > 0 ? selected : SCAN_COINS
+    }
+
     const { results, funnel, savedIds } = await runScan(
-      coins || SCAN_COINS,
+      scanCoins,
       minScore ?? 40,
       useGPT ?? true,
     )
@@ -652,9 +660,55 @@ router.post('/merge-entry', async (req, res) => {
   }
 })
 
-// GET /api/scanner/coins — get available coins list
-router.get('/coins', (_req, res) => {
-  res.json({ coins: SCAN_COINS })
+// GET /api/scanner/coins — get available coins list (selected for scanning)
+router.get('/coins', async (_req, res) => {
+  try {
+    const config = await prisma.botConfig.findUnique({ where: { id: 1 } })
+    const selected = (config?.scannerCoins as string[]) || []
+    // If no custom selection, return default SCAN_COINS
+    res.json({ coins: selected.length > 0 ? selected : SCAN_COINS })
+  } catch {
+    res.json({ coins: SCAN_COINS })
+  }
+})
+
+// GET /api/scanner/coin-list — get all Bybit pairs + current selection
+router.get('/coin-list', async (_req, res) => {
+  try {
+    // Fetch all available linear perpetual pairs from Bybit
+    const bybitRes = await fetch('https://api.bybit.com/v5/market/instruments-info?category=linear&limit=1000')
+    const bybitData = await bybitRes.json() as { result: { list: { symbol: string; status: string; quoteCoin: string }[] } }
+    const allCoins = bybitData.result.list
+      .filter((s: any) => s.status === 'Trading' && s.quoteCoin === 'USDT')
+      .map((s: any) => s.symbol.replace('USDT', ''))
+      .sort()
+
+    // Get current selection from DB
+    const config = await prisma.botConfig.findUnique({ where: { id: 1 } })
+    const selected = (config?.scannerCoins as string[]) || []
+
+    res.json({ available: allCoins, selected })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PUT /api/scanner/coin-list — save selected coins
+router.put('/coin-list', async (req, res) => {
+  try {
+    const { coins } = req.body as { coins: string[] }
+    if (!Array.isArray(coins)) return res.status(400).json({ error: 'coins array required' })
+
+    await prisma.botConfig.upsert({
+      where: { id: 1 },
+      create: { scannerCoins: coins },
+      update: { scannerCoins: coins },
+    })
+
+    res.json({ saved: coins.length })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
 })
 
 export default router

@@ -3,6 +3,7 @@ import {
   getScannerSignals, triggerScan, takeSignalAsTrade, skipSignal, deleteSignal,
   deleteAllSignals, deleteUnusedSignals, getScannerCoins, getBalance,
   analyzeEntry, getSavedEntrySignals, deleteEntrySignal,
+  getScannerCoinList, saveScannerCoinList,
   ScannerSignal, ScanResponse, EntryAnalysisResponse, EntryAnalysisSignal,
 } from '../api/client'
 import SignalCard from '../components/scanner/SignalCard'
@@ -17,7 +18,7 @@ export default function Scanner() {
   const [loading, setLoading] = useState(false)
   const [loadingMsg, setLoadingMsg] = useState('')
   const [error, setError] = useState('')
-  const [tab, setTab] = useState<'saved' | 'scan' | 'entry' | 'calc'>('saved')
+  const [tab, setTab] = useState<'saved' | 'scan' | 'entry' | 'calc' | 'coins'>('saved')
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
@@ -42,6 +43,13 @@ export default function Scanner() {
   const [entryUseGPT, setEntryUseGPT] = useState(true)
   const [savedEntries, setSavedEntries] = useState<any[]>([])
 
+  // Coin List state
+  const [allCoins, setAllCoins] = useState<string[]>([])
+  const [selectedCoins, setSelectedCoins] = useState<string[]>([])
+  const [coinSearch, setCoinSearch] = useState('')
+  const [coinListLoading, setCoinListLoading] = useState(false)
+  const [coinListSaving, setCoinListSaving] = useState(false)
+
   // Risk Calculator state
   const [calcEntry, setCalcEntry] = useState('')
   const [calcSL, setCalcSL] = useState('')
@@ -59,6 +67,46 @@ export default function Scanner() {
       const data = await getSavedEntrySignals()
       setSavedEntries(data)
     } catch {}
+  }
+
+  async function loadCoinList() {
+    if (allCoins.length > 0) return // already loaded
+    setCoinListLoading(true)
+    try {
+      const data = await getScannerCoinList()
+      setAllCoins(data.available)
+      setSelectedCoins(data.selected)
+    } catch {} finally {
+      setCoinListLoading(false)
+    }
+  }
+
+  async function handleSaveCoinList() {
+    setCoinListSaving(true)
+    try {
+      await saveScannerCoinList(selectedCoins)
+      setCoinCount(selectedCoins.length)
+    } catch {} finally {
+      setCoinListSaving(false)
+    }
+  }
+
+  function toggleCoin(coin: string) {
+    setSelectedCoins(prev =>
+      prev.includes(coin) ? prev.filter(c => c !== coin) : [...prev, coin]
+    )
+  }
+
+  function selectAllFiltered(coins: string[]) {
+    setSelectedCoins(prev => {
+      const set = new Set(prev)
+      coins.forEach(c => set.add(c))
+      return [...set]
+    })
+  }
+
+  function deselectAllFiltered(coins: string[]) {
+    setSelectedCoins(prev => prev.filter(c => !coins.includes(c)))
   }
 
   // Load coin count, coin list & balance
@@ -288,6 +336,12 @@ export default function Scanner() {
             className={`px-4 py-2 text-sm font-medium transition-colors ${tab === 'calc' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary hover:text-text-primary'}`}
           >
             Калькулятор
+          </button>
+          <button
+            onClick={() => { setTab('coins'); loadCoinList() }}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${tab === 'coins' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary hover:text-text-primary'}`}
+          >
+            Монеты {selectedCoins.length > 0 ? `(${selectedCoins.length})` : ''}
           </button>
         </div>
       )}
@@ -729,6 +783,82 @@ export default function Scanner() {
               </div>
             )
           })()}
+        </div>
+      )}
+
+      {/* Coins tab */}
+      {tab === 'coins' && (
+        <div className="space-y-4">
+          {coinListLoading ? (
+            <p className="text-text-secondary text-sm">Загрузка списка монет с Bybit...</p>
+          ) : (
+            <>
+              {/* Controls */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <input
+                  type="text"
+                  value={coinSearch}
+                  onChange={e => setCoinSearch(e.target.value.toUpperCase())}
+                  placeholder="Поиск монеты..."
+                  className="bg-input text-text-primary rounded-lg px-3 py-2 text-sm border border-card focus:border-accent outline-none w-48"
+                />
+                <span className="text-text-secondary text-sm">
+                  Выбрано: <span className="text-accent font-mono">{selectedCoins.length}</span> из {allCoins.length}
+                </span>
+                <button
+                  onClick={() => {
+                    const filtered = allCoins.filter(c => !coinSearch || c.includes(coinSearch))
+                    const allSelected = filtered.every(c => selectedCoins.includes(c))
+                    allSelected ? deselectAllFiltered(filtered) : selectAllFiltered(filtered)
+                  }}
+                  className="px-3 py-1.5 bg-input text-text-secondary rounded-lg text-xs hover:text-text-primary transition-colors"
+                >
+                  {coinSearch
+                    ? (allCoins.filter(c => c.includes(coinSearch)).every(c => selectedCoins.includes(c)) ? 'Снять найденные' : 'Выбрать найденные')
+                    : (selectedCoins.length === allCoins.length ? 'Снять все' : 'Выбрать все')}
+                </button>
+                <button
+                  onClick={() => setSelectedCoins([])}
+                  className="px-3 py-1.5 bg-short/20 text-short rounded-lg text-xs hover:bg-short/30 transition-colors"
+                >
+                  Очистить
+                </button>
+                <button
+                  onClick={handleSaveCoinList}
+                  disabled={coinListSaving}
+                  className="px-4 py-1.5 bg-accent text-primary font-bold rounded-lg text-sm hover:bg-accent/90 transition-colors disabled:opacity-50"
+                >
+                  {coinListSaving ? 'Сохраняю...' : 'Сохранить'}
+                </button>
+              </div>
+
+              {/* Coin grid */}
+              <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12 xl:grid-cols-14 gap-1.5">
+                {allCoins
+                  .filter(c => !coinSearch || c.includes(coinSearch))
+                  .map(coin => {
+                    const isSelected = selectedCoins.includes(coin)
+                    return (
+                      <button
+                        key={coin}
+                        onClick={() => toggleCoin(coin)}
+                        className={`px-2 py-1.5 rounded text-xs font-mono transition-all ${
+                          isSelected
+                            ? 'bg-accent/15 text-accent border border-accent/50'
+                            : 'bg-card text-text-secondary border border-transparent hover:border-card hover:text-text-primary'
+                        }`}
+                      >
+                        {coin}
+                      </button>
+                    )
+                  })}
+              </div>
+
+              {allCoins.length > 0 && !allCoins.filter(c => !coinSearch || c.includes(coinSearch)).length && (
+                <p className="text-text-secondary text-sm text-center py-4">Ничего не найдено</p>
+              )}
+            </>
+          )}
         </div>
       )}
 

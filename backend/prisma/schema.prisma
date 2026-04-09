@@ -142,6 +142,7 @@ model BotConfig {
   telegramBotToken        String?
   telegramChatId          String?
   telegramEnabled         Boolean  @default(false)
+  scannerCoins            Json     @default("[]")
   updatedAt               DateTime @updatedAt
   createdAt               DateTime @default(now())
 }
