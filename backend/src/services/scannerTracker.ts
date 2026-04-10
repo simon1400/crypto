@@ -1,5 +1,5 @@
 import { prisma } from '../db/prisma'
-import { fetchCurrentPrice } from './market'
+import { fetchPricesBatch } from './market'
 import { adjustVirtualBalance } from './virtualBalance'
 import { calcExitFee } from './fees'
 
@@ -21,11 +21,7 @@ export async function trackScannerTrades() {
   if (!trades.length) return
 
   // Fetch prices for all unique coins in parallel
-  const coins = [...new Set(trades.map(t => t.coin))]
-  const prices: Record<string, number | null> = {}
-  await Promise.all(coins.map(async coin => {
-    prices[coin] = await fetchCurrentPrice(coin)
-  }))
+  const prices = await fetchPricesBatch(trades.map(t => t.coin))
 
   for (const trade of trades) {
     try {
@@ -136,7 +132,7 @@ export async function trackScannerTrades() {
 }
 
 // Auto-merge ENTRY_ANALYZER pair when both entries are filled
-async function tryMergeEntryPair(filledTradeId: number, notes: string) {
+async function tryMergeEntryPair(_filledTradeId: number, notes: string) {
   // Extract group ID from notes: "group:EA-1234567890 | ..."
   const groupMatch = notes.match(/group:(EA-\d+)/)
   if (!groupMatch) return

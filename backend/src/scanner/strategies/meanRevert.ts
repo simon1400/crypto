@@ -81,7 +81,7 @@ interface ConditionResult {
   reasons: string[]
 }
 
-function checkLong(tf15m: MultiTFIndicators['tf15m'], tf1h: MultiTFIndicators['tf1h'], tf4h: MultiTFIndicators['tf4h']): ConditionResult {
+function checkLong(tf15m: MultiTFIndicators['tf15m'], tf1h: MultiTFIndicators['tf1h'], _tf4h: MultiTFIndicators['tf4h']): ConditionResult {
   let score = 0
   const reasons: string[] = []
 
@@ -134,7 +134,7 @@ function checkLong(tf15m: MultiTFIndicators['tf15m'], tf1h: MultiTFIndicators['t
   return { score, reasons }
 }
 
-function checkShort(tf15m: MultiTFIndicators['tf15m'], tf1h: MultiTFIndicators['tf1h'], tf4h: MultiTFIndicators['tf4h']): ConditionResult {
+function checkShort(tf15m: MultiTFIndicators['tf15m'], tf1h: MultiTFIndicators['tf1h'], _tf4h: MultiTFIndicators['tf4h']): ConditionResult {
   let score = 0
   const reasons: string[] = []
 

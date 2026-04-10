@@ -11,7 +11,7 @@ import { RawSignal } from './index'
 export function breakout(
   coin: string,
   ind: MultiTFIndicators,
-  regime: MarketRegime,
+  _regime: MarketRegime,
   _coinRegime?: CoinRegimeContext,
 ): RawSignal | null {
   const { tf15m, tf1h, tf4h } = ind

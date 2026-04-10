@@ -4,6 +4,7 @@ import {
   deleteAllSignals, deleteUnusedSignals, getScannerCoins, getBalance,
   analyzeEntry, getSavedEntrySignals, deleteEntrySignal,
   getScannerCoinList, saveScannerCoinList,
+  subscribeScanProgress, ScanProgress,
   ScannerSignal, ScanResponse, EntryAnalysisResponse, EntryAnalysisSignal,
 } from '../api/client'
 import SignalCard from '../components/scanner/SignalCard'
@@ -17,6 +18,7 @@ export default function Scanner() {
   const [scanResults, setScanResults] = useState<ScanResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadingMsg, setLoadingMsg] = useState('')
+  const [progress, setProgress] = useState<ScanProgress | null>(null)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'saved' | 'scan' | 'entry' | 'calc' | 'coins'>('saved')
   const [statusFilter, setStatusFilter] = useState<string>('')
@@ -184,13 +186,12 @@ export default function Scanner() {
     setError('')
     setScanResults(null)
     setTab('scan')
+    setProgress(null)
 
-    let msgIdx = 0
-    setLoadingMsg(LOADING_MESSAGES[0])
-    const interval = setInterval(() => {
-      msgIdx = (msgIdx + 1) % LOADING_MESSAGES.length
-      setLoadingMsg(LOADING_MESSAGES[msgIdx])
-    }, 3000)
+    // Подписка на live-прогресс через SSE
+    const unsubscribe = subscribeScanProgress((p) => {
+      setProgress(p)
+    })
 
     try {
       const res = await triggerScan(undefined, minScore, useGPT)
@@ -199,8 +200,9 @@ export default function Scanner() {
     } catch (err: any) {
       setError(err.message || 'Scan failed')
     } finally {
-      clearInterval(interval)
+      unsubscribe()
       setLoading(false)
+      setProgress(null)
     }
   }
 
@@ -297,7 +299,100 @@ export default function Scanner() {
       </div>
 
       {/* Loading state */}
-      {(loading || entryLoading) && (
+      {loading && (
+        <div className="bg-card rounded-xl p-6">
+          {progress ? (() => {
+            const phaseLabels: Record<string, string> = {
+              starting: 'Старт',
+              market_data: 'Рыночные данные',
+              fetching: 'Свечи',
+              regime: 'Режим',
+              scoring: 'Скоринг',
+              risk_calc: 'R:R',
+              gpt: 'GPT анализ',
+              saving: 'Сохранение',
+              done: 'Готово',
+              error: 'Ошибка',
+            }
+            const phases = ['market_data', 'fetching', 'regime', 'scoring', 'risk_calc', 'gpt', 'saving']
+            const currentIdx = phases.indexOf(progress.phase)
+            const elapsed = progress.startedAt ? Math.round((Date.now() - progress.startedAt) / 1000) : 0
+            return (
+              <>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    {progress.phase !== 'done' && progress.phase !== 'error' && (
+                      <div className="animate-spin h-5 w-5 border-2 border-accent border-t-transparent rounded-full" />
+                    )}
+                    <div>
+                      <div className="text-text-primary font-medium text-sm">{progress.message}</div>
+                      <div className="text-xs text-text-secondary mt-0.5">
+                        {phaseLabels[progress.phase] || progress.phase}
+                        {progress.total > 0 && ` · ${progress.current}/${progress.total}`}
+                        {elapsed > 0 && ` · ${elapsed}s`}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="font-mono text-accent text-lg font-bold">{progress.percent}%</div>
+                </div>
+
+                {/* Progress bar */}
+                <div className="h-2 bg-input rounded-full overflow-hidden mb-4">
+                  <div
+                    className={`h-full transition-all duration-300 ${
+                      progress.phase === 'error' ? 'bg-short' : 'bg-accent'
+                    }`}
+                    style={{ width: `${progress.percent}%` }}
+                  />
+                </div>
+
+                {/* Phase steps */}
+                <div className="flex items-center justify-between gap-1 text-[10px]">
+                  {phases.map((p, i) => {
+                    const done = currentIdx > i || progress.phase === 'done'
+                    const active = currentIdx === i
+                    return (
+                      <div
+                        key={p}
+                        className={`flex-1 text-center px-1 py-1 rounded ${
+                          active
+                            ? 'bg-accent/15 text-accent border border-accent/40'
+                            : done
+                              ? 'text-long'
+                              : 'text-text-secondary'
+                        }`}
+                      >
+                        {done && !active ? '✓ ' : ''}
+                        {phaseLabels[p]}
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Counters */}
+                {(progress.candidates !== undefined || progress.passed !== undefined) && (
+                  <div className="flex gap-4 mt-4 pt-3 border-t border-input text-xs text-text-secondary">
+                    {progress.candidates !== undefined && (
+                      <span>Кандидатов: <span className="text-text-primary font-mono">{progress.candidates}</span></span>
+                    )}
+                    {progress.passed !== undefined && (
+                      <span>Прошли скоринг: <span className="text-long font-mono">{progress.passed}</span></span>
+                    )}
+                  </div>
+                )}
+              </>
+            )
+          })() : (
+            <div className="text-center py-2">
+              <div className="animate-spin h-6 w-6 border-2 border-accent border-t-transparent rounded-full mx-auto mb-3" />
+              <div className="text-text-secondary text-sm">Подключение к стриму прогресса...</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Entry loading (старый цикл фраз) */}
+      {entryLoading && (
         <div className="bg-card rounded-xl p-8 text-center">
           <div className="animate-spin h-8 w-8 border-2 border-accent border-t-transparent rounded-full mx-auto mb-4" />
           <div className="text-text-primary font-medium">{loadingMsg}</div>

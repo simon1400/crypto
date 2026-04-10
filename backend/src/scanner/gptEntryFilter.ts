@@ -1,12 +1,13 @@
-import OpenAI from 'openai'
 import { EntryAnalysisResult } from './entryAnalyzer'
 import { RegimeContext } from './marketRegime'
-
-let _openai: OpenAI | null = null
-function getOpenAI() {
-  if (!_openai) _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  return _openai
-}
+import {
+  SetupQuality,
+  VALID_QUALITIES,
+  callGptJson,
+  formatMarketContext,
+  formatIndicators1h,
+  formatIndicators4h,
+} from './gpt/common'
 
 const SYSTEM = `Ты профессиональный крипто-трейдер с 10-летним опытом.
 Тебе дают анализ лимитных точек входа для монеты — два уровня для лимитных ордеров.
@@ -40,7 +41,7 @@ const SYSTEM = `Ты профессиональный крипто-трейде�
 - D: Слабый уровень, мало подтверждений
 - F: Плохой уровень, лучше не использовать`
 
-export type SetupQuality = 'A' | 'B' | 'C' | 'D' | 'F'
+export type { SetupQuality }
 
 export interface EntryGPTAnnotation {
   setupQuality: SetupQuality
@@ -56,11 +57,37 @@ export interface EntryGPTAnnotation {
   keyLevels: string[]
 }
 
+const NEUTRAL_ANNOTATION: EntryGPTAnnotation = {
+  setupQuality: 'C',
+  commentary: 'AI аннотация недоступна',
+  entry1Quality: 'C',
+  entry1Comment: '',
+  entry2Quality: 'C',
+  entry2Comment: '',
+  risks: ['AI проверка не выполнена'],
+  suggestedEntry1: null,
+  suggestedEntry2: null,
+  suggestedSL: null,
+  keyLevels: [],
+}
+
 export async function gptAnnotateEntrySignal(
   result: EntryAnalysisResult,
   regime: RegimeContext,
 ): Promise<EntryGPTAnnotation> {
   const { tf1h, tf4h } = result.indicators
+
+  const marketCtx = formatMarketContext({
+    funding: result.funding,
+    oi: result.oi,
+    liquidations: result.liquidations,
+    lsr: result.lsr,
+    news: result.news,
+    includeNewsHeadlines: false,
+  })
+
+  const fillPct1 = Math.round(result.entry1.cluster.fillProbability * 100)
+  const fillPct2 = Math.round(result.entry2.cluster.fillProbability * 100)
 
   const prompt = `АНАЛИЗ ЛИМИТНЫХ ВХОДОВ:
 
@@ -72,13 +99,13 @@ Score: ${result.score}/100
 
 ENTRY 1 (Основной, ${result.entry1.positionPercent}%): $${result.entry1.price}
   Расстояние от цены: ${result.entry1.cluster.distancePercent}%
-  Вероятность заполнения: ${Math.round(result.entry1.cluster.fillProbability * 100)}%
+  Вероятность заполнения: ${fillPct1}%
   Уровни в кластере: ${result.entry1.cluster.sources.join(', ')}
   Суммарный вес: ${result.entry1.cluster.totalWeight}
 
 ENTRY 2 (Усреднение, ${result.entry2.positionPercent}%): $${result.entry2.price}
   Расстояние от цены: ${result.entry2.cluster.distancePercent}%
-  Вероятность заполнения: ${Math.round(result.entry2.cluster.fillProbability * 100)}%
+  Вероятность заполнения: ${fillPct2}%
   Уровни в кластере: ${result.entry2.cluster.sources.join(', ')}
   Суммарный вес: ${result.entry2.cluster.totalWeight}
 
@@ -90,51 +117,25 @@ TP3: $${result.takeProfits[2]?.price} (R:R ${result.takeProfits[2]?.rr})
 Leverage: ${result.leverage}x
 
 ИНДИКАТОРЫ 1h:
-Price: $${tf1h.price} | EMA9: $${tf1h.ema9} | EMA20: $${tf1h.ema20} | EMA50: $${tf1h.ema50}
-RSI: ${tf1h.rsi} | MACD: ${tf1h.macd} (hist: ${tf1h.macdHistogram})
-BB: $${tf1h.bbLower} — $${tf1h.bbMiddle} — $${tf1h.bbUpper} (width: ${tf1h.bbWidth}%)
-Support: $${tf1h.support} | Resistance: $${tf1h.resistance}
-ATR: $${tf1h.atr} | VWAP: $${tf1h.vwap} | Volume: ${tf1h.volRatio}x
+${formatIndicators1h(tf1h, false)}
 
 ИНДИКАТОРЫ 4h:
-Trend: ${tf4h.trend} | RSI: ${tf4h.rsi} | ADX: ${tf4h.adx}
-EMA20: $${tf4h.ema20} | EMA50: $${tf4h.ema50}
-Support: $${tf4h.support} | Resistance: $${tf4h.resistance}
+${formatIndicators4h(tf4h)}
 
 КОНТЕКСТ РЫНКА:
 Режим: ${regime.regime} (confidence: ${regime.confidence}%)
 BTC тренд: ${regime.btcTrend}
 Fear & Greed: ${regime.fearGreedZone}
-${result.funding ? `Funding Rate (8h): ${(result.funding.fundingRate * 100).toFixed(4)}% ${result.funding.fundingRate > 0.0005 ? '⚠️ перегрев лонгов' : result.funding.fundingRate < -0.0005 ? '⚠️ перегрев шортов' : ''}` : ''}
-${result.oi ? `Open Interest: $${result.oi.openInterestUsd.toLocaleString()} | OI Δ1h: ${result.oi.oiChangePct1h > 0 ? '+' : ''}${result.oi.oiChangePct1h}% | OI Δ4h: ${result.oi.oiChangePct4h > 0 ? '+' : ''}${result.oi.oiChangePct4h}%` : ''}
-${result.liquidations && result.liquidations.totalUsd > 0 ? `Ликвидации (${result.liquidations.windowMinutes}m): $${(result.liquidations.totalUsd / 1000).toFixed(0)}k всего · лонгов $${(result.liquidations.longsLiqUsd / 1000).toFixed(0)}k · шортов $${(result.liquidations.shortsLiqUsd / 1000).toFixed(0)}k` : ''}
-${result.lsr ? `Long/Short ratio: ${(result.lsr.buyRatio * 100).toFixed(0)}% / ${(result.lsr.sellRatio * 100).toFixed(0)}%${result.lsr.buyRatio > 0.7 ? ' ⚠️ толпа в лонгах' : result.lsr.buyRatio < 0.3 ? ' ⚠️ толпа в шортах' : ''}` : ''}
-${result.news && result.news.total > 0 ? `Новости: ${result.news.score > 0 ? '+' : ''}${result.news.score} (${result.news.positive}⬆ ${result.news.negative}⬇)` : ''}`
+${marketCtx}`
 
   try {
-    const completion = await getOpenAI().chat.completions.create({
-      model: 'gpt-5.4',
-      max_completion_tokens: 800,
-      messages: [
-        { role: 'system', content: SYSTEM },
-        { role: 'user', content: prompt },
-      ],
-    })
-
-    const text = completion.choices[0]?.message?.content?.trim()
-    if (!text) throw new Error('Empty GPT response')
-
-    const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
-    const review = JSON.parse(cleaned)
-
-    const validQualities: SetupQuality[] = ['A', 'B', 'C', 'D', 'F']
-
+    const review = await callGptJson(SYSTEM, prompt)
     return {
-      setupQuality: validQualities.includes(review.setupQuality) ? review.setupQuality : 'C',
+      setupQuality: VALID_QUALITIES.includes(review.setupQuality) ? review.setupQuality : 'C',
       commentary: review.commentary || '',
-      entry1Quality: validQualities.includes(review.entry1Quality) ? review.entry1Quality : 'C',
+      entry1Quality: VALID_QUALITIES.includes(review.entry1Quality) ? review.entry1Quality : 'C',
       entry1Comment: review.entry1Comment || '',
-      entry2Quality: validQualities.includes(review.entry2Quality) ? review.entry2Quality : 'C',
+      entry2Quality: VALID_QUALITIES.includes(review.entry2Quality) ? review.entry2Quality : 'C',
       entry2Comment: review.entry2Comment || '',
       risks: review.risks || [],
       suggestedEntry1: review.suggestedEntry1 ?? null,
@@ -144,18 +145,6 @@ ${result.news && result.news.total > 0 ? `Новости: ${result.news.score > 
     }
   } catch (err) {
     console.error('[GPT Entry Annotator] Error:', err)
-    return {
-      setupQuality: 'C',
-      commentary: 'AI аннотация недоступна',
-      entry1Quality: 'C',
-      entry1Comment: '',
-      entry2Quality: 'C',
-      entry2Comment: '',
-      risks: ['AI проверка не выполнена'],
-      suggestedEntry1: null,
-      suggestedEntry2: null,
-      suggestedSL: null,
-      keyLevels: [],
-    }
+    return NEUTRAL_ANNOTATION
   }
 }

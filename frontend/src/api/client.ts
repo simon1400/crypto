@@ -389,6 +389,45 @@ export async function triggerScan(coins?: string[], minScore?: number, useGPT?: 
   return res.json()
 }
 
+// === Scanner progress (Server-Sent Events) ===
+export type ScanPhase =
+  | 'idle' | 'starting' | 'market_data' | 'fetching' | 'regime'
+  | 'scoring' | 'risk_calc' | 'gpt' | 'saving' | 'done' | 'error'
+
+export interface ScanProgress {
+  phase: ScanPhase
+  message: string
+  current: number
+  total: number
+  percent: number
+  startedAt: number
+  updatedAt: number
+  candidates?: number
+  passed?: number
+  rejected?: number
+  error?: string
+}
+
+/**
+ * Подписаться на live-прогресс сканера через SSE.
+ * EventSource не поддерживает custom headers, поэтому передаём токен в query.
+ * Возвращает функцию для отписки.
+ */
+export function subscribeScanProgress(onUpdate: (p: ScanProgress) => void): () => void {
+  const url = `${BASE}/api/scanner/progress-stream?token=${encodeURIComponent(authToken)}`
+  const es = new EventSource(url)
+  es.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data) as ScanProgress
+      onUpdate(data)
+    } catch {}
+  }
+  es.onerror = () => {
+    // EventSource будет автоматически реконнектиться
+  }
+  return () => es.close()
+}
+
 export async function getScannerSignals(page = 1, status?: string, dateFrom?: string, dateTo?: string): Promise<{ data: ScannerSignal[]; total: number; page: number; totalPages: number }> {
   const q = new URLSearchParams({ page: String(page), limit: '20' })
   if (status) q.set('status', status)

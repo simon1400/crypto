@@ -101,6 +101,17 @@ export async function fetchCurrentPrice(symbol: string): Promise<number | null> 
   return null
 }
 
+/**
+ * Параллельный фетч текущих цен для набора символов.
+ * Возвращает объект { [symbol]: price | null } — удобно для lookup'а в map/loop.
+ * Дедуплицирует символы автоматически.
+ */
+export async function fetchPricesBatch(symbols: string[]): Promise<Record<string, number | null>> {
+  const unique = [...new Set(symbols)]
+  const entries = await Promise.all(unique.map(async (s) => [s, await fetchCurrentPrice(s)] as const))
+  return Object.fromEntries(entries)
+}
+
 export async function fetchMarketOverview(): Promise<MarketOverview> {
   let fearGreed = 50
   let fearGreedLabel = 'Neutral'

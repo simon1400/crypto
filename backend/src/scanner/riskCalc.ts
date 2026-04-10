@@ -1,5 +1,6 @@
 import { MultiTFIndicators } from '../services/indicators'
 import { ScoredSignal, ScoreBreakdown } from './scoring'
+import { round } from './utils/round'
 
 // Phase C: Trade Construction
 // Strategy-specific SL/TP behavior:
@@ -324,8 +325,3 @@ function buildEntryModel(
   }
 }
 
-function round(v: number): number {
-  if (v > 100) return Math.round(v * 100) / 100
-  if (v > 1) return Math.round(v * 10000) / 10000
-  return Math.round(v * 1000000) / 1000000
-}
