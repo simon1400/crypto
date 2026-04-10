@@ -1,38 +1,39 @@
-// Fetch funding rate from MEXC Futures API (free, no auth needed)
+// Funding rate из Bybit linear perpetual.
+// Раньше был MEXC — переведено на Bybit чтобы данные совпадали с биржей торговли.
+
+import { fetchBybitTicker } from './bybitMarket'
 
 export interface FundingData {
   symbol: string
-  fundingRate: number    // e.g. 0.0001 = 0.01%
+  fundingRate: number    // например 0.0001 = 0.01% за 8 часов
   nextFundingTime: number
 }
 
 export async function fetchFundingRate(symbol: string): Promise<FundingData | null> {
-  try {
-    // MEXC futures funding rate endpoint
-    const url = `https://contract.mexc.com/api/v1/contract/funding_rate/${symbol}`
-    const res = await fetch(url)
-    if (!res.ok) return null
-    const json = await res.json() as any
-    if (!json.success || !json.data) return null
-
-    return {
-      symbol,
-      fundingRate: json.data.fundingRate ?? 0,
-      nextFundingTime: json.data.nextSettleTime ?? 0,
-    }
-  } catch {
-    return null
+  // symbol может прийти как 'BTCUSDT' или 'BTC' — нормализуем
+  const sym = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`
+  const ticker = await fetchBybitTicker(sym)
+  if (!ticker) return null
+  return {
+    symbol: sym,
+    fundingRate: ticker.fundingRate,
+    nextFundingTime: ticker.nextFundingTime,
   }
 }
 
-// Batch fetch for multiple coins
+// Batch fetch для всех монет сканера за один проход
 export async function fetchFundingRates(coins: string[]): Promise<Record<string, FundingData>> {
   const results: Record<string, FundingData> = {}
-  const promises = coins.map(async (coin) => {
-    const symbol = `${coin}_USDT`
-    const data = await fetchFundingRate(symbol)
-    if (data) results[coin] = data
-  })
-  await Promise.all(promises)
+  // Делаем параллельно, но батчами чтобы не упереться в rate limit
+  const BATCH_SIZE = 20
+  for (let i = 0; i < coins.length; i += BATCH_SIZE) {
+    const batch = coins.slice(i, i + BATCH_SIZE)
+    await Promise.all(
+      batch.map(async (coin) => {
+        const data = await fetchFundingRate(coin)
+        if (data) results[coin] = data
+      }),
+    )
+  }
   return results
 }

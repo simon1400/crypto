@@ -1,11 +1,11 @@
 import { prisma } from '../db/prisma'
-import { fetchOHLCV_MEXC, fetchCurrentPrice } from './market'
+import { fetchOHLCV, fetchCurrentPrice } from './market'
 
 // Cache resolved symbols to avoid repeated lookups
 const symbolCache: Record<string, string | null> = {}
 
 /**
- * Auto-resolve the correct MEXC symbol for a coin ticker.
+ * Auto-resolve the correct Bybit symbol for a coin ticker.
  * Tries COINUSDT first, then common suffixes (SOL, ETH, BASE, etc.)
  * Validates price is in the same ballpark as the signal entry.
  */
@@ -43,7 +43,7 @@ async function autoResolveSymbol(coin: string, entryPrice: number): Promise<stri
 
   // Nothing found
   symbolCache[cacheKey] = null
-  console.log(`[SymbolResolver] ${coin} → no matching symbol found on MEXC`)
+  console.log(`[SymbolResolver] ${coin} → no matching symbol found on Bybit`)
   return null
 }
 
@@ -103,9 +103,9 @@ async function updateSignalStatus(signal: {
 
   let candles
   try {
-    candles = await fetchOHLCV_MEXC(symbol, interval, limit)
+    candles = await fetchOHLCV(symbol, interval, limit)
   } catch {
-    console.log(`[SignalTracker] Cannot fetch ${symbol} on MEXC, skipping`)
+    console.log(`[SignalTracker] Cannot fetch ${symbol} on any exchange, skipping`)
     return
   }
 

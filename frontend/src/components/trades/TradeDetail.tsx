@@ -196,12 +196,15 @@ export default function TradeDetail({ trade, onClose, onRefresh }: { trade: Trad
               <div className="space-y-1">
                 {tps.map((tp, i) => {
                   const tpPct = ((tp.price - trade.entryPrice) * direction / trade.entryPrice) * 100 * trade.leverage
+                  const portionMargin = trade.amount * (tp.percent / 100)
+                  const profitUsd = portionMargin * (tpPct / 100)
                   const hit = closes.find((c, ci) => ci === i && !c.isSL)
                   return (
                     <div key={i} className={`flex items-center justify-between px-3 py-2 rounded-lg text-sm ${hit ? 'bg-long/5' : 'bg-input'}`}>
                       <span className="text-text-secondary">TP{i + 1}</span>
                       <span className="font-mono text-text-primary">${tp.price}</span>
                       <span className="text-long text-xs">+{tpPct.toFixed(2)}%</span>
+                      <span className="text-long font-mono text-xs">+{fmt2(profitUsd)}$</span>
                       <span className="text-text-secondary text-xs">{tp.percent}%</span>
                       {hit && <span className="text-long text-xs">&#10003;</span>}
                     </div>

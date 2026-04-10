@@ -17,6 +17,8 @@ import { startAutoListener } from './trading/autoListener'
 import { seedTickerMappings } from './trading/tickerMapper'
 import { trackScannerTrades } from './services/scannerTracker'
 import { startFundingTracker } from './services/fundingTracker'
+import { startLiquidationListener } from './services/liquidations'
+import { SCAN_COINS } from './scanner/coinScanner'
 import { prisma } from './db/prisma'
 import klinesRouter from './routes/klines'
 
@@ -67,6 +69,10 @@ app.listen(PORT, () => {
   // Funding rate tracker — каждые 5 минут проверяет что прошёл 8h boundary,
   // начисляет/списывает funding для открытых сделок (виртуальная симуляция)
   startFundingTracker()
+
+  // Liquidation WebSocket listener — копит ликвидации в памяти rolling 60min,
+  // используется в скоринге сканера и в GPT-промптах. Без отдельного UI.
+  startLiquidationListener(SCAN_COINS)
 
   // Start WebSocket listener for real-time Bybit events
   startWsListener().catch(err =>

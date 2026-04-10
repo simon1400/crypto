@@ -3,6 +3,8 @@ import { computeIndicators, MultiTFIndicators } from '../services/indicators'
 import { fetchFundingRates } from '../services/fundingRate'
 import { fetchOpenInterests } from '../services/openInterest'
 import { fetchAllCoinNews } from '../services/news'
+import { fetchLongShortRatios } from '../services/longShortRatio'
+import { getLiquidationStats } from '../services/liquidations'
 import { detectMarketRegime, RegimeContext } from './marketRegime'
 import { detectCoinRegime, CoinRegimeContext } from './coinRegime'
 import { runStrategies } from './strategies/index'
@@ -372,11 +374,12 @@ export async function runScan(
     console.log(`[Scanner] Starting scan for ${coins.length} coins...`)
 
     // === Phase A: Discovery ===
-    const [market, fundingMap, oiMap, newsMap] = await Promise.all([
+    const [market, fundingMap, oiMap, newsMap, lsrMap] = await Promise.all([
       fetchMarketOverview(),
       fetchFundingRates(coins),
       fetchOpenInterests(coins),
       fetchAllCoinNews(coins.slice(0, 10)),
+      fetchLongShortRatios(coins),
     ])
 
     const coinIndicators: Record<string, MultiTFIndicators> = {}
@@ -456,7 +459,19 @@ export async function runScan(
       funnel.strategyCandidates++
       funnel.byStrategy[rawSignal.strategy] = (funnel.byStrategy[rawSignal.strategy] || 0) + 1
 
-      const scored = scoreSignal(rawSignal, regime, fundingMap[coin], newsMap[coin], oiMap[coin])
+      // Liquidations: in-memory rolling 15min window от WS
+      const liqStats = getLiquidationStats(coin, 15)
+      const liqPayload = liqStats.totalUsd > 0 ? liqStats : null
+
+      const scored = scoreSignal(
+        rawSignal,
+        regime,
+        fundingMap[coin],
+        newsMap[coin],
+        oiMap[coin],
+        liqPayload,
+        lsrMap[coin],
+      )
 
       if (scored.volumeKill) {
         funnel.rejectedByVolume++
@@ -499,12 +514,15 @@ export async function runScan(
       let gptAnnotation: GPTAnnotation
 
       if (useGPT) {
+        const liqStats = getLiquidationStats(signal.coin, 15)
         gptAnnotation = await gptAnnotateSignal(
           signal,
           regime,
           fundingMap[signal.coin],
           newsMap[signal.coin],
           oiMap[signal.coin],
+          liqStats.totalUsd > 0 ? liqStats : null,
+          lsrMap[signal.coin],
         )
       } else {
         gptAnnotation = {
@@ -580,6 +598,11 @@ export async function runScan(
               funding: fundingMap[r.signal.coin] ?? null,
               oi: oiMap[r.signal.coin] ?? null,
               news: newsMap[r.signal.coin] ?? null,
+              liquidations: (() => {
+                const s = getLiquidationStats(r.signal.coin, 15)
+                return s.totalUsd > 0 ? s : null
+              })(),
+              lsr: lsrMap[r.signal.coin] ?? null,
               category: r.category,
               scoreBand: r.scoreBand,
               entryQuality: r.entryQuality,

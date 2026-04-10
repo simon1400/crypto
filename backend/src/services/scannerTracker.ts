@@ -176,6 +176,10 @@ async function tryMergeEntryPair(filledTradeId: number, notes: string) {
   // Delete both old trades
   await prisma.trade.deleteMany({ where: { id: { in: [t1.id, t2.id] } } })
 
+  // Сохраняем Score из исходных notes (если был)
+  const scoreMatch = (t1.notes || t2.notes || '').match(/Score:\s*(\d+)/)
+  const scorePart = scoreMatch ? ` | Score: ${scoreMatch[1]}` : ''
+
   // Create merged trade — переносим суммарные fees (entry fees уже были списаны)
   const merged = await prisma.trade.create({
     data: {
@@ -192,7 +196,7 @@ async function tryMergeEntryPair(filledTradeId: number, notes: string) {
       fees: t1.fees + t2.fees,
       fundingPaid: t1.fundingPaid + t2.fundingPaid,
       openedAt: new Date(),
-      notes: `Merged ${groupId}: #${t1.id} ($${t1.entryPrice}) + #${t2.id} ($${t2.entryPrice}) → avg $${avgEntry}`,
+      notes: `Merged ${groupId}: #${t1.id} ($${t1.entryPrice}) + #${t2.id} ($${t2.entryPrice}) → avg $${avgEntry}${scorePart}`,
     },
   })
 

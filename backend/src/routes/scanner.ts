@@ -693,7 +693,11 @@ router.post('/merge-entry', async (req, res) => {
     // Delete both old trades
     await prisma.trade.deleteMany({ where: { id: { in: [trade1Id, trade2Id] } } })
 
-    // Create merged trade
+    // Сохраняем Score из исходных notes (если был)
+    const scoreMatch = (t1.notes || t2.notes || '').match(/Score:\s*(\d+)/)
+    const scorePart = scoreMatch ? ` | Score: ${scoreMatch[1]}` : ''
+
+    // Create merged trade — переносим суммарные fees, fundingPaid и orderType
     const merged = await prisma.trade.create({
       data: {
         coin: t1.coin,
@@ -705,7 +709,10 @@ router.post('/merge-entry', async (req, res) => {
         takeProfits: newTPs,
         status: 'OPEN',
         source: 'ENTRY_ANALYZER',
-        notes: `Merged from #${trade1Id} ($${t1.entryPrice}) + #${trade2Id} ($${t2.entryPrice}) → avg $${avgEntry}`,
+        entryOrderType: t1.entryOrderType,
+        fees: t1.fees + t2.fees,
+        fundingPaid: t1.fundingPaid + t2.fundingPaid,
+        notes: `Merged from #${trade1Id} ($${t1.entryPrice}) + #${trade2Id} ($${t2.entryPrice}) → avg $${avgEntry}${scorePart}`,
       },
     })
 

@@ -19,12 +19,26 @@ const MEXC_INTERVAL_MAP: Record<string, string> = {
   '1h': '60m', '4h': '4h', '8h': '8h', '1d': '1d',
 }
 
+/**
+ * Универсальный fetchOHLCV: Bybit linear перпетуалы → Binance fallback → MEXC fallback.
+ *
+ * Bybit — основной источник так как пользователь торгует там.
+ * Это гарантирует что индикаторы и скоринг считаются на тех же свечах
+ * что и реальные позиции на бирже исполнения.
+ */
 export async function fetchOHLCV(
   symbol: string,
   interval = '4h',
   limit = 60
 ): Promise<OHLCV[]> {
-  // Try Binance first, fallback to MEXC
+  // 1) Bybit linear (primary)
+  try {
+    const { fetchBybitKlines } = await import('./bybitMarket')
+    const candles = await fetchBybitKlines(symbol, interval, limit)
+    if (candles.length > 0) return candles
+  } catch {}
+
+  // 2) Binance / 3) MEXC fallback
   const mexcInterval = MEXC_INTERVAL_MAP[interval] || interval
   const exchanges = [
     `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,

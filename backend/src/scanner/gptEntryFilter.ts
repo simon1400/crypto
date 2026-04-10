@@ -105,8 +105,10 @@ Support: $${tf4h.support} | Resistance: $${tf4h.resistance}
 Режим: ${regime.regime} (confidence: ${regime.confidence}%)
 BTC тренд: ${regime.btcTrend}
 Fear & Greed: ${regime.fearGreedZone}
-${result.funding ? `Funding Rate: ${(result.funding.fundingRate * 100).toFixed(4)}%` : ''}
-${result.oi ? `Open Interest: $${result.oi.openInterest.toLocaleString()}` : ''}
+${result.funding ? `Funding Rate (8h): ${(result.funding.fundingRate * 100).toFixed(4)}% ${result.funding.fundingRate > 0.0005 ? '⚠️ перегрев лонгов' : result.funding.fundingRate < -0.0005 ? '⚠️ перегрев шортов' : ''}` : ''}
+${result.oi ? `Open Interest: $${result.oi.openInterestUsd.toLocaleString()} | OI Δ1h: ${result.oi.oiChangePct1h > 0 ? '+' : ''}${result.oi.oiChangePct1h}% | OI Δ4h: ${result.oi.oiChangePct4h > 0 ? '+' : ''}${result.oi.oiChangePct4h}%` : ''}
+${result.liquidations && result.liquidations.totalUsd > 0 ? `Ликвидации (${result.liquidations.windowMinutes}m): $${(result.liquidations.totalUsd / 1000).toFixed(0)}k всего · лонгов $${(result.liquidations.longsLiqUsd / 1000).toFixed(0)}k · шортов $${(result.liquidations.shortsLiqUsd / 1000).toFixed(0)}k` : ''}
+${result.lsr ? `Long/Short ratio: ${(result.lsr.buyRatio * 100).toFixed(0)}% / ${(result.lsr.sellRatio * 100).toFixed(0)}%${result.lsr.buyRatio > 0.7 ? ' ⚠️ толпа в лонгах' : result.lsr.buyRatio < 0.3 ? ' ⚠️ толпа в шортах' : ''}` : ''}
 ${result.news && result.news.total > 0 ? `Новости: ${result.news.score > 0 ? '+' : ''}${result.news.score} (${result.news.positive}⬆ ${result.news.negative}⬇)` : ''}`
 
   try {

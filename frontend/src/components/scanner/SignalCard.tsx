@@ -143,6 +143,85 @@ export default function SignalCard({ signal, onStatusChange, onDelete, balance, 
         })()}
       </div>
 
+      {/* Market context badges: funding / OI delta / liquidations / L:S ratio */}
+      {signal.marketContext && (() => {
+        const mc = signal.marketContext as any
+        const funding = mc.funding
+        const oi = mc.oi
+        const liq = mc.liquidations
+        const lsr = mc.lsr
+        const fundingPct = funding?.fundingRate ? funding.fundingRate * 100 : 0
+        const fundingHot = Math.abs(fundingPct) > 0.05
+        const longShare = lsr?.buyRatio ? lsr.buyRatio * 100 : null
+        const lsrExtreme = longShare != null && (longShare > 70 || longShare < 30)
+        const oiDelta = oi?.oiChangePct1h ?? 0
+        const oiSig = Math.abs(oiDelta) > 1
+        const liqUsd = liq?.totalUsd ?? 0
+        const liqK = Math.round(liqUsd / 1000)
+        const showAnything = fundingPct !== 0 || oi || liq || lsr
+        if (!showAnything) return null
+
+        return (
+          <div className="flex flex-wrap gap-1.5 mb-3 text-xs">
+            {funding && (
+              <span
+                title={`Funding rate за 8h. ${fundingPct > 0 ? 'Лонги платят шортам' : 'Шорты платят лонгам'}`}
+                className={`px-1.5 py-0.5 rounded font-mono border ${
+                  fundingHot
+                    ? fundingPct > 0
+                      ? 'bg-short/10 text-short border-short/30'
+                      : 'bg-long/10 text-long border-long/30'
+                    : 'bg-input text-text-secondary border-card'
+                }`}
+              >
+                Fund {fundingPct > 0 ? '+' : ''}{fundingPct.toFixed(3)}%
+              </span>
+            )}
+            {oi && (
+              <span
+                title={`Open Interest 1h: ${oiDelta.toFixed(2)}%, 4h: ${(oi.oiChangePct4h ?? 0).toFixed(2)}%`}
+                className={`px-1.5 py-0.5 rounded font-mono border ${
+                  oiSig
+                    ? oiDelta > 0
+                      ? 'bg-long/10 text-long border-long/30'
+                      : 'bg-short/10 text-short border-short/30'
+                    : 'bg-input text-text-secondary border-card'
+                }`}
+              >
+                OI {oiDelta > 0 ? '+' : ''}{oiDelta.toFixed(2)}%
+              </span>
+            )}
+            {liq && liqUsd > 0 && (
+              <span
+                title={`Ликвидации за ${liq.windowMinutes}m: лонги $${(liq.longsLiqUsd / 1000).toFixed(0)}k, шорты $${(liq.shortsLiqUsd / 1000).toFixed(0)}k`}
+                className={`px-1.5 py-0.5 rounded font-mono border ${
+                  liqUsd > 500_000
+                    ? 'bg-accent/15 text-accent border-accent/40'
+                    : 'bg-input text-text-secondary border-card'
+                }`}
+              >
+                🔥 ${liqK}k liq
+                {liq.longsLiqUsd > liq.shortsLiqUsd ? ' L↓' : ' S↓'}
+              </span>
+            )}
+            {lsr && longShare != null && (
+              <span
+                title={`Long/Short account ratio (1h)`}
+                className={`px-1.5 py-0.5 rounded font-mono border ${
+                  lsrExtreme
+                    ? longShare > 70
+                      ? 'bg-long/10 text-long border-long/30'
+                      : 'bg-short/10 text-short border-short/30'
+                    : 'bg-input text-text-secondary border-card'
+                }`}
+              >
+                L:S {longShare.toFixed(0)}/{(100 - longShare).toFixed(0)}
+              </span>
+            )}
+          </div>
+        )
+      })()}
+
       {/* Closes history */}
       {closes.length > 0 && (
         <div className="mb-3 space-y-1">

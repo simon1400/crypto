@@ -12,6 +12,8 @@ import { gptAnnotateEntrySignal, EntryGPTAnnotation } from './gptEntryFilter'
 import { FundingData } from '../services/fundingRate'
 import { OIData } from '../services/openInterest'
 import { NewsSentiment } from '../services/news'
+import { getLiquidationStats, LiquidationStats } from '../services/liquidations'
+import { fetchLongShortRatios, LSRData } from '../services/longShortRatio'
 
 // === Level clustering for optimal limit order placement ===
 
@@ -61,6 +63,8 @@ export interface EntryAnalysisResult {
   funding: FundingData | null
   oi: OIData | null
   news: NewsSentiment | null
+  liquidations: LiquidationStats | null
+  lsr: LSRData | null
 }
 
 let isAnalyzing = false
@@ -342,12 +346,13 @@ export async function analyzeEntries(
   try {
     console.log(`[EntryAnalyzer] Analyzing ${coins.length} coins...`)
 
-    // Fetch market data
-    const [market, fundingMap, oiMap, newsMap] = await Promise.all([
+    // Fetch market data + LSR
+    const [market, fundingMap, oiMap, newsMap, lsrMap] = await Promise.all([
       fetchMarketOverview(),
       fetchFundingRates(coins),
       fetchOpenInterests(coins),
       fetchAllCoinNews(coins),
+      fetchLongShortRatios(coins),
     ])
 
     // Fetch indicators for all coins + BTC
@@ -390,7 +395,18 @@ export async function analyzeEntries(
       if (!ind) continue
 
       try {
-        const result = analyzeCoin(coin, ind, btcInd || null, regime, fundingMap[coin] || null, oiMap[coin] || null, newsMap[coin] || null)
+        const liquidations = getLiquidationStats(coin, 15)
+        const result = analyzeCoin(
+          coin,
+          ind,
+          btcInd || null,
+          regime,
+          fundingMap[coin] || null,
+          oiMap[coin] || null,
+          newsMap[coin] || null,
+          liquidations.totalUsd > 0 ? liquidations : null,
+          lsrMap[coin] || null,
+        )
         if (!result) {
           console.log(`[EntryAnalyzer] ${coin}: no valid entry levels found`)
           continue
@@ -427,6 +443,8 @@ function analyzeCoin(
   funding: FundingData | null,
   oi: OIData | null,
   news: NewsSentiment | null,
+  liquidations: LiquidationStats | null,
+  lsr: LSRData | null,
 ): EntryAnalysisResult | null {
   const price = ind.tf1h.price
   // ATR from indicators may be 0 for cheap coins due to rounding — recalculate with full precision
@@ -453,7 +471,7 @@ function analyzeCoin(
   let reasons: string[] = []
 
   if (rawSignal) {
-    const scored = scoreSignal(rawSignal, regime, funding, news, oi)
+    const scored = scoreSignal(rawSignal, regime, funding, news, oi, liquidations, lsr)
     score = scored.score
     strategy = rawSignal.strategy
     reasons = rawSignal.reasons
@@ -568,6 +586,8 @@ function analyzeCoin(
     funding,
     oi,
     news,
+    liquidations,
+    lsr,
   }
 }
 

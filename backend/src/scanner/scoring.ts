@@ -3,6 +3,8 @@ import { RegimeContext } from './marketRegime'
 import { FundingData } from '../services/fundingRate'
 import { OIData } from '../services/openInterest'
 import { NewsSentiment } from '../services/news'
+import { LiquidationStats } from '../services/liquidations'
+import { LSRData } from '../services/longShortRatio'
 
 // === 7 Feature Groups ===
 // Each group aggregates correlated indicators into 1 orthogonal subscore.
@@ -44,6 +46,8 @@ export function scoreSignal(
   funding?: FundingData | null,
   news?: NewsSentiment | null,
   oi?: OIData | null,
+  liquidations?: LiquidationStats | null,
+  lsr?: LSRData | null,
 ): ScoredSignal {
   const { indicators: ind, type, strategy } = raw
   const { tf15m, tf1h, tf4h } = ind
@@ -361,6 +365,63 @@ export function scoreSignal(
 
   if (oi && oi.openInterest > 0) {
     marketContext += 1
+  }
+
+  // === OI delta % (новый фактор) ===
+  // Растущий OI + цена в направлении сделки = подтверждение набора позиций
+  // Растущий OI против сделки = build-up против → риск ликвидации
+  if (oi && Math.abs(oi.oiChangePct1h) > 0.1) {
+    const oiUp = oi.oiChangePct1h > 0
+    const oiStrong = Math.abs(oi.oiChangePct1h) > 2 // >2% за час = сильный набор
+    if (isLong && oiUp) marketContext += oiStrong ? 2 : 1
+    else if (!isLong && oiUp) marketContext += oiStrong ? 2 : 1
+    // Падение OI на сильном движении = закрытие позиций (умеренный негатив)
+    else if (oiStrong && !oiUp) marketContext -= 1
+  }
+
+  // === Liquidations cascade (новый фактор) ===
+  // После массовых ликвидаций часто бывает reversal в обратную сторону.
+  // Sell-сторонние ликвидации = вынесли лонгов → потенциал отскока (LONG бонус).
+  // Buy-сторонние ликвидации = вынесли шортов → потенциал отката (SHORT бонус).
+  if (liquidations && liquidations.totalUsd > 0) {
+    const longLiq = liquidations.longsLiqUsd
+    const shortLiq = liquidations.shortsLiqUsd
+    const total = liquidations.totalUsd
+
+    // Контртренд: сильно вынесли лонгов → reversal LONG
+    if (isLong && longLiq > 100_000 && longLiq / total > 0.7) {
+      if (longLiq > 1_000_000) marketContext += 4
+      else if (longLiq > 500_000) marketContext += 3
+      else marketContext += 2
+    }
+    // Контртренд: сильно вынесли шортов → reversal SHORT
+    else if (!isLong && shortLiq > 100_000 && shortLiq / total > 0.7) {
+      if (shortLiq > 1_000_000) marketContext += 4
+      else if (shortLiq > 500_000) marketContext += 3
+      else marketContext += 2
+    }
+    // По тренду: ликвидации в нашу сторону = риск, мы можем стать следующими
+    else if (isLong && shortLiq > 500_000 && shortLiq / total > 0.7) {
+      marketContext -= 1 // мы на стороне которая выносит — perekuplennost'
+    }
+    else if (!isLong && longLiq > 500_000 && longLiq / total > 0.7) {
+      marketContext -= 1
+    }
+  }
+
+  // === Long/Short Ratio (новый фактор) ===
+  // Crowd extremes → contrarian
+  // buyRatio > 0.7 = большинство в лонгах → contrarian SHORT
+  // buyRatio < 0.3 = большинство в шортах → contrarian LONG
+  if (lsr) {
+    const longShare = lsr.buyRatio
+    if (!isLong && longShare > 0.75) marketContext += 3 // crowded longs → SHORT
+    else if (!isLong && longShare > 0.65) marketContext += 1
+    else if (isLong && longShare < 0.25) marketContext += 3 // crowded shorts → LONG
+    else if (isLong && longShare < 0.35) marketContext += 1
+    // По тренду crowd = небольшой штраф
+    else if (isLong && longShare > 0.75) marketContext -= 2
+    else if (!isLong && longShare < 0.25) marketContext -= 2
   }
 
   // Fear & Greed

@@ -1,37 +1,67 @@
-// Fetch Open Interest from MEXC Futures API (free, no auth needed)
+// Open Interest из Bybit linear perpetual.
+// Раньше был MEXC, без change %. Теперь — Bybit с историей за последний час.
+
+import { fetchBybitTicker, fetchBybitOIHistory } from './bybitMarket'
 
 export interface OIData {
   symbol: string
-  openInterest: number       // contract value in USDT
-  openInterestChange: number // % change (calculated from recent data)
+  openInterest: number       // в base coins (например, BTC)
+  openInterestUsd: number    // в USDT (notional)
+  oiChangePct1h: number      // изменение OI за последний час, %
+  oiChangePct4h: number      // изменение OI за последние 4 часа, %
 }
 
+/**
+ * Получаем текущий OI + историю за 4 часа (1h интервал).
+ * Считаем дельту: текущая точка vs точка 1h/4h назад.
+ */
 export async function fetchOpenInterest(symbol: string): Promise<OIData | null> {
-  try {
-    const url = `https://contract.mexc.com/api/v1/contract/open_interest/${symbol}`
-    const res = await fetch(url)
-    if (!res.ok) return null
-    const json = await res.json() as any
-    if (!json.success || !json.data) return null
+  const sym = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`
 
-    return {
-      symbol,
-      openInterest: json.data.openInterest ?? 0,
-      openInterestChange: 0, // Will be computed by comparing snapshots
+  const [ticker, history] = await Promise.all([
+    fetchBybitTicker(sym),
+    fetchBybitOIHistory(sym, '1h', 5),
+  ])
+
+  if (!ticker) return null
+
+  let oiChange1h = 0
+  let oiChange4h = 0
+  if (history.length >= 2) {
+    const current = history[history.length - 1].oi
+    const prev1h = history[history.length - 2].oi
+    if (prev1h > 0) {
+      oiChange1h = ((current - prev1h) / prev1h) * 100
     }
-  } catch {
-    return null
+    if (history.length >= 5) {
+      const prev4h = history[history.length - 5].oi
+      if (prev4h > 0) {
+        oiChange4h = ((current - prev4h) / prev4h) * 100
+      }
+    }
+  }
+
+  return {
+    symbol: sym,
+    openInterest: ticker.openInterest,
+    openInterestUsd: ticker.openInterestValue,
+    oiChangePct1h: Math.round(oiChange1h * 100) / 100,
+    oiChangePct4h: Math.round(oiChange4h * 100) / 100,
   }
 }
 
-// Batch fetch for multiple coins
+// Batch fetch для сканера
 export async function fetchOpenInterests(coins: string[]): Promise<Record<string, OIData>> {
   const results: Record<string, OIData> = {}
-  const promises = coins.map(async (coin) => {
-    const symbol = `${coin}_USDT`
-    const data = await fetchOpenInterest(symbol)
-    if (data) results[coin] = data
-  })
-  await Promise.all(promises)
+  const BATCH_SIZE = 10 // OI history endpoint медленнее, держим меньше параллелизма
+  for (let i = 0; i < coins.length; i += BATCH_SIZE) {
+    const batch = coins.slice(i, i + BATCH_SIZE)
+    await Promise.all(
+      batch.map(async (coin) => {
+        const data = await fetchOpenInterest(coin)
+        if (data) results[coin] = data
+      }),
+    )
+  }
   return results
 }

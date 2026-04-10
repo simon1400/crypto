@@ -4,6 +4,8 @@ import { RegimeContext } from './marketRegime'
 import { FundingData } from '../services/fundingRate'
 import { NewsSentiment } from '../services/news'
 import { OIData } from '../services/openInterest'
+import { LiquidationStats } from '../services/liquidations'
+import { LSRData } from '../services/longShortRatio'
 
 let _openai: OpenAI | null = null
 function getOpenAI() {
@@ -72,6 +74,8 @@ export async function gptAnnotateSignal(
   funding?: FundingData | null,
   news?: NewsSentiment | null,
   oi?: OIData | null,
+  liquidations?: LiquidationStats | null,
+  lsr?: LSRData | null,
 ): Promise<GPTAnnotation> {
   const tf1h = signal.indicators.tf1h
   const tf4h = signal.indicators.tf4h
@@ -115,8 +119,10 @@ Support: $${tf4h?.support} | Resistance: $${tf4h?.resistance}
 BTC тренд: ${regime.btcTrend}
 Fear & Greed: ${regime.fearGreedZone}
 Volatility: ${regime.volatility}
-${funding ? `Funding Rate: ${(funding.fundingRate * 100).toFixed(4)}%` : ''}
-${oi ? `Open Interest: $${oi.openInterest.toLocaleString()}` : ''}
+${funding ? `Funding Rate (8h): ${(funding.fundingRate * 100).toFixed(4)}% ${funding.fundingRate > 0.0005 ? '⚠️ перегрев лонгов' : funding.fundingRate < -0.0005 ? '⚠️ перегрев шортов' : ''}` : ''}
+${oi ? `Open Interest: $${oi.openInterestUsd.toLocaleString()} | OI Δ1h: ${oi.oiChangePct1h > 0 ? '+' : ''}${oi.oiChangePct1h}% | OI Δ4h: ${oi.oiChangePct4h > 0 ? '+' : ''}${oi.oiChangePct4h}%` : ''}
+${liquidations && liquidations.totalUsd > 0 ? `Ликвидации (${liquidations.windowMinutes}m): $${(liquidations.totalUsd / 1000).toFixed(0)}k всего · лонгов $${(liquidations.longsLiqUsd / 1000).toFixed(0)}k · шортов $${(liquidations.shortsLiqUsd / 1000).toFixed(0)}k${liquidations.largestUsd > 100_000 ? ` · крупнейшая $${(liquidations.largestUsd / 1000).toFixed(0)}k` : ''}` : ''}
+${lsr ? `Long/Short ratio: ${(lsr.buyRatio * 100).toFixed(0)}% / ${(lsr.sellRatio * 100).toFixed(0)}%${lsr.buyRatio > 0.7 ? ' ⚠️ толпа в лонгах' : lsr.buyRatio < 0.3 ? ' ⚠️ толпа в шортах' : ''}` : ''}
 ${news && news.total > 0 ? `Новости: ${news.score > 0 ? '+' : ''}${news.score} (${news.positive}⬆ ${news.negative}⬇)\nЗаголовки: ${news.headlines.slice(0, 3).join('; ')}` : ''}`
 
   try {
