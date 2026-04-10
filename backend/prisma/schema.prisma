@@ -108,24 +108,27 @@ model GeneratedSignal {
 }
 
 model Trade {
-  id          Int      @id @default(autoincrement())
-  coin        String                           // BTCUSDT, ETHUSDT...
-  type        String                           // LONG or SHORT
-  leverage    Int      @default(1)             // 1x-125x
-  entryPrice  Float                            // цена входа
-  amount      Float                            // размер позиции в USDT
-  stopLoss    Float                            // стоп-лосс
-  takeProfits Json                             // [{price: number, percent: number}] — уровни TP и % закрытия
-  closes      Json     @default("[]")          // [{price: number, percent: number, pnl: number, closedAt: string}]
-  closedPct   Float    @default(0)             // суммарно закрыто % позиции (0-100)
-  realizedPnl Float    @default(0)             // реализованный P&L в USDT
-  status      String   @default("OPEN")        // OPEN, PARTIALLY_CLOSED, CLOSED, SL_HIT, CANCELLED
-  source      String   @default("MANUAL")      // MANUAL, SIGNAL, BACKTEST
-  fees        Float    @default(0)             // trading fees (open + close)
-  notes       String?                          // заметки
-  openedAt    DateTime @default(now())
-  closedAt    DateTime?
-  createdAt   DateTime @default(now())
+  id            Int      @id @default(autoincrement())
+  coin          String                           // BTCUSDT, ETHUSDT...
+  type          String                           // LONG or SHORT
+  leverage      Int      @default(1)             // 1x-125x
+  entryPrice    Float                            // цена входа
+  amount        Float                            // размер позиции в USDT (маржа)
+  stopLoss      Float                            // стоп-лосс
+  takeProfits   Json                             // [{price: number, percent: number}] — уровни TP и % закрытия
+  closes        Json     @default("[]")          // [{price: number, percent: number, pnl: number, closedAt: string}]
+  closedPct     Float    @default(0)             // суммарно закрыто % позиции (0-100)
+  realizedPnl   Float    @default(0)             // реализованный P&L в USDT (без вычета fees/funding)
+  status        String   @default("OPEN")        // OPEN, PARTIALLY_CLOSED, CLOSED, SL_HIT, CANCELLED
+  source        String   @default("MANUAL")      // MANUAL, SIGNAL, BACKTEST, SCANNER, ENTRY_ANALYZER
+  entryOrderType String  @default("market")      // market (taker) / limit (maker) — определяет fee вхождения
+  fees          Float    @default(0)             // суммарные trading fees (entry + exit)
+  fundingPaid   Float    @default(0)             // суммарно уплачено funding (положительное = платил, отрицательное = получал)
+  lastFundingAt DateTime?                        // последний снапшот funding (чтобы не начислять дважды)
+  notes         String?                          // заметки
+  openedAt      DateTime @default(now())
+  closedAt      DateTime?
+  createdAt     DateTime @default(now())
 }
 
 model BotConfig {
@@ -143,6 +146,12 @@ model BotConfig {
   telegramChatId          String?
   telegramEnabled         Boolean  @default(false)
   scannerCoins            Json     @default("[]")
+  // === Virtual trading simulation ===
+  virtualBalance          Float    @default(1000)  // текущий виртуальный депозит USDT
+  virtualBalanceStart     Float    @default(1000)  // стартовый депозит (для расчёта ROI)
+  virtualStartedAt        DateTime @default(now()) // когда запущена симуляция
+  takerFeeRate            Float    @default(0.00055) // 0.055% — Bybit default VIP 0
+  makerFeeRate            Float    @default(0.0002)  // 0.02%  — Bybit default VIP 0
   updatedAt               DateTime @updatedAt
   createdAt               DateTime @default(now())
 }

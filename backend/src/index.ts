@@ -16,6 +16,7 @@ import { reconcilePositions } from './trading/positionManager'
 import { startAutoListener } from './trading/autoListener'
 import { seedTickerMappings } from './trading/tickerMapper'
 import { trackScannerTrades } from './services/scannerTracker'
+import { startFundingTracker } from './services/fundingTracker'
 import { prisma } from './db/prisma'
 import klinesRouter from './routes/klines'
 
@@ -62,6 +63,10 @@ app.listen(PORT, () => {
   setInterval(() => {
     trackScannerTrades().catch(err => console.error('[ScannerTracker] Error:', err))
   }, 2000)
+
+  // Funding rate tracker — каждые 5 минут проверяет что прошёл 8h boundary,
+  // начисляет/списывает funding для открытых сделок (виртуальная симуляция)
+  startFundingTracker()
 
   // Start WebSocket listener for real-time Bybit events
   startWsListener().catch(err =>

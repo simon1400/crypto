@@ -6,6 +6,7 @@ export default function NewTradeForm({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false)
   const coinSearch = useCoinSearch('BTC')
   const [type, setType] = useState<'LONG' | 'SHORT'>('LONG')
+  const [orderType, setOrderType] = useState<'market' | 'limit'>('market')
   const [leverage, setLeverage] = useState('10')
   const [entryPrice, setEntryPrice] = useState('')
   const [amount, setAmount] = useState('')
@@ -62,9 +63,10 @@ export default function NewTradeForm({ onCreated }: { onCreated: () => void }) {
         stopLoss: Number(stopLoss), takeProfits,
         fees: fees ? Number(fees) : undefined,
         notes: notes || undefined,
+        orderType,
       })
       setOpen(false)
-      coinSearch.reset('BTC'); setType('LONG'); setLeverage('10')
+      coinSearch.reset('BTC'); setType('LONG'); setOrderType('market'); setLeverage('10')
       setEntryPrice(''); setAmount(''); setStopLoss('')
       setTps([{ price: '', percent: '50' }, { price: '', percent: '50' }])
       setFees('')
@@ -126,6 +128,21 @@ export default function NewTradeForm({ onCreated }: { onCreated: () => void }) {
           <label className="text-xs text-text-secondary">Размер (USDT)</label>
           <input type="number" value={amount} onChange={e => setAmount(e.target.value)}
             step="0.01" placeholder="100" className="w-full bg-input rounded px-3 py-2 text-text-primary" required />
+        </div>
+      </div>
+
+      {/* Order type: market vs limit (влияет на fee taker/maker) */}
+      <div>
+        <label className="text-xs text-text-secondary">Тип входа</label>
+        <div className="flex gap-2 mt-1">
+          <button type="button" onClick={() => setOrderType('market')}
+            className={`flex-1 py-2 rounded text-sm font-medium ${orderType === 'market' ? 'bg-accent/15 text-accent border border-accent/40' : 'bg-input text-text-secondary border border-transparent'}`}>
+            Market <span className="text-[10px] opacity-70">(taker 0.055%)</span>
+          </button>
+          <button type="button" onClick={() => setOrderType('limit')}
+            className={`flex-1 py-2 rounded text-sm font-medium ${orderType === 'limit' ? 'bg-accent/15 text-accent border border-accent/40' : 'bg-input text-text-secondary border border-transparent'}`}>
+            Limit <span className="text-[10px] opacity-70">(maker 0.02%)</span>
+          </button>
         </div>
       </div>
 

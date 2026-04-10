@@ -201,7 +201,7 @@ export default function Positions() {
           <span className="font-mono text-text-primary">
             ${totalMargin.toFixed(2)}
             {balance !== null && (
-              <span className="text-text-secondary"> / ${balance.toFixed(2)} ({exposurePct.toFixed(1)}%)</span>
+              <span className="text-text-secondary"> / ${balance.toFixed(2)} ({exposurePct.toFixed(2)}%)</span>
             )}
           </span>
         </div>

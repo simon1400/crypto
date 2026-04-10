@@ -60,7 +60,7 @@ export default function PnlSummary({ stats, period, onPeriodChange, loading }: P
           <div className="text-text-secondary text-xs mb-1">Win Rate</div>
           {loading ? <Skeleton /> : (
             <div className={`font-mono font-bold text-xl ${winRateColor}`}>
-              {stats ? `${stats.winRate.toFixed(1)}%` : '-'}
+              {stats ? `${stats.winRate.toFixed(2)}%` : '-'}
             </div>
           )}
         </div>

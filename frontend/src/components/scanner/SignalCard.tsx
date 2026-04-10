@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { takeSignalAsTrade, skipSignal, ScannerSignal, SignalClose } from '../../api/client'
-import { formatDate } from '../../lib/formatters'
+import { formatDate, fmt2, fmt2Signed } from '../../lib/formatters'
 import { ScoreBadge, StrategyBadge, ScannerStatusBadge as StatusBadge } from '../StatusBadge'
 import AiAnalysisBlock from './AiAnalysisBlock'
 import { MODEL_LABELS } from './constants'
@@ -17,6 +17,7 @@ export default function SignalCard({ signal, onStatusChange, onDelete, balance, 
   const [selectedModel, setSelectedModel] = useState(0)
   const [amount, setAmount] = useState('')
   const [customLeverage, setCustomLeverage] = useState('')
+  const [orderType, setOrderType] = useState<'market' | 'limit'>('market')
   const [loading, setLoading] = useState(false)
   const isLong = signal.type === 'LONG'
   const mc = signal.marketContext as any
@@ -45,7 +46,7 @@ export default function SignalCard({ signal, onStatusChange, onDelete, balance, 
     setLoading(true)
     try {
       const lev = customLeverage ? Number(customLeverage) : undefined
-      await takeSignalAsTrade(signal.id, Number(amount), active?.type, lev)
+      await takeSignalAsTrade(signal.id, Number(amount), active?.type, lev, orderType)
       setShowTakeForm(false)
       onStatusChange()
     } catch (err: any) {
@@ -75,7 +76,7 @@ export default function SignalCard({ signal, onStatusChange, onDelete, balance, 
         <div className="flex items-center gap-2">
           {hasPnl && (
             <span className={`font-mono font-bold text-sm ${signal.realizedPnl > 0 ? 'text-long' : signal.realizedPnl < 0 ? 'text-short' : 'text-text-secondary'}`}>
-              {signal.realizedPnl > 0 ? '+' : ''}{signal.realizedPnl}$
+              {fmt2Signed(signal.realizedPnl)}$
             </span>
           )}
           <ScoreBadge score={signal.score} />
@@ -151,7 +152,7 @@ export default function SignalCard({ signal, onStatusChange, onDelete, balance, 
               <span className="font-mono text-text-primary">${c.price}</span>
               <span className="text-text-secondary">{c.percent}%</span>
               <span className={`font-mono font-bold ${c.pnl > 0 ? 'text-long' : c.pnl < 0 ? 'text-short' : 'text-text-secondary'}`}>
-                {c.pnl > 0 ? '+' : ''}{c.pnl}$ ({c.pnlPercent > 0 ? '+' : ''}{c.pnlPercent}%)
+                {fmt2Signed(c.pnl)}$ ({fmt2Signed(c.pnlPercent)}%)
               </span>
               {c.isSL && <span className="text-short">SL</span>}
               <span className="text-text-secondary ml-auto">{formatDate(c.closedAt)}</span>
@@ -199,17 +200,34 @@ export default function SignalCard({ signal, onStatusChange, onDelete, balance, 
               />
             </div>
           </div>
+          {/* Order type toggle */}
+          <div>
+            <div className="text-xs text-text-secondary mb-1">Тип входа</div>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setOrderType('market')}
+                className={`flex-1 py-1.5 rounded text-xs font-medium ${orderType === 'market' ? 'bg-accent/15 text-accent border border-accent/40' : 'bg-card text-text-secondary border border-card'}`}>
+                Market <span className="opacity-70">(taker)</span>
+              </button>
+              <button type="button" onClick={() => setOrderType('limit')}
+                className={`flex-1 py-1.5 rounded text-xs font-medium ${orderType === 'limit' ? 'bg-accent/15 text-accent border border-accent/40' : 'bg-card text-text-secondary border border-card'}`}>
+                Limit <span className="opacity-70">(maker)</span>
+              </button>
+            </div>
+          </div>
           {amount && (() => {
             const lev = Number(customLeverage) || active?.leverage || signal.leverage
             const sl = active?.slPercent || (Math.abs((signal.stopLoss - signal.entry) / signal.entry) * 100)
             const position = Number(amount) * lev
             const riskUsd = Number(amount) * (sl / 100) * lev
+            const feeRate = orderType === 'limit' ? 0.0002 : 0.00055
+            const entryFee = position * feeRate
             return (
               <div className="text-xs text-text-secondary space-y-0.5">
                 <div>Позиция: <span className="text-text-primary font-mono">${position}</span></div>
-                <div>Риск: <span className="text-short font-mono">${Math.round(riskUsd * 100) / 100}</span>
-                  {balance > 0 && <span className="ml-1">({(riskUsd / balance * 100).toFixed(1)}% депо)</span>}
+                <div>Риск: <span className="text-short font-mono">${fmt2(riskUsd)}</span>
+                  {balance > 0 && <span className="ml-1">({(riskUsd / balance * 100).toFixed(2)}% депо)</span>}
                 </div>
+                <div>Entry fee: <span className="text-text-primary font-mono">${fmt2(entryFee)}</span> ({orderType})</div>
               </div>
             )
           })()}

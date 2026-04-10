@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { updateTrade, deleteTrade, Trade, TradeTP, TradeClose } from '../../api/client'
-import { formatDate, pnlColor } from '../../lib/formatters'
+import { formatDate, pnlColor, fmt2, fmt2Signed } from '../../lib/formatters'
 import { TradeStatusBadge } from '../StatusBadge'
 import { useCoinSearch } from '../../hooks/useCoinSearch'
 
@@ -183,7 +183,7 @@ export default function TradeDetail({ trade, onClose, onRefresh }: { trade: Trad
               <div className="bg-input rounded-lg p-3">
                 <div className="text-text-secondary text-xs">Stop Loss</div>
                 <div className="text-short font-mono font-semibold">${trade.stopLoss}</div>
-                <div className="text-short text-xs">-{slPct.toFixed(1)}%</div>
+                <div className="text-short text-xs">-{slPct.toFixed(2)}%</div>
               </div>
               <div className="bg-input rounded-lg p-3">
                 <div className="text-text-secondary text-xs">Размер</div>
@@ -201,7 +201,7 @@ export default function TradeDetail({ trade, onClose, onRefresh }: { trade: Trad
                     <div key={i} className={`flex items-center justify-between px-3 py-2 rounded-lg text-sm ${hit ? 'bg-long/5' : 'bg-input'}`}>
                       <span className="text-text-secondary">TP{i + 1}</span>
                       <span className="font-mono text-text-primary">${tp.price}</span>
-                      <span className="text-long text-xs">+{tpPct.toFixed(1)}%</span>
+                      <span className="text-long text-xs">+{tpPct.toFixed(2)}%</span>
                       <span className="text-text-secondary text-xs">{tp.percent}%</span>
                       {hit && <span className="text-long text-xs">&#10003;</span>}
                     </div>
@@ -220,7 +220,7 @@ export default function TradeDetail({ trade, onClose, onRefresh }: { trade: Trad
                       <span className="font-mono text-text-primary">${c.price}</span>
                       <span className="text-text-secondary">{c.percent}%</span>
                       <span className={`font-mono font-semibold ${pnlColor(c.pnl)}`}>
-                        {c.pnl > 0 ? '+' : ''}{c.pnl}$
+                        {fmt2Signed(c.pnl)}$
                       </span>
                       {c.isSL && <span className="text-short text-xs">SL</span>}
                     </div>
@@ -233,11 +233,11 @@ export default function TradeDetail({ trade, onClose, onRefresh }: { trade: Trad
               <span className="text-text-secondary text-sm">Реализовано ({trade.closedPct}%)</span>
               <div className="text-right">
                 <span className={`font-mono font-bold text-lg ${pnlColor(trade.realizedPnl - (trade.fees || 0))}`}>
-                  {(trade.realizedPnl - (trade.fees || 0)) > 0 ? '+' : ''}{Math.round((trade.realizedPnl - (trade.fees || 0)) * 100) / 100}$
+                  {fmt2Signed(trade.realizedPnl - (trade.fees || 0))}$
                 </span>
                 {trade.fees > 0 && (
                   <div className="text-xs text-text-secondary font-mono">
-                    P&L: {trade.realizedPnl > 0 ? '+' : ''}{trade.realizedPnl}$ · Комиссии: -{trade.fees}$
+                    P&L: {fmt2Signed(trade.realizedPnl)}$ · Комиссии: -{fmt2(trade.fees)}$
                   </div>
                 )}
               </div>

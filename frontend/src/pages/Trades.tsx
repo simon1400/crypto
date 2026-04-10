@@ -3,7 +3,7 @@ import {
   getTrades, getTradeStats, getTradeLivePrices, closeAllTrades, deleteAllTrades,
   Trade, TradeStats, TradeLive,
 } from '../api/client'
-import { formatDate, pnlColor } from '../lib/formatters'
+import { formatDate, pnlColor, fmt2, fmt2Signed } from '../lib/formatters'
 import { TradeStatusBadge } from '../components/StatusBadge'
 import NewTradeForm from '../components/trades/NewTradeForm'
 import CloseModal from '../components/trades/CloseModal'
@@ -106,7 +106,7 @@ export default function Trades() {
             .map(([coin, d]) => (
               <div key={coin} className="bg-card rounded-lg px-3 py-2 text-sm">
                 <span className="font-mono font-medium text-text-primary">{coin}</span>
-                <span className={`ml-2 font-mono ${pnlColor(d.pnl)}`}>{d.pnl > 0 ? '+' : ''}{d.pnl}$</span>
+                <span className={`ml-2 font-mono ${pnlColor(d.pnl)}`}>{fmt2Signed(d.pnl)}$</span>
                 <span className="ml-1 text-text-secondary text-xs">({d.wins}/{d.trades})</span>
               </div>
             ))}
@@ -211,9 +211,9 @@ export default function Trades() {
                     )}
                   </td>
                   <td className="py-3 px-2 text-right font-mono">
-                    <span className="text-text-primary">${Math.round(t.amount * 100) / 100}</span>
+                    <span className="text-text-primary">${fmt2(t.amount)}</span>
                     {t.leverage > 1 && (
-                      <div className="text-xs text-text-secondary">${Math.round(t.amount * t.leverage * 100) / 100}</div>
+                      <div className="text-xs text-text-secondary">${fmt2(t.amount * t.leverage)}</div>
                     )}
                   </td>
                   <td className="py-3 px-2 text-right font-mono">
@@ -222,12 +222,11 @@ export default function Trades() {
                       const diff = (t.stopLoss - t.entryPrice) * dir
                       const pct = (diff / t.entryPrice) * 100 * t.leverage
                       const remaining = t.amount * ((100 - t.closedPct) / 100)
-                      const loss = Math.round(remaining * (pct / 100) * 100) / 100
-                      const pctR = Math.round(pct * 100) / 100
+                      const loss = remaining * (pct / 100)
                       return (
-                        <span title={`${loss}$ (${pctR}%)`} className="cursor-help">
+                        <span title={`${fmt2(loss)}$ (${fmt2(pct)}%)`} className="cursor-help">
                           <span className="text-short">${t.stopLoss}</span>
-                          <div className="text-xs text-short/70">{pctR}%</div>
+                          <div className="text-xs text-short/70">{fmt2(pct)}%</div>
                         </span>
                       )
                     })()}
@@ -241,12 +240,11 @@ export default function Trades() {
                       const diff = (maxTp.price - t.entryPrice) * dir
                       const pct = (diff / t.entryPrice) * 100 * t.leverage
                       const remaining = t.amount * ((100 - t.closedPct) / 100)
-                      const profit = Math.round(remaining * (pct / 100) * 100) / 100
-                      const pctR = Math.round(pct * 100) / 100
+                      const profit = remaining * (pct / 100)
                       return (
-                        <span title={`+${profit}$ (+${pctR}%)`} className="cursor-help">
+                        <span title={`+${fmt2(profit)}$ (+${fmt2(pct)}%)`} className="cursor-help">
                           <span className="text-long">${maxTp.price}</span>
-                          <div className="text-xs text-long/70">+{pctR}%</div>
+                          <div className="text-xs text-long/70">+{fmt2(pct)}%</div>
                         </span>
                       )
                     })()}
@@ -256,7 +254,7 @@ export default function Trades() {
                   <td className="py-3 px-2 text-right font-mono text-sm">
                     {t.closedPct > 0 && t.closedPct < 100 ? (
                       <span className={pnlColor(t.realizedPnl - (t.fees || 0))}>
-                        {(t.realizedPnl - (t.fees || 0)) > 0 ? '+' : ''}{Math.round((t.realizedPnl - (t.fees || 0)) * 100) / 100}$
+                        {fmt2Signed(t.realizedPnl - (t.fees || 0))}$
                       </span>
                     ) : (
                       <span className="text-text-secondary">—</span>
@@ -265,14 +263,14 @@ export default function Trades() {
                   <td className="py-3 px-2 text-right font-mono font-semibold">
                     {(t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && livePrices[t.id] ? (
                       <span className={pnlColor(livePrices[t.id].unrealizedPnl)}>
-                        {livePrices[t.id].unrealizedPnl > 0 ? '+' : ''}{livePrices[t.id].unrealizedPnl}$
+                        {fmt2Signed(livePrices[t.id].unrealizedPnl)}$
                         <span className="text-xs ml-1 opacity-70">
-                          ({livePrices[t.id].unrealizedPnlPct > 0 ? '+' : ''}{livePrices[t.id].unrealizedPnlPct}%)
+                          ({fmt2Signed(livePrices[t.id].unrealizedPnlPct)}%)
                         </span>
                       </span>
                     ) : (
                       <span className={pnlColor(t.realizedPnl - (t.fees || 0))}>
-                        {(t.realizedPnl - (t.fees || 0)) > 0 ? '+' : ''}{Math.round((t.realizedPnl - (t.fees || 0)) * 100) / 100}$
+                        {fmt2Signed(t.realizedPnl - (t.fees || 0))}$
                       </span>
                     )}
                   </td>

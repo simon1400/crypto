@@ -1,5 +1,7 @@
 import { prisma } from '../db/prisma'
 import { fetchCurrentPrice } from './market'
+import { adjustVirtualBalance } from './virtualBalance'
+import { calcExitFee } from './fees'
 
 // Tracks SCANNER trades every 2 seconds:
 // 1. PENDING_ENTRY — waits for price to reach or cross entry, then activates
@@ -174,7 +176,7 @@ async function tryMergeEntryPair(filledTradeId: number, notes: string) {
   // Delete both old trades
   await prisma.trade.deleteMany({ where: { id: { in: [t1.id, t2.id] } } })
 
-  // Create merged trade
+  // Create merged trade — переносим суммарные fees (entry fees уже были списаны)
   const merged = await prisma.trade.create({
     data: {
       coin: t1.coin,
@@ -186,6 +188,9 @@ async function tryMergeEntryPair(filledTradeId: number, notes: string) {
       takeProfits: newTPs,
       status: 'OPEN',
       source: 'ENTRY_ANALYZER',
+      entryOrderType: t1.entryOrderType,
+      fees: t1.fees + t2.fees,
+      fundingPaid: t1.fundingPaid + t2.fundingPaid,
       openedAt: new Date(),
       notes: `Merged ${groupId}: #${t1.id} ($${t1.entryPrice}) + #${t2.id} ($${t2.entryPrice}) → avg $${avgEntry}`,
     },
@@ -206,18 +211,28 @@ async function closeTradePortion(
   const portionAmount = trade.amount * (percent / 100)
   const pnlUsdt = portionAmount * (pnlPercent / 100)
 
+  // Авто-закрытие на TP/SL = market = taker fee
+  const exitFee = await calcExitFee(portionAmount, trade.leverage)
+
+  await adjustVirtualBalance(
+    portionAmount + pnlUsdt - exitFee,
+    `${isSL ? 'auto-SL' : 'auto-TP'} ${trade.coin} #${trade.id} pnl=${pnlUsdt.toFixed(2)} fee=${exitFee.toFixed(4)}`,
+  )
+
   const closes = Array.isArray(trade.closes) ? [...trade.closes] : []
   closes.push({
     price: closePrice,
     percent,
     pnl: Math.round(pnlUsdt * 100) / 100,
     pnlPercent: Math.round(pnlPercent * 100) / 100,
+    fee: Math.round(exitFee * 1e6) / 1e6,
     closedAt: new Date().toISOString(),
     isSL,
   })
 
   const newClosedPct = Math.min(100, trade.closedPct + percent)
   const newRealizedPnl = Math.round((trade.realizedPnl + pnlUsdt) * 100) / 100
+  const newFees = Math.round((trade.fees + exitFee) * 1e6) / 1e6
   const isFull = newClosedPct >= 100
 
   await prisma.trade.update({
@@ -226,6 +241,7 @@ async function closeTradePortion(
       closes,
       closedPct: newClosedPct,
       realizedPnl: newRealizedPnl,
+      fees: newFees,
       status: isSL ? 'SL_HIT' : (isFull ? 'CLOSED' : 'PARTIALLY_CLOSED'),
       closedAt: isFull || isSL ? new Date() : null,
     },

@@ -2,6 +2,9 @@ import { Router } from 'express'
 import { runScan, isScannerRunning, SCAN_COINS, expireOldSignals } from '../scanner/coinScanner'
 import { analyzeEntries, isEntryAnalyzerRunning } from '../scanner/entryAnalyzer'
 import { prisma } from '../db/prisma'
+import { assertBudget, BudgetError } from '../services/budget'
+import { adjustVirtualBalance } from '../services/virtualBalance'
+import { OrderType } from '../services/fees'
 
 const router = Router()
 
@@ -168,13 +171,32 @@ router.post('/signals/:id/take', async (req, res) => {
 router.post('/signals/:id/take-trade', async (req, res) => {
   try {
     const id = Number(req.params.id)
-    const { amount, modelType, leverage: customLeverage } = req.body as { amount: number; modelType?: string; leverage?: number }
+    const { amount, modelType, leverage: customLeverage, orderType } = req.body as { amount: number; modelType?: string; leverage?: number; orderType?: OrderType }
 
     if (!amount || amount <= 0) return res.status(400).json({ error: 'amount required (USDT)' })
 
     const signal = await prisma.generatedSignal.findUnique({ where: { id } })
     if (!signal) return res.status(404).json({ error: 'Signal not found' })
     if (signal.status !== 'NEW') return res.status(400).json({ error: 'Signal already taken or closed' })
+
+    const orderTypeNorm: OrderType = orderType === 'limit' ? 'limit' : 'market'
+
+    // Бюджетный гард + расчёт entry fee
+    let entryFee = 0
+    try {
+      // leverage берём из тела или signal — точное значение определим ниже
+      const lev = Number(customLeverage) || signal.leverage
+      const result = await assertBudget(Number(amount), lev, orderTypeNorm)
+      entryFee = result.entryFee
+    } catch (err: any) {
+      if (err instanceof BudgetError) {
+        return res.status(400).json({
+          error: err.message,
+          budget: { balance: err.balance, used: err.usedMargin, requested: err.requested },
+        })
+      }
+      throw err
+    }
 
     // Pick entry model if specified
     const mc = signal.marketContext as any
@@ -199,6 +221,9 @@ router.post('/signals/:id/take-trade', async (req, res) => {
       percent: tpPercents[i] || Math.floor(100 / tpCount),
     }))
 
+    // Списываем entry fee из virtualBalance
+    await adjustVirtualBalance(-entryFee, `entry fee ${signal.coin} scanner ${orderTypeNorm}`)
+
     // Create Trade with PENDING_ENTRY — waits for price to reach entry
     const trade = await prisma.trade.create({
       data: {
@@ -211,6 +236,8 @@ router.post('/signals/:id/take-trade', async (req, res) => {
         takeProfits,
         status: 'PENDING_ENTRY',
         source: 'SCANNER',
+        entryOrderType: orderTypeNorm,
+        fees: entryFee,
         notes: `Scanner signal #${signal.id} | ${signal.strategy} | Score: ${signal.score}${model ? ` | Model: ${model.type}` : ''}`,
       },
     })
@@ -534,7 +561,7 @@ router.delete('/entry-signals/:id', async (req, res) => {
 // POST /api/scanner/take-entry — take entry analysis as 2 trades
 router.post('/take-entry', async (req, res) => {
   try {
-    const { coin, type, amount, leverage, entry1, entry2, stopLoss, score, signalId, takeProfits } = req.body as {
+    const { coin, type, amount, leverage, entry1, entry2, stopLoss, score, signalId, takeProfits, orderType } = req.body as {
       coin: string
       type: string
       amount: number
@@ -545,10 +572,28 @@ router.post('/take-entry', async (req, res) => {
       score?: number
       signalId?: number
       takeProfits: { price: number; percent: number }[]
+      orderType?: OrderType
     }
 
     if (!coin || !type || !amount || !entry1 || !entry2 || !stopLoss) {
       return res.status(400).json({ error: 'Missing required fields' })
+    }
+
+    const orderTypeNorm: OrderType = orderType === 'limit' ? 'limit' : 'market'
+
+    // Бюджетный гард: amount — общая маржа на обе entry-сделки + entry fee на полный объём
+    let entryFeeTotal = 0
+    try {
+      const result = await assertBudget(Number(amount), Number(leverage), orderTypeNorm)
+      entryFeeTotal = result.entryFee
+    } catch (err: any) {
+      if (err instanceof BudgetError) {
+        return res.status(400).json({
+          error: err.message,
+          budget: { balance: err.balance, used: err.usedMargin, requested: err.requested },
+        })
+      }
+      throw err
     }
 
     const groupId = `EA-${Date.now()}`
@@ -557,6 +602,13 @@ router.post('/take-entry', async (req, res) => {
     const amount1 = Math.round(amount * 0.6 * 100) / 100
     const amount2 = Math.round(amount * 0.4 * 100) / 100
     const scoreStr = score ? ` | Score: ${score}` : ''
+
+    // Распределяем общую entry fee пропорционально между двумя сделками
+    const fee1 = Math.round(entryFeeTotal * 0.6 * 1e6) / 1e6
+    const fee2 = Math.round((entryFeeTotal - fee1) * 1e6) / 1e6
+
+    // Списываем общий entry fee
+    await adjustVirtualBalance(-entryFeeTotal, `entry fee ${symbol} entry-analyzer ${orderTypeNorm}`)
 
     // Create Trade 1 (основной вход, 60%)
     const trade1 = await prisma.trade.create({
@@ -570,6 +622,8 @@ router.post('/take-entry', async (req, res) => {
         takeProfits,
         status: 'PENDING_ENTRY',
         source: 'ENTRY_ANALYZER',
+        entryOrderType: orderTypeNorm,
+        fees: fee1,
         notes: `group:${groupId} | Entry 1 (основной)${scoreStr} | Entry 2: $${entry2}`,
       },
     })
@@ -586,6 +640,8 @@ router.post('/take-entry', async (req, res) => {
         takeProfits,
         status: 'PENDING_ENTRY',
         source: 'ENTRY_ANALYZER',
+        entryOrderType: orderTypeNorm,
+        fees: fee2,
         notes: `group:${groupId} | Entry 2 (усреднение)${scoreStr} | Entry 1: $${entry1}`,
       },
     })

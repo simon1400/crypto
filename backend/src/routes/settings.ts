@@ -5,6 +5,7 @@ import { createBybitClient, validateBybitKeys } from '../services/bybit'
 import { startAutoListener, stopAutoListener } from '../trading/autoListener'
 import { getInstrumentInfo } from '../trading/instrumentCache'
 import { sendTestNotification } from '../services/notifier'
+import { getVirtualBalanceInfo, setVirtualBalance } from '../services/virtualBalance'
 
 const router = Router()
 
@@ -31,6 +32,11 @@ router.get('/', async (_req, res) => {
       telegramBotToken: config.telegramBotToken ? '****' + config.telegramBotToken.slice(-4) : null,
       telegramChatId: config.telegramChatId,
       telegramEnabled: config.telegramEnabled,
+      virtualBalance: config.virtualBalance,
+      virtualBalanceStart: config.virtualBalanceStart,
+      virtualStartedAt: config.virtualStartedAt,
+      takerFeeRate: config.takerFeeRate,
+      makerFeeRate: config.makerFeeRate,
     })
   } catch (err: any) {
     console.error('[Settings] GET error:', err)
@@ -54,6 +60,8 @@ router.put('/', async (req, res) => {
       telegramBotToken,
       telegramChatId,
       telegramEnabled,
+      takerFeeRate,
+      makerFeeRate,
     } = req.body
 
     // Validate numeric ranges
@@ -84,6 +92,12 @@ router.put('/', async (req, res) => {
     if (telegramBotToken !== undefined) { updateData.telegramBotToken = telegramBotToken; createData.telegramBotToken = telegramBotToken }
     if (telegramChatId !== undefined) { updateData.telegramChatId = telegramChatId; createData.telegramChatId = telegramChatId }
     if (telegramEnabled !== undefined) { updateData.telegramEnabled = telegramEnabled; createData.telegramEnabled = telegramEnabled }
+    if (takerFeeRate !== undefined && takerFeeRate >= 0 && takerFeeRate <= 0.01) {
+      updateData.takerFeeRate = takerFeeRate; createData.takerFeeRate = takerFeeRate
+    }
+    if (makerFeeRate !== undefined && makerFeeRate >= 0 && makerFeeRate <= 0.01) {
+      updateData.makerFeeRate = makerFeeRate; createData.makerFeeRate = makerFeeRate
+    }
 
     let keyValidationFailed = false
     let balance: string | undefined
@@ -137,6 +151,11 @@ router.put('/', async (req, res) => {
       telegramBotToken: config.telegramBotToken ? '****' + config.telegramBotToken.slice(-4) : null,
       telegramChatId: config.telegramChatId,
       telegramEnabled: config.telegramEnabled,
+      virtualBalance: config.virtualBalance,
+      virtualBalanceStart: config.virtualBalanceStart,
+      virtualStartedAt: config.virtualStartedAt,
+      takerFeeRate: config.takerFeeRate,
+      makerFeeRate: config.makerFeeRate,
     }
 
     if (balance !== undefined) response.balance = balance
@@ -174,6 +193,54 @@ router.post('/test-notification', async (req, res) => {
     }
   } catch (err: any) {
     console.error('[Settings] Test notification error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/settings/virtual-balance — текущий виртуальный депозит + ROI
+router.get('/virtual-balance', async (_req, res) => {
+  try {
+    const info = await getVirtualBalanceInfo()
+    res.json(info)
+  } catch (err: any) {
+    console.error('[Settings] Virtual balance GET error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PUT /api/settings/virtual-balance — установить новый депозит
+//   body: { balance: number, resetStart?: boolean }
+router.put('/virtual-balance', async (req, res) => {
+  try {
+    const { balance, resetStart } = req.body as { balance: number; resetStart?: boolean }
+    if (typeof balance !== 'number' || balance < 0 || balance > 10_000_000) {
+      return res.status(400).json({ error: 'balance must be a number between 0 and 10,000,000' })
+    }
+    const info = await setVirtualBalance(balance, resetStart !== false)
+    res.json(info)
+  } catch (err: any) {
+    console.error('[Settings] Virtual balance PUT error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/settings/reset-simulation — сбросить симуляцию (удалить все сделки + восстановить баланс)
+//   body: { balance: number }
+router.post('/reset-simulation', async (req, res) => {
+  try {
+    const { balance } = req.body as { balance: number }
+    if (typeof balance !== 'number' || balance < 0 || balance > 10_000_000) {
+      return res.status(400).json({ error: 'balance must be a number between 0 and 10,000,000' })
+    }
+
+    // Удаляем все сделки и сбрасываем баланс
+    const { count } = await prisma.trade.deleteMany({})
+    const info = await setVirtualBalance(balance, true)
+
+    console.log(`[Settings] Simulation reset: deleted ${count} trades, balance set to $${balance}`)
+    res.json({ deletedTrades: count, ...info })
+  } catch (err: any) {
+    console.error('[Settings] Reset simulation error:', err)
     res.status(500).json({ error: err.message })
   }
 })

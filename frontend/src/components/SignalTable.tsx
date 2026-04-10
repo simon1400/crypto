@@ -28,7 +28,7 @@ function pnl(signal: Signal): { text: string; color: string } | null {
       ? ((signal.stopLoss - entry) / entry) * 100
       : ((entry - signal.stopLoss) / entry) * 100
     const leveraged = diff * signal.leverage
-    return { text: `${leveraged.toFixed(1)}%`, color: 'text-short' }
+    return { text: `${leveraged.toFixed(2)}%`, color: 'text-short' }
   }
 
   if (signal.status.startsWith('TP')) {
@@ -40,7 +40,7 @@ function pnl(signal: Signal): { text: string; color: string } | null {
       ? ((tp - entry) / entry) * 100
       : ((entry - tp) / entry) * 100
     const leveraged = diff * signal.leverage
-    return { text: `+${leveraged.toFixed(1)}%`, color: 'text-long' }
+    return { text: `+${leveraged.toFixed(2)}%`, color: 'text-long' }
   }
 
   return null

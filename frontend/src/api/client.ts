@@ -105,6 +105,8 @@ export interface Trade {
   closedPct: number
   realizedPnl: number
   fees: number
+  fundingPaid: number
+  entryOrderType: 'market' | 'limit'
   status: string
   source: string
   notes: string | null
@@ -174,7 +176,8 @@ export async function getTradeStats(): Promise<TradeStats> {
 
 export async function createTrade(data: {
   coin: string; type: string; leverage: number; entryPrice: number;
-  amount: number; stopLoss: number; takeProfits: TradeTP[]; fees?: number; notes?: string; source?: string
+  amount: number; stopLoss: number; takeProfits: TradeTP[]; fees?: number; notes?: string; source?: string;
+  orderType?: 'market' | 'limit'
 }): Promise<Trade> {
   const res = await fetch(`${BASE}/api/trades`, {
     method: 'POST', headers: getHeaders(), body: JSON.stringify(data),
@@ -406,11 +409,11 @@ export async function takeSignal(id: number, amount: number): Promise<ScannerSig
   return res.json()
 }
 
-export async function takeSignalAsTrade(id: number, amount: number, modelType?: string, leverage?: number): Promise<{ trade: Trade; signal: { id: number; status: string } }> {
+export async function takeSignalAsTrade(id: number, amount: number, modelType?: string, leverage?: number, orderType: 'market' | 'limit' = 'market'): Promise<{ trade: Trade; signal: { id: number; status: string } }> {
   const res = await fetch(`${BASE}/api/scanner/signals/${id}/take-trade`, {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ amount, modelType, leverage }),
+    body: JSON.stringify({ amount, modelType, leverage, orderType }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }))
@@ -581,6 +584,7 @@ export async function takeEntry(data: {
   score?: number
   signalId?: number
   takeProfits: { price: number; percent: number }[]
+  orderType?: 'market' | 'limit'
 }): Promise<{ trade1: Trade; trade2: Trade; groupId: string }> {
   const res = await fetch(`${BASE}/api/scanner/take-entry`, {
     method: 'POST',
@@ -642,6 +646,11 @@ export interface SettingsResponse {
   hasKeys: boolean
   balance: number | null
   isConnected: boolean
+  virtualBalance: number
+  virtualBalanceStart: number
+  virtualStartedAt: string
+  takerFeeRate: number
+  makerFeeRate: number
 }
 
 export async function getSettings(): Promise<SettingsResponse> {
@@ -666,6 +675,61 @@ export async function saveSettings(data: Partial<SettingsResponse>): Promise<Set
 export async function getBalance(): Promise<{ balance: number | null; error?: string }> {
   const res = await fetch(`${BASE}/api/settings/balance`, { headers: getHeaders() })
   if (!res.ok) return { balance: null, error: 'Failed to fetch balance' }
+  return res.json()
+}
+
+export interface BudgetStatus {
+  balance: number       // virtual balance
+  used: number          // занятая маржа
+  available: number     // balance - used
+  start: number         // стартовый депозит
+  pnl: number           // общий P&L относительно старта
+  roiPct: number
+}
+
+export async function getBudget(): Promise<BudgetStatus> {
+  const res = await fetch(`${BASE}/api/trades/budget`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch budget')
+  return res.json()
+}
+
+export interface VirtualBalanceInfo {
+  balance: number
+  start: number
+  startedAt: string
+  pnl: number
+  roiPct: number
+}
+
+export async function getVirtualBalance(): Promise<VirtualBalanceInfo> {
+  const res = await fetch(`${BASE}/api/settings/virtual-balance`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch virtual balance')
+  return res.json()
+}
+
+export async function setVirtualBalance(balance: number, resetStart = true): Promise<VirtualBalanceInfo> {
+  const res = await fetch(`${BASE}/api/settings/virtual-balance`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ balance, resetStart }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function resetSimulation(balance: number): Promise<{ deletedTrades: number } & VirtualBalanceInfo> {
+  const res = await fetch(`${BASE}/api/settings/reset-simulation`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ balance }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
   return res.json()
 }
 

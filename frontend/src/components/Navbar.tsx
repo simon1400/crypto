@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { getBalance } from '../api/client'
+import { getBudget, BudgetStatus } from '../api/client'
 import KillSwitchButton from './KillSwitchButton'
 
 interface Props {
@@ -9,16 +9,16 @@ interface Props {
 
 export default function Navbar({ onLogout }: Props) {
   const { pathname } = useLocation()
-  const [balance, setBalance] = useState<string | null>(null)
+  const [budget, setBudget] = useState<BudgetStatus | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
 
   const refreshBalance = () => {
-    getBalance().then(b => setBalance(b.balance != null ? String(b.balance) : null)).catch(() => {})
+    getBudget().then(setBudget).catch(() => {})
   }
 
   useEffect(() => {
     refreshBalance()
-    const interval = setInterval(refreshBalance, 30_000)
+    const interval = setInterval(refreshBalance, 15_000)
     return () => clearInterval(interval)
   }, [])
 
@@ -52,8 +52,35 @@ export default function Navbar({ onLogout }: Props) {
 
         {/* Right side: balance, kill switch, logout, burger */}
         <div className="flex items-center gap-2 sm:gap-3">
-          {balance != null && (
-            <span className="font-mono text-xs sm:text-sm text-accent">{parseFloat(balance).toFixed(3)} USDT</span>
+          {budget != null && (
+            <div
+              className="font-mono text-xs sm:text-sm flex flex-col items-end leading-tight"
+              title={
+                `Виртуальный депозит: ${budget.balance.toFixed(2)} USDT\n` +
+                `Старт: ${budget.start.toFixed(2)} USDT\n` +
+                `P&L: ${budget.pnl >= 0 ? '+' : ''}${budget.pnl.toFixed(2)} USDT (${budget.roiPct >= 0 ? '+' : ''}${budget.roiPct.toFixed(2)}%)\n` +
+                `Занято маржой: ${budget.used.toFixed(2)} USDT\n` +
+                `Свободно: ${budget.available.toFixed(2)} USDT`
+              }
+            >
+              <div className="flex items-baseline gap-2">
+                <span className="text-accent">{budget.balance.toFixed(2)} USDT</span>
+                {budget.start > 0 && (
+                  <span className={`text-[10px] ${budget.pnl >= 0 ? 'text-long' : 'text-short'}`}>
+                    {budget.roiPct >= 0 ? '+' : ''}{budget.roiPct.toFixed(2)}%
+                  </span>
+                )}
+              </div>
+              <span className={
+                budget.available < 0
+                  ? 'text-short text-[10px]'
+                  : budget.available < budget.balance * 0.1
+                    ? 'text-accent text-[10px]'
+                    : 'text-text-secondary text-[10px]'
+              }>
+                свободно {budget.available.toFixed(2)}
+              </span>
+            </div>
           )}
           <KillSwitchButton onActivated={refreshBalance} />
           {onLogout && (

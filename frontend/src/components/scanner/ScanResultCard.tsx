@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ScanSignal } from '../../api/client'
 import { QUALITY_COLORS } from '../../lib/constants'
+import { fmt2 } from '../../lib/formatters'
 import { ScoreBadge, StrategyBadge } from '../StatusBadge'
 import { CATEGORY_STYLES, BAND_STYLES, ENTRY_Q_STYLES, MODEL_LABELS } from './constants'
 
@@ -210,8 +211,8 @@ export default function ScanResultCard({ result, onTake, onSkip, onDelete, balan
             return (
               <div className="text-xs text-text-secondary space-y-0.5">
                 <div>Позиция: <span className="text-text-primary font-mono">${position}</span></div>
-                <div>Риск: <span className="text-short font-mono">${Math.round(riskUsd * 100) / 100}</span>
-                  {balance > 0 && <span className="ml-1">({(riskUsd / balance * 100).toFixed(1)}% депо)</span>}
+                <div>Риск: <span className="text-short font-mono">${fmt2(riskUsd)}</span>
+                  {balance > 0 && <span className="ml-1">({(riskUsd / balance * 100).toFixed(2)}% депо)</span>}
                 </div>
               </div>
             )

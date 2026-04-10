@@ -14,7 +14,7 @@ function exportCSV(signals: Signal[], prices: Record<string, number | null>, cha
       const diff = s.type === 'LONG'
         ? ((s.stopLoss - entry) / entry) * 100
         : ((entry - s.stopLoss) / entry) * 100
-      pnl = (diff * s.leverage).toFixed(1)
+      pnl = (diff * s.leverage).toFixed(2)
     } else if (s.status.startsWith('TP')) {
       const tpIdx = parseInt(s.status.replace('TP', '').replace('_HIT', '')) - 1
       const tp = s.takeProfits[tpIdx]
@@ -22,7 +22,7 @@ function exportCSV(signals: Signal[], prices: Record<string, number | null>, cha
         const diff = s.type === 'LONG'
           ? ((tp - entry) / entry) * 100
           : ((entry - tp) / entry) * 100
-        pnl = '+' + (diff * s.leverage).toFixed(1)
+        pnl = '+' + (diff * s.leverage).toFixed(2)
       }
     }
     const tps = Array.from({ length: 6 }, (_, i) => s.takeProfits[i] ?? '').join(',')
@@ -95,7 +95,7 @@ function SignalModal({ signal, onClose }: { signal: Signal; onClose: () => void 
             <div className="font-mono font-bold text-short">
               {formatPrice(signal.stopLoss)}
               <span className="text-xs text-text-secondary ml-1">
-                ({(((Math.abs(signal.stopLoss - entry)) / entry) * 100).toFixed(1)}%)
+                ({(((Math.abs(signal.stopLoss - entry)) / entry) * 100).toFixed(2)}%)
               </span>
             </div>
           </div>
@@ -120,7 +120,7 @@ function SignalModal({ signal, onClose }: { signal: Signal; onClose: () => void 
                   <div className={`font-mono text-sm font-bold ${tpHit ? 'text-long' : 'text-text-primary'}`}>
                     {formatPrice(tp)}
                   </div>
-                  <div className="text-xs text-text-secondary">+{diff.toFixed(1)}%</div>
+                  <div className="text-xs text-text-secondary">+{diff.toFixed(2)}%</div>
                 </div>
               )
             })}
@@ -270,13 +270,13 @@ function DepositSimulator({ signals }: { signals: Signal[] }) {
         <div className="bg-input rounded-lg p-3 text-center">
           <div className="text-xs text-text-secondary">ROI</div>
           <div className={`font-mono text-xl font-bold ${roi >= 0 ? 'text-long' : 'text-short'}`}>
-            {roi >= 0 ? '+' : ''}{roi.toFixed(1)}%
+            {roi >= 0 ? '+' : ''}{roi.toFixed(2)}%
           </div>
         </div>
         <div className="bg-input rounded-lg p-3 text-center">
           <div className="text-xs text-text-secondary">Макс. просадка</div>
           <div className="font-mono text-xl font-bold text-short">
-            -{sim.maxDrawdown.toFixed(1)}%
+            -{sim.maxDrawdown.toFixed(2)}%
           </div>
         </div>
       </div>
@@ -322,7 +322,7 @@ function DepositSimulator({ signals }: { signals: Signal[] }) {
                     ${t.positionSize.toFixed(2)}
                   </td>
                   <td className={`py-2 px-2 text-right font-mono font-bold ${t.pnlPercent >= 0 ? 'text-long' : 'text-short'}`}>
-                    {t.pnlPercent >= 0 ? '+' : ''}{t.pnlPercent.toFixed(1)}%
+                    {t.pnlPercent >= 0 ? '+' : ''}{t.pnlPercent.toFixed(2)}%
                   </td>
                   <td className={`py-2 px-2 text-right font-mono font-bold ${t.profit >= 0 ? 'text-long' : 'text-short'}`}>
                     {t.profit >= 0 ? '+' : ''}${t.profit.toFixed(2)}
@@ -412,9 +412,9 @@ function StrategyAnalysis({ stats }: { stats: {
         <div className="bg-input rounded-lg p-4">
           <div className="text-xs text-text-secondary mb-2">Математика Risk/Reward</div>
           <div className="text-sm text-text-primary">
-            Средний выигрыш <span className="font-mono font-bold text-long">+{stats.avgWin.toFixed(1)}%</span> vs
-            средний проигрыш <span className="font-mono font-bold text-short">{stats.avgLoss.toFixed(1)}%</span> —
-            соотношение <span className="font-mono font-bold text-accent">~{rr.toFixed(1)}:1</span>
+            Средний выигрыш <span className="font-mono font-bold text-long">+{stats.avgWin.toFixed(2)}%</span> vs
+            средний проигрыш <span className="font-mono font-bold text-short">{stats.avgLoss.toFixed(2)}%</span> —
+            соотношение <span className="font-mono font-bold text-accent">~{rr.toFixed(2)}:1</span>
           </div>
           <div className="text-xs text-text-secondary mt-2">
             {rr >= 2 ? 'Отличная асимметрия. ' : rr >= 1.5 ? 'Хорошая асимметрия. ' : 'Слабая асимметрия. '}
@@ -744,7 +744,7 @@ export default function Signals() {
           <div className={`rounded-lg p-4 text-center border ${stats.totalPnl >= 0 ? 'bg-long/10 border-long/30' : 'bg-short/10 border-short/30'}`}>
             <div className="text-xs text-text-secondary">Общий P&L</div>
             <div className={`font-mono text-2xl font-bold ${stats.totalPnl >= 0 ? 'text-long' : 'text-short'}`}>
-              {stats.totalPnl >= 0 ? '+' : ''}{stats.totalPnl.toFixed(1)}%
+              {stats.totalPnl >= 0 ? '+' : ''}{stats.totalPnl.toFixed(2)}%
             </div>
             <div className="text-xs text-text-secondary mt-0.5">{stats.closedCount} сделок</div>
           </div>
@@ -758,11 +758,11 @@ export default function Signals() {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <div className="bg-input rounded-lg p-3">
               <div className="text-xs text-text-secondary mb-1">Средний P&L на победу</div>
-              <div className="font-mono text-lg font-bold text-long">+{stats.avgWin.toFixed(1)}%</div>
+              <div className="font-mono text-lg font-bold text-long">+{stats.avgWin.toFixed(2)}%</div>
             </div>
             <div className="bg-input rounded-lg p-3">
               <div className="text-xs text-text-secondary mb-1">Средний P&L на поражение</div>
-              <div className="font-mono text-lg font-bold text-short">{stats.avgLoss.toFixed(1)}%</div>
+              <div className="font-mono text-lg font-bold text-short">{stats.avgLoss.toFixed(2)}%</div>
             </div>
             <div className="bg-input rounded-lg p-3">
               <div className="text-xs text-text-secondary mb-1">Винрейт</div>

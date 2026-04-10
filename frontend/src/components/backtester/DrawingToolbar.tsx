@@ -121,7 +121,7 @@ export default function DrawingToolbar({
                   className="accent-accent"
                 />
                 <span className="text-xs text-text-secondary font-mono">
-                  {(level * 100).toFixed(1)}%
+                  {(level * 100).toFixed(2)}%
                 </span>
               </label>
             ))}

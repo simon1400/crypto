@@ -1,6 +1,9 @@
 import { Router, Request, Response } from 'express'
 import { prisma } from '../db/prisma'
 import { fetchCurrentPrice } from '../services/market'
+import { assertBudget, BudgetError, getBudgetStatus } from '../services/budget'
+import { adjustVirtualBalance } from '../services/virtualBalance'
+import { calcExitFee, OrderType } from '../services/fees'
 
 const router = Router()
 
@@ -173,6 +176,16 @@ router.get('/stats', async (_req: Request, res: Response) => {
   }
 })
 
+// GET /api/trades/budget — текущий бюджет (баланс Bybit − занятая маржа)
+router.get('/budget', async (_req: Request, res: Response) => {
+  try {
+    const status = await getBudgetStatus()
+    res.json(status)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // GET /api/trades/:id
 router.get('/:id', async (req: Request, res: Response) => {
   try {
@@ -187,7 +200,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 // POST /api/trades — создать сделку
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { coin, type, leverage, entryPrice, amount, stopLoss, takeProfits, notes, fees, source } = req.body
+    const { coin, type, leverage, entryPrice, amount, stopLoss, takeProfits, notes, fees, source, orderType } = req.body
 
     if (!coin || !type || !entryPrice || !amount || !stopLoss || !takeProfits?.length) {
       return res.status(400).json({ error: 'Missing required fields' })
@@ -198,18 +211,40 @@ router.post('/', async (req: Request, res: Response) => {
       ? String(source).toUpperCase()
       : 'MANUAL'
 
+    const orderTypeNorm: OrderType = orderType === 'limit' ? 'limit' : 'market'
+    const lev = Number(leverage) || 1
+
+    // Бюджетный гард: проверка virtualBalance с учётом entry fee
+    let entryFee = 0
+    try {
+      const result = await assertBudget(Number(amount), lev, orderTypeNorm)
+      entryFee = result.entryFee
+    } catch (err: any) {
+      if (err instanceof BudgetError) {
+        return res.status(400).json({
+          error: err.message,
+          budget: { balance: err.balance, used: err.usedMargin, requested: err.requested },
+        })
+      }
+      throw err
+    }
+
+    // Списываем entry fee из виртуального баланса сразу
+    await adjustVirtualBalance(-entryFee, `entry fee ${coin} ${orderTypeNorm}`)
+
     const trade = await prisma.trade.create({
       data: {
         coin: coin.toUpperCase().replace('USDT', '') + 'USDT',
         type: type.toUpperCase(),
-        leverage: Number(leverage) || 1,
+        leverage: lev,
         entryPrice: Number(entryPrice),
         amount: Number(amount),
         stopLoss: Number(stopLoss),
         takeProfits,
-        fees: Number(fees) || 0,
+        fees: entryFee + (Number(fees) || 0),
         notes: notes || null,
         source: tradeSource,
+        entryOrderType: orderTypeNorm,
       },
     })
 
@@ -243,16 +278,27 @@ router.post('/:id/close', async (req: Request, res: Response) => {
     const portionAmount = trade.amount * (closePct / 100)
     const pnlUsdt = portionAmount * (pnlPercent / 100)
 
+    // Exit fee на закрываемый портion (TP/SL/manual close = market = taker)
+    const exitFee = await calcExitFee(portionAmount, trade.leverage)
+
+    // Виртуальный баланс: возврат маржи + P&L − exit fee
+    await adjustVirtualBalance(
+      portionAmount + pnlUsdt - exitFee,
+      `close ${trade.coin} #${trade.id} ${closePct}% pnl=${pnlUsdt.toFixed(2)} fee=${exitFee.toFixed(4)}`,
+    )
+
     const closes = Array.isArray(trade.closes) ? [...(trade.closes as any[])] : []
     closes.push({
       price: closePrice,
       percent: closePct,
       pnl: Math.round(pnlUsdt * 100) / 100,
       pnlPercent: Math.round(pnlPercent * 100) / 100,
+      fee: Math.round(exitFee * 1e6) / 1e6,
       closedAt: new Date().toISOString(),
     })
 
     const newRealizedPnl = Math.round((trade.realizedPnl + pnlUsdt) * 100) / 100
+    const newFees = Math.round((trade.fees + exitFee) * 1e6) / 1e6
     const isFull = newClosedPct >= 100
     const newStatus = isFull ? 'CLOSED' : 'PARTIALLY_CLOSED'
 
@@ -289,6 +335,7 @@ router.post('/:id/close', async (req: Request, res: Response) => {
         closes,
         closedPct: newClosedPct,
         realizedPnl: newRealizedPnl,
+        fees: newFees,
         status: newStatus,
         stopLoss: newStopLoss,
         closedAt: isFull ? new Date() : null,
@@ -314,12 +361,21 @@ router.post('/:id/sl-hit', async (req: Request, res: Response) => {
     const portionAmount = trade.amount * (remainingPct / 100)
     const pnlUsdt = portionAmount * (pnlPercent / 100)
 
+    // SL исполняется маркетом → taker fee
+    const exitFee = await calcExitFee(portionAmount, trade.leverage)
+
+    await adjustVirtualBalance(
+      portionAmount + pnlUsdt - exitFee,
+      `SL ${trade.coin} #${trade.id} pnl=${pnlUsdt.toFixed(2)} fee=${exitFee.toFixed(4)}`,
+    )
+
     const closes = Array.isArray(trade.closes) ? [...(trade.closes as any[])] : []
     closes.push({
       price: trade.stopLoss,
       percent: remainingPct,
       pnl: Math.round(pnlUsdt * 100) / 100,
       pnlPercent: Math.round(pnlPercent * 100) / 100,
+      fee: Math.round(exitFee * 1e6) / 1e6,
       closedAt: new Date().toISOString(),
       isSL: true,
     })
@@ -330,6 +386,7 @@ router.post('/:id/sl-hit', async (req: Request, res: Response) => {
         closes,
         closedPct: 100,
         realizedPnl: Math.round((trade.realizedPnl + pnlUsdt) * 100) / 100,
+        fees: Math.round((trade.fees + exitFee) * 1e6) / 1e6,
         status: 'SL_HIT',
         closedAt: new Date(),
       },
@@ -409,9 +466,16 @@ router.post('/close-all', async (_req: Request, res: Response) => {
 
     let closed = 0
     for (const trade of trades) {
-      // PENDING_ENTRY — just cancel
+      // PENDING_ENTRY — just cancel, возвращаем зарезервированную entry fee?
+      // Нет: при создании fee уже была списана как market-симуляция; при отмене PENDING можно вернуть.
+      // Но нашей семантике достаточно: вход не состоялся → fee не списывалась бы реально, но мы её всё равно списали при создании.
+      // Вернём для PENDING (т.к. сделка не вошла в рынок).
       if (trade.status === 'PENDING_ENTRY') {
         console.log(`[Trades] close-all: cancelling PENDING trade #${trade.id} ${trade.coin}`)
+        // Возвращаем fees (entry не произошёл — комиссия не должна списываться)
+        if (trade.fees > 0) {
+          await adjustVirtualBalance(trade.fees, `refund pending entry fee #${trade.id}`)
+        }
         await prisma.trade.update({
           where: { id: trade.id },
           data: { status: 'CANCELLED', closedAt: new Date() },
@@ -432,12 +496,20 @@ router.post('/close-all', async (_req: Request, res: Response) => {
       const portionAmount = trade.amount * (remainingPct / 100)
       const pnlUsdt = portionAmount * (pnlPercent / 100)
 
+      const exitFee = await calcExitFee(portionAmount, trade.leverage)
+
+      await adjustVirtualBalance(
+        portionAmount + pnlUsdt - exitFee,
+        `close-all ${trade.coin} #${trade.id} pnl=${pnlUsdt.toFixed(2)} fee=${exitFee.toFixed(4)}`,
+      )
+
       const closes = Array.isArray(trade.closes) ? [...(trade.closes as any[])] : []
       closes.push({
         price,
         percent: remainingPct,
         pnl: Math.round(pnlUsdt * 100) / 100,
         pnlPercent: Math.round(pnlPercent * 100) / 100,
+        fee: Math.round(exitFee * 1e6) / 1e6,
         closedAt: new Date().toISOString(),
       })
 
@@ -447,6 +519,7 @@ router.post('/close-all', async (_req: Request, res: Response) => {
           closes,
           closedPct: 100,
           realizedPnl: Math.round((trade.realizedPnl + pnlUsdt) * 100) / 100,
+          fees: Math.round((trade.fees + exitFee) * 1e6) / 1e6,
           status: 'CLOSED',
           closedAt: new Date(),
         },

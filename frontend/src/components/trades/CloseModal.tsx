@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { closeTrade, hitStopLoss, getTradeLivePrices, Trade, TradeTP, TradeClose } from '../../api/client'
+import { fmt2Signed } from '../../lib/formatters'
 
 export default function CloseModal({ trade, onClose, onDone }: { trade: Trade; onClose: () => void; onDone: () => void }) {
   const [price, setPrice] = useState('')
@@ -56,7 +57,7 @@ export default function CloseModal({ trade, onClose, onDone }: { trade: Trade; o
     const diff = (Number(price) - trade.entryPrice) * dir
     const pct = (diff / trade.entryPrice) * 100 * trade.leverage
     const portion = trade.amount * (Number(percent) / 100)
-    return { usd: Math.round(portion * (pct / 100) * 100) / 100, pct: Math.round(pct * 100) / 100 }
+    return { usd: portion * (pct / 100), pct }
   })() : null
 
   return (
@@ -107,7 +108,7 @@ export default function CloseModal({ trade, onClose, onDone }: { trade: Trade; o
 
         {previewPnl && (
           <div className={`text-center font-mono font-bold ${previewPnl.usd >= 0 ? 'text-long' : 'text-short'}`}>
-            {previewPnl.usd >= 0 ? '+' : ''}{previewPnl.usd}$ ({previewPnl.pct >= 0 ? '+' : ''}{previewPnl.pct}%)
+            {fmt2Signed(previewPnl.usd)}$ ({fmt2Signed(previewPnl.pct)}%)
           </div>
         )}
 
