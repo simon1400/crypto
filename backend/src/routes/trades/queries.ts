@@ -101,13 +101,15 @@ router.get('/stats', asyncHandler(async (_req, res) => {
   const closed = trades.filter(t => ['CLOSED', 'SL_HIT', 'PARTIALLY_CLOSED'].includes(t.status) && t.closedPct > 0)
   const open = trades.filter(t => t.status === 'OPEN' || (t.status === 'PARTIALLY_CLOSED' && t.closedPct < 100))
 
-  const wins = closed.filter(t => t.realizedPnl > 0)
-  const losses = closed.filter(t => t.realizedPnl < 0)
+  // Net P&L = realizedPnl − fees (комиссии вычитаются везде, они не наши деньги)
+  const netPnl = (t: { realizedPnl: number; fees: number }) => t.realizedPnl - (t.fees || 0)
 
-  const totalFees = closed.reduce((s, t) => s + t.fees, 0)
-  const totalPnl = closed.reduce((s, t) => s + t.realizedPnl, 0) - totalFees
-  const avgWin = wins.length ? wins.reduce((s, t) => s + t.realizedPnl, 0) / wins.length : 0
-  const avgLoss = losses.length ? losses.reduce((s, t) => s + t.realizedPnl, 0) / losses.length : 0
+  const wins = closed.filter(t => netPnl(t) > 0)
+  const losses = closed.filter(t => netPnl(t) < 0)
+
+  const totalPnl = closed.reduce((s, t) => s + netPnl(t), 0)
+  const avgWin = wins.length ? wins.reduce((s, t) => s + netPnl(t), 0) / wins.length : 0
+  const avgLoss = losses.length ? losses.reduce((s, t) => s + netPnl(t), 0) / losses.length : 0
   const winRate = closed.length ? (wins.length / closed.length) * 100 : 0
 
   const byCoin: Record<string, { trades: number; pnl: number; wins: number }> = {}
@@ -115,8 +117,8 @@ router.get('/stats', asyncHandler(async (_req, res) => {
     const c = t.coin.replace('USDT', '')
     if (!byCoin[c]) byCoin[c] = { trades: 0, pnl: 0, wins: 0 }
     byCoin[c].trades++
-    byCoin[c].pnl += t.realizedPnl
-    if (t.realizedPnl > 0) byCoin[c].wins++
+    byCoin[c].pnl += netPnl(t)
+    if (netPnl(t) > 0) byCoin[c].wins++
   }
 
   const longs = closed.filter(t => t.type === 'LONG')
@@ -134,8 +136,8 @@ router.get('/stats', asyncHandler(async (_req, res) => {
     totalPnl: r2(totalPnl),
     avgWin: r2(avgWin),
     avgLoss: r2(avgLoss),
-    longStats: { count: longs.length, pnl: r2(longs.reduce((s, t) => s + t.realizedPnl, 0)) },
-    shortStats: { count: shorts.length, pnl: r2(shorts.reduce((s, t) => s + t.realizedPnl, 0)) },
+    longStats: { count: longs.length, pnl: r2(longs.reduce((s, t) => s + netPnl(t), 0)) },
+    shortStats: { count: shorts.length, pnl: r2(shorts.reduce((s, t) => s + netPnl(t), 0)) },
     byCoin,
   })
 }, 'Trades'))

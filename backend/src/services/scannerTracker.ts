@@ -1,7 +1,6 @@
 import { prisma } from '../db/prisma'
 import { fetchPricesBatch } from './market'
-import { adjustVirtualBalance } from './virtualBalance'
-import { calcExitFee } from './fees'
+import { closeTradePortion } from './tradeClose'
 
 // Tracks SCANNER trades every 2 seconds:
 // 1. PENDING_ENTRY — waits for price to reach or cross entry, then activates
@@ -88,7 +87,13 @@ export async function trackScannerTrades() {
       // Check SL (using effective trailing SL)
       const slHit = isLong ? price <= effectiveSL : price >= effectiveSL
       if (slHit) {
-        await closeTradePortion(trade, effectiveSL, 100 - trade.closedPct, true)
+        await closeTradePortion(trade, {
+          price: effectiveSL,
+          percent: 100 - trade.closedPct,
+          isSL: true,
+          forceFullClose: true,
+          logContext: `auto-SL ${trade.coin} #${trade.id}`,
+        })
         const label = tpsHitCount > 0 ? `trailing SL (after TP${tpsHitCount})` : 'SL'
         console.log(`[ScannerTracker] ${trade.coin} ${label} hit at $${effectiveSL} (price: $${price})`)
         lastPrices[trade.coin] = price
@@ -107,18 +112,18 @@ export async function trackScannerTrades() {
           const pctToClose = Math.min(tp.percent, 100 - trade.closedPct)
           if (pctToClose <= 0) continue
 
-          await closeTradePortion(trade, tp.price, pctToClose, false)
+          await closeTradePortion(trade, {
+            price: tp.price,
+            percent: pctToClose,
+            logContext: `auto-TP ${trade.coin} #${trade.id}`,
+          })
 
           // Determine which TP number was hit
           const tpIndex = tpsSortedByPrice.findIndex(t => Math.abs(t.price - tp.price) < 0.0001)
           const tpNum = tpIndex >= 0 ? tpIndex + 1 : '?'
-          const newTpsHit = tpsHitCount + 1
-          let newSL = trade.entryPrice
-          if (newTpsHit >= 2) newSL = tpsSortedByPrice[0].price
-          console.log(`[ScannerTracker] ${trade.coin} TP${tpNum} hit at $${tp.price} (${pctToClose}%) → trailing SL moved to $${newSL}`)
-
           const updated = await prisma.trade.findUnique({ where: { id: trade.id } })
           if (updated) Object.assign(trade, updated)
+          console.log(`[ScannerTracker] ${trade.coin} TP${tpNum} hit at $${tp.price} (${pctToClose}%) → trailing SL moved to $${trade.stopLoss}`)
 
           break
         }
@@ -199,51 +204,3 @@ async function tryMergeEntryPair(_filledTradeId: number, notes: string) {
   console.log(`[ScannerTracker] Auto-merged ${groupId}: #${t1.id} + #${t2.id} → #${merged.id} (avg entry: $${avgEntry}, total: $${totalAmount})`)
 }
 
-async function closeTradePortion(
-  trade: any,
-  closePrice: number,
-  percent: number,
-  isSL: boolean,
-) {
-  const direction = trade.type === 'LONG' ? 1 : -1
-  const priceDiff = (closePrice - trade.entryPrice) * direction
-  const pnlPercent = (priceDiff / trade.entryPrice) * 100 * trade.leverage
-  const portionAmount = trade.amount * (percent / 100)
-  const pnlUsdt = portionAmount * (pnlPercent / 100)
-
-  // Авто-закрытие на TP/SL = market = taker fee
-  const exitFee = await calcExitFee(portionAmount, trade.leverage)
-
-  await adjustVirtualBalance(
-    portionAmount + pnlUsdt - exitFee,
-    `${isSL ? 'auto-SL' : 'auto-TP'} ${trade.coin} #${trade.id} pnl=${pnlUsdt.toFixed(2)} fee=${exitFee.toFixed(4)}`,
-  )
-
-  const closes = Array.isArray(trade.closes) ? [...trade.closes] : []
-  closes.push({
-    price: closePrice,
-    percent,
-    pnl: Math.round(pnlUsdt * 100) / 100,
-    pnlPercent: Math.round(pnlPercent * 100) / 100,
-    fee: Math.round(exitFee * 1e6) / 1e6,
-    closedAt: new Date().toISOString(),
-    isSL,
-  })
-
-  const newClosedPct = Math.min(100, trade.closedPct + percent)
-  const newRealizedPnl = Math.round((trade.realizedPnl + pnlUsdt) * 100) / 100
-  const newFees = Math.round((trade.fees + exitFee) * 1e6) / 1e6
-  const isFull = newClosedPct >= 100
-
-  await prisma.trade.update({
-    where: { id: trade.id },
-    data: {
-      closes,
-      closedPct: newClosedPct,
-      realizedPnl: newRealizedPnl,
-      fees: newFees,
-      status: isSL ? 'SL_HIT' : (isFull ? 'CLOSED' : 'PARTIALLY_CLOSED'),
-      closedAt: isFull || isSL ? new Date() : null,
-    },
-  })
-}

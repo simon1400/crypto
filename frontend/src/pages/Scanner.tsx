@@ -12,6 +12,27 @@ import ScanResultCard from '../components/scanner/ScanResultCard'
 import CoinSearchSelector from '../components/scanner/CoinSearchSelector'
 import EntryResultCard from '../components/scanner/EntryResultCard'
 import { CATEGORY_STYLES, LOADING_MESSAGES, ENTRY_MESSAGES } from '../components/scanner/constants'
+import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
+
+function scannerSignalToPosition(s: ScannerSignal): PositionChartPosition {
+  const tps = (s.takeProfits as { price: number; rr: number }[] | undefined)?.map(tp => tp.price) || []
+  return {
+    coin: s.coin,
+    type: s.type as 'LONG' | 'SHORT',
+    entry: s.entry,
+    stopLoss: s.stopLoss,
+    takeProfits: tps,
+    // For scanner signals: takenAt = real entry (if taken), otherwise null (NEW — pale projection only)
+    openedAt: s.takenAt,
+    closedAt: s.closedAt,
+    partialCloses: (s.closes || []).map(c => ({
+      price: c.price,
+      percent: c.percent,
+      closedAt: c.closedAt,
+      isSL: c.isSL,
+    })),
+  }
+}
 
 export default function Scanner() {
   const [signals, setSignals] = useState<ScannerSignal[]>([])
@@ -28,6 +49,7 @@ export default function Scanner() {
   const [minScore, setMinScore] = useState(50)
   const [showAll, setShowAll] = useState(false)
   const [sortBy, setSortBy] = useState<'score' | 'date'>('score')
+  const [chartSignal, setChartSignal] = useState<ScannerSignal | null>(null)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false)
@@ -539,7 +561,7 @@ export default function Scanner() {
             <>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 {visibleSignals.map(s => (
-                  <SignalCard key={s.id} signal={s} onStatusChange={loadSignals} onDelete={handleDelete} balance={balance} riskPct={riskPct} />
+                  <SignalCard key={s.id} signal={s} onStatusChange={loadSignals} onDelete={handleDelete} balance={balance} riskPct={riskPct} onShowChart={setChartSignal} />
                 ))}
               </div>
               {hasMore && !showAll && (
@@ -957,6 +979,12 @@ export default function Scanner() {
         </div>
       )}
 
+      {chartSignal && (
+        <PositionChartModal
+          position={scannerSignalToPosition(chartSignal)}
+          onClose={() => setChartSignal(null)}
+        />
+      )}
     </div>
   )
 }

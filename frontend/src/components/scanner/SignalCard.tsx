@@ -5,12 +5,13 @@ import { ScoreBadge, StrategyBadge, ScannerStatusBadge as StatusBadge } from '..
 import AiAnalysisBlock from './AiAnalysisBlock'
 import { MODEL_LABELS } from './constants'
 
-export default function SignalCard({ signal, onStatusChange, onDelete, balance, riskPct }: {
+export default function SignalCard({ signal, onStatusChange, onDelete, balance, riskPct, onShowChart }: {
   signal: ScannerSignal
   onStatusChange: () => void
   onDelete: (id: number) => void
   balance: number
   riskPct: number
+  onShowChart?: (signal: ScannerSignal) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const [showTakeForm, setShowTakeForm] = useState(false)
@@ -72,6 +73,15 @@ export default function SignalCard({ signal, onStatusChange, onDelete, balance, 
           </span>
           <StrategyBadge strategy={signal.strategy} />
           <StatusBadge status={signal.status} />
+          {onShowChart && (
+            <button
+              onClick={() => onShowChart(signal)}
+              className="text-text-secondary hover:text-accent transition-colors ml-1"
+              title="График позиции"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {hasPnl && (

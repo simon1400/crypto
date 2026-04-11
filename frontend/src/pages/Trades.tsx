@@ -9,6 +9,32 @@ import NewTradeForm from '../components/trades/NewTradeForm'
 import CloseModal from '../components/trades/CloseModal'
 import TradeDetail from '../components/trades/TradeDetail'
 import StatsPanel from '../components/trades/StatsPanel'
+import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
+
+function tradeToPosition(t: Trade, currentPrice: number | null): PositionChartPosition {
+  // For closed trades: use last close price as "current" (so the realized zone shows final state).
+  // For open trades: use live price polled from the market.
+  const closes = t.closes || []
+  const effectivePrice = currentPrice != null
+    ? currentPrice
+    : (closes.length > 0 ? closes[closes.length - 1].price : null)
+  return {
+    coin: t.coin,
+    type: t.type,
+    entry: t.entryPrice,
+    stopLoss: t.stopLoss,
+    takeProfits: (t.takeProfits || []).map(tp => tp.price),
+    openedAt: t.openedAt,
+    closedAt: t.closedAt,
+    currentPrice: effectivePrice,
+    partialCloses: closes.map(c => ({
+      price: c.price,
+      percent: c.percent,
+      closedAt: c.closedAt,
+      isSL: c.isSL,
+    })),
+  }
+}
 
 export default function Trades() {
   const [trades, setTrades] = useState<Trade[]>([])
@@ -23,6 +49,7 @@ export default function Trades() {
   const [confirmCloseAll, setConfirmCloseAll] = useState(false)
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false)
   const [bulkLoading, setBulkLoading] = useState(false)
+  const [chartTrade, setChartTrade] = useState<Trade | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -188,16 +215,13 @@ export default function Trades() {
                       {t.notes?.includes('Model: confirmation') && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent" title="Подтверждение">C</span>}
                       {t.notes?.includes('Model: pullback') && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-blue-500/15 text-blue-400" title="Откат">P</span>}
 
-                      <a
-                        href={`https://www.tradingview.com/chart/?symbol=BYBIT:${t.coin}.P`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={e => e.stopPropagation()}
+                      <button
+                        onClick={e => { e.stopPropagation(); setChartTrade(t) }}
                         className="text-text-secondary hover:text-accent transition-colors"
-                        title="TradingView"
+                        title="График позиции"
                       >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                      </a>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+                      </button>
                     </span>
                   </td>
                   <td className="py-3 px-2 text-right font-mono text-text-primary">${t.entryPrice}</td>
@@ -211,10 +235,20 @@ export default function Trades() {
                     )}
                   </td>
                   <td className="py-3 px-2 text-right font-mono">
-                    <span className="text-text-primary">${fmt2(t.amount)}</span>
-                    {t.leverage > 1 && (
-                      <div className="text-xs text-text-secondary">${fmt2(t.amount * t.leverage)}</div>
-                    )}
+                    {(() => {
+                      const remaining = t.amount * ((100 - t.closedPct) / 100)
+                      const isReduced = t.closedPct > 0 && t.closedPct < 100
+                      return (
+                        <>
+                          <span className="text-text-primary" title={isReduced ? `Изначально: $${fmt2(t.amount)}` : undefined}>
+                            ${fmt2(remaining)}
+                          </span>
+                          {t.leverage > 1 && (
+                            <div className="text-xs text-text-secondary">${fmt2(remaining * t.leverage)}</div>
+                          )}
+                        </>
+                      )
+                    })()}
                   </td>
                   <td className="py-3 px-2 text-right font-mono">
                     {(() => {
@@ -253,7 +287,7 @@ export default function Trades() {
                   <td className="py-3 px-2 text-center text-text-secondary">{t.closedPct}%</td>
                   <td className="py-3 px-2 text-right font-mono text-sm">
                     {t.closedPct > 0 && t.closedPct < 100 ? (
-                      <span className={pnlColor(t.realizedPnl - (t.fees || 0))}>
+                      <span className={pnlColor(t.realizedPnl - (t.fees || 0))} title={t.fees > 0 ? `Gross: ${fmt2Signed(t.realizedPnl)}$ · Комиссии: -${fmt2(t.fees)}$` : undefined}>
                         {fmt2Signed(t.realizedPnl - (t.fees || 0))}$
                       </span>
                     ) : (
@@ -269,7 +303,7 @@ export default function Trades() {
                         </span>
                       </span>
                     ) : (
-                      <span className={pnlColor(t.realizedPnl - (t.fees || 0))}>
+                      <span className={pnlColor(t.realizedPnl - (t.fees || 0))} title={t.fees > 0 ? `Gross: ${fmt2Signed(t.realizedPnl)}$ · Комиссии: -${fmt2(t.fees)}$` : undefined}>
                         {fmt2Signed(t.realizedPnl - (t.fees || 0))}$
                       </span>
                     )}
@@ -305,6 +339,12 @@ export default function Trades() {
       {/* Модалки */}
       {closing && <CloseModal trade={closing} onClose={() => setClosing(null)} onDone={() => { setClosing(null); load() }} />}
       {selected && <TradeDetail trade={selected} onClose={() => setSelected(null)} onRefresh={load} />}
+      {chartTrade && (
+        <PositionChartModal
+          position={tradeToPosition(chartTrade, livePrices[chartTrade.id]?.currentPrice ?? null)}
+          onClose={() => setChartTrade(null)}
+        />
+      )}
     </div>
   )
 }

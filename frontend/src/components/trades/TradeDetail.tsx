@@ -187,7 +187,18 @@ export default function TradeDetail({ trade, onClose, onRefresh }: { trade: Trad
               </div>
               <div className="bg-input rounded-lg p-3">
                 <div className="text-text-secondary text-xs">Размер</div>
-                <div className="text-text-primary font-mono font-semibold">${trade.amount}</div>
+                {(() => {
+                  const remaining = trade.amount * ((100 - trade.closedPct) / 100)
+                  const isReduced = trade.closedPct > 0 && trade.closedPct < 100
+                  return (
+                    <>
+                      <div className="text-text-primary font-mono font-semibold">${fmt2(remaining)}</div>
+                      {isReduced && (
+                        <div className="text-xs text-text-secondary font-mono">из ${fmt2(trade.amount)}</div>
+                      )}
+                    </>
+                  )
+                })()}
               </div>
             </div>
 
