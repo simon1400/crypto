@@ -39,7 +39,7 @@ export interface EntryAnalysisResult {
   avgEntry: number
   stopLoss: number
   slPercent: number
-  takeProfits: { price: number; rr: number }[]
+  takeProfits: { price: number; rr: number; percent?: number }[]
   leverage: number
   positionPct: number
   riskReward: number
@@ -53,6 +53,9 @@ export interface EntryAnalysisResult {
   news: NewsSentiment | null
   liquidations: LiquidationStats | null
   lsr: LSRData | null
+  // New scoring fields
+  setupCategory?: string
+  executionType?: string
 }
 
 let isAnalyzing = false
@@ -105,7 +108,7 @@ export async function analyzeEntries(
         const [candles15m, candles1h, candles4h] = await Promise.all([
           fetchKlines(symbol, '15m', 60),
           fetchKlines(symbol, '1h', 60),
-          fetchKlines(symbol, '4h', 60),
+          fetchKlines(symbol, '4h', 200),
         ])
         // BybitKline → OHLCV (same shape, time in seconds → ms)
         const toOHLCV = (k: typeof candles15m): OHLCV[] => k.map((c) => ({ ...c, time: c.time * 1000 }))
@@ -207,12 +210,17 @@ function analyzeCoin(
   let strategy = 'entry_analysis'
   let reasons: string[] = []
 
+  let setupCategory: string | undefined
+  let executionType: string | undefined
+
   if (rawSignal) {
     const enriched = runScoringPipeline(rawSignal, regime, coinRegime, funding, oi, news, liquidations, lsr)
     if (enriched) {
       score = enriched.setup_score
       strategy = rawSignal.strategy
       reasons = rawSignal.reasons
+      setupCategory = enriched.category
+      executionType = enriched.execution_type
     }
   }
 
@@ -309,5 +317,7 @@ function analyzeCoin(
     news,
     liquidations,
     lsr,
+    setupCategory,
+    executionType,
   }
 }

@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { getBudget, BudgetStatus } from '../api/client'
-import KillSwitchButton from './KillSwitchButton'
 
 interface Props {
   onLogout?: () => void
@@ -22,7 +21,6 @@ export default function Navbar({ onLogout }: Props) {
     return () => clearInterval(interval)
   }, [])
 
-  // Close menu on route change
   useEffect(() => {
     setMenuOpen(false)
   }, [pathname])
@@ -37,10 +35,7 @@ export default function Navbar({ onLogout }: Props) {
   return (
     <nav className="border-b border-card relative">
       <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
-        {/* Logo */}
-        <span className="text-accent font-semibold text-lg shrink-0">Crypto Dashboard</span>
-
-        {/* Desktop nav links */}
+        {/* Desktop nav links — aligned left */}
         <div className="hidden lg:flex items-center gap-1">
           <Link to="/signals" className={linkClass('/signals')}>Сигналы</Link>
           <Link to="/scanner" className={linkClass('/scanner')}>Сканер</Link>
@@ -50,8 +45,8 @@ export default function Navbar({ onLogout }: Props) {
           <Link to="/backtester" className={linkClass('/backtester')}>Бэктестер</Link>
         </div>
 
-        {/* Right side: balance, kill switch, logout, burger */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        {/* Right side: balance, logout, burger */}
+        <div className="flex items-center gap-2 sm:gap-3 ml-auto">
           {budget != null && (
             <div
               className="font-mono text-xs sm:text-sm flex flex-col items-end leading-tight"
@@ -82,7 +77,6 @@ export default function Navbar({ onLogout }: Props) {
               </span>
             </div>
           )}
-          <KillSwitchButton onActivated={refreshBalance} />
           {onLogout && (
             <button
               onClick={onLogout}

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { takeSignalAsTrade, skipSignal, ScannerSignal, SignalClose } from '../../api/client'
+import { takeSignalAsTrade, takeSignal, skipSignal, ScannerSignal, SignalClose } from '../../api/client'
 import { formatDate, fmt2, fmt2Signed } from '../../lib/formatters'
 import { ScoreBadge, StrategyBadge, ScannerStatusBadge as StatusBadge } from '../StatusBadge'
 import AiAnalysisBlock from './AiAnalysisBlock'
@@ -380,8 +380,13 @@ export default function SignalCard({ signal, onStatusChange, onDelete, balance, 
         <div className="flex gap-1">
           {signal.status === 'NEW' && !showTakeForm && (
             <>
-              <button onClick={openSignalTakeForm} className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20">Взять</button>
-              <button onClick={handleSkip} className="px-2 py-1 text-xs rounded bg-neutral/10 text-neutral hover:bg-neutral/20">Пропустить</button>
+              <button onClick={openSignalTakeForm} className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20" title="Создать сделку в системе">Взять</button>
+              <button
+                onClick={async () => { try { await takeSignal(signal.id, 0); onStatusChange() } catch {} }}
+                className="px-2 py-1 text-xs rounded bg-accent/10 text-accent hover:bg-accent/20"
+                title="Пометить как взятый (торгую на бирже вручную)"
+              >Отметить</button>
+              <button onClick={handleSkip} className="px-2 py-1 text-xs rounded bg-neutral/10 text-neutral hover:bg-neutral/20" title="Пропустить (EXPIRED)">Пропустить</button>
             </>
           )}
 

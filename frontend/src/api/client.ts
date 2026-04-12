@@ -113,6 +113,20 @@ export interface Trade {
   openedAt: string
   closedAt: string | null
   createdAt: string
+  // Lifecycle tracking
+  initialStop: number | null
+  currentStop: number | null
+  stopMovedToBe: boolean
+  stopMoveReason: string | null
+  trailingActivated: boolean
+  trailingActivationTime: string | null
+  tp1HitTimestamp: string | null
+  tp2HitTimestamp: string | null
+  tp3HitTimestamp: string | null
+  exitReason: string | null
+  timeInTradeMin: number | null
+  mfe: number | null
+  mae: number | null
 }
 
 export interface TradesResponse {
@@ -584,6 +598,25 @@ export async function deleteUnusedSignals(): Promise<{ deleted: number }> {
     headers: getHeaders(),
   })
   if (!res.ok) throw new Error('Failed to delete unused signals')
+  return res.json()
+}
+
+// === Scanner Analytics ===
+export async function getPostTp1Analytics(days = 30): Promise<any> {
+  const res = await fetch(`${BASE}/api/scanner/analytics/post-tp1?days=${days}`, { headers: getHeaders() })
+  if (!res.ok) return null
+  return res.json()
+}
+
+export async function getSetupPerformance(days = 30): Promise<any[]> {
+  const res = await fetch(`${BASE}/api/scanner/analytics/setup-performance?days=${days}`, { headers: getHeaders() })
+  if (!res.ok) return []
+  return res.json()
+}
+
+export async function getEntryModelComparison(days = 30): Promise<any[]> {
+  const res = await fetch(`${BASE}/api/scanner/analytics/entry-models?days=${days}`, { headers: getHeaders() })
+  if (!res.ok) return []
   return res.json()
 }
 

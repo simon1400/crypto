@@ -257,6 +257,128 @@ export default function TradeDetail({ trade, onClose, onRefresh }: { trade: Trad
               </div>
             </div>
 
+            {/* MFE / MAE / Lifecycle */}
+            {(trade.mfe != null || trade.mae != null || trade.exitReason || trade.stopMovedToBe || trade.timeInTradeMin != null) && (
+              <div className="space-y-2">
+                <div className="text-xs text-text-secondary mb-1">Трекинг</div>
+
+                {/* MFE / MAE */}
+                {(trade.mfe != null || trade.mae != null) && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-input rounded-lg p-2.5">
+                      <div className="text-xs text-text-secondary">MFE (макс. прибыль)</div>
+                      <div className={`font-mono font-bold text-sm ${trade.mfe && trade.mfe > 0 ? 'text-long' : 'text-text-secondary'}`}>
+                        {trade.mfe != null ? `+${fmt2(trade.mfe)}%` : '—'}
+                      </div>
+                    </div>
+                    <div className="bg-input rounded-lg p-2.5">
+                      <div className="text-xs text-text-secondary">MAE (макс. просадка)</div>
+                      <div className={`font-mono font-bold text-sm ${trade.mae && trade.mae < 0 ? 'text-short' : 'text-text-secondary'}`}>
+                        {trade.mae != null ? `${fmt2(trade.mae)}%` : '—'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Stop tracking */}
+                {(trade.initialStop != null || trade.stopMovedToBe) && (
+                  <div className="bg-input rounded-lg p-2.5 text-xs space-y-1">
+                    {trade.initialStop != null && trade.initialStop !== trade.stopLoss && (
+                      <div className="flex justify-between">
+                        <span className="text-text-secondary">Исходный стоп:</span>
+                        <span className="font-mono text-text-primary">${trade.initialStop}</span>
+                      </div>
+                    )}
+                    {trade.stopMovedToBe && (
+                      <div className="flex justify-between">
+                        <span className="text-text-secondary">Стоп на BE:</span>
+                        <span className="text-long">Да</span>
+                      </div>
+                    )}
+                    {trade.trailingActivated && (
+                      <div className="flex justify-between">
+                        <span className="text-text-secondary">Trailing:</span>
+                        <span className="text-accent">Активен</span>
+                      </div>
+                    )}
+                    {trade.stopMoveReason && (
+                      <div className="text-text-secondary">{trade.stopMoveReason}</div>
+                    )}
+                  </div>
+                )}
+
+                {/* Time-stop progress */}
+                {(trade.status === 'OPEN' || trade.status === 'PARTIALLY_CLOSED') && trade.openedAt && (() => {
+                  const hoursOpen = (Date.now() - new Date(trade.openedAt).getTime()) / 3600000
+                  const tpsHit = [trade.tp1HitTimestamp, trade.tp2HitTimestamp, trade.tp3HitTimestamp].filter(Boolean).length
+                  const intradayLeft = Math.max(0, 7 - hoursOpen)
+                  const swingLeft = Math.max(0, 21 - hoursOpen)
+                  const showIntraday = tpsHit === 0 && hoursOpen < 7
+                  const showSwing = tpsHit <= 1 && hoursOpen < 21
+
+                  if (!showIntraday && !showSwing) return null
+                  return (
+                    <div className="bg-input rounded-lg p-2.5 text-xs space-y-1">
+                      <div className="text-text-secondary">Time-stop:</div>
+                      {showIntraday && (
+                        <div className="flex justify-between">
+                          <span>Интрадей (50% выход):</span>
+                          <span className={intradayLeft < 1 ? 'text-short' : 'text-text-primary'}>
+                            {intradayLeft > 0 ? `через ${fmt2(intradayLeft)}ч` : 'скоро'}
+                          </span>
+                        </div>
+                      )}
+                      {showSwing && (
+                        <div className="flex justify-between">
+                          <span>Свинг (полное закрытие):</span>
+                          <span className={swingLeft < 2 ? 'text-short' : 'text-text-primary'}>
+                            {swingLeft > 0 ? `через ${fmt2(swingLeft)}ч` : 'скоро'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
+
+                {/* Exit reason + time in trade */}
+                {(trade.exitReason || trade.timeInTradeMin != null) && (
+                  <div className="bg-input rounded-lg p-2.5 text-xs space-y-1">
+                    {trade.exitReason && (
+                      <div className="flex justify-between">
+                        <span className="text-text-secondary">Причина выхода:</span>
+                        <span className={`font-medium ${
+                          trade.exitReason.includes('TP') ? 'text-long' :
+                          trade.exitReason === 'TIME_STOP' ? 'text-accent' :
+                          'text-short'
+                        }`}>
+                          {{
+                            INITIAL_STOP: 'Стоп-лосс',
+                            BE_STOP: 'Стоп на BE',
+                            TRAILING_STOP: 'Trailing стоп',
+                            TIME_STOP: 'Time-стоп',
+                            MANUAL_EXIT: 'Ручной выход',
+                            TP1_PARTIAL: 'TP1 (частичное)',
+                            TP2_PARTIAL: 'TP2 (частичное)',
+                            TP3_FINAL: 'TP3 (финал)',
+                          }[trade.exitReason] || trade.exitReason}
+                        </span>
+                      </div>
+                    )}
+                    {trade.timeInTradeMin != null && (
+                      <div className="flex justify-between">
+                        <span className="text-text-secondary">Время в сделке:</span>
+                        <span className="text-text-primary">
+                          {trade.timeInTradeMin >= 60
+                            ? `${Math.floor(trade.timeInTradeMin / 60)}ч ${trade.timeInTradeMin % 60}м`
+                            : `${trade.timeInTradeMin}м`}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             {trade.notes && (
               <div className="text-sm text-text-secondary bg-input rounded-lg p-3">
                 <span className="text-xs text-text-secondary block mb-1">Заметки</span>
