@@ -580,7 +580,7 @@ export default function Trades() {
 
       {/* Модалки */}
       {closing && <CloseModal trade={closing} onClose={() => setClosing(null)} onDone={() => { setClosing(null); load() }} />}
-      {selected && <TradeDetail trade={selected} onClose={() => setSelected(null)} onRefresh={load} />}
+      {selected && <TradeDetail trade={selected} onClose={() => setSelected(null)} onRefresh={load} currentPrice={livePrices[selected.id]?.currentPrice ?? undefined} />}
       {cancelling && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={() => { setCancelling(null); setCancelReason('') }}>
           <div className="bg-card border border-input rounded-lg p-6 w-[400px]" onClick={e => e.stopPropagation()}>

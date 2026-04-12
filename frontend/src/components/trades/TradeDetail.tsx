@@ -4,7 +4,7 @@ import { formatDate, pnlColor, fmt2, fmt2Signed } from '../../lib/formatters'
 import { TradeStatusBadge } from '../StatusBadge'
 import { useCoinSearch } from '../../hooks/useCoinSearch'
 
-export default function TradeDetail({ trade, onClose, onRefresh }: { trade: Trade; onClose: () => void; onRefresh: () => void }) {
+export default function TradeDetail({ trade, onClose, onRefresh, currentPrice }: { trade: Trade; onClose: () => void; onRefresh: () => void; currentPrice?: number }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -280,8 +280,26 @@ export default function TradeDetail({ trade, onClose, onRefresh }: { trade: Trad
                   </div>
                 )}
 
+                {/* MFE/MAE в долларах */}
+                {(trade.mfe != null || trade.mae != null) && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-input rounded-lg p-2.5">
+                      <div className="text-xs text-text-secondary">Макс. прибыль ($)</div>
+                      <div className={`font-mono font-bold text-sm ${trade.mfe && trade.mfe > 0 ? 'text-long' : 'text-text-secondary'}`}>
+                        {trade.mfe != null ? `+${fmt2(trade.amount * trade.leverage * (trade.mfe / 100))}$` : '—'}
+                      </div>
+                    </div>
+                    <div className="bg-input rounded-lg p-2.5">
+                      <div className="text-xs text-text-secondary">Макс. просадка ($)</div>
+                      <div className={`font-mono font-bold text-sm ${trade.mae && trade.mae < 0 ? 'text-short' : 'text-text-secondary'}`}>
+                        {trade.mae != null ? `${fmt2(trade.amount * trade.leverage * (trade.mae / 100))}$` : '—'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Stop tracking */}
-                {(trade.initialStop != null || trade.stopMovedToBe) && (
+                {((trade.initialStop != null && trade.initialStop !== trade.stopLoss) || trade.stopMovedToBe || trade.trailingActivated || trade.stopMoveReason) && (
                   <div className="bg-input rounded-lg p-2.5 text-xs space-y-1">
                     {trade.initialStop != null && trade.initialStop !== trade.stopLoss && (
                       <div className="flex justify-between">
@@ -316,10 +334,27 @@ export default function TradeDetail({ trade, onClose, onRefresh }: { trade: Trad
                   const showIntraday = tpsHit === 0 && hoursOpen < 7
                   const showSwing = tpsHit <= 1 && hoursOpen < 21
 
+                  const riskAmount = Math.abs(trade.entryPrice - (trade.initialStop ?? trade.stopLoss))
+                  const direction = trade.type === 'LONG' ? 1 : -1
+                  const progressR = currentPrice && riskAmount > 0
+                    ? ((currentPrice - trade.entryPrice) * direction) / riskAmount
+                    : null
+
                   if (!showIntraday && !showSwing) return null
                   return (
                     <div className="bg-input rounded-lg p-2.5 text-xs space-y-1">
                       <div className="text-text-secondary">Time-stop:</div>
+                      {progressR != null && (
+                        <div className="flex justify-between">
+                          <span>Прогресс:</span>
+                          <span className={`font-mono font-bold ${progressR >= 0.4 ? 'text-long' : progressR < 0 ? 'text-short' : 'text-text-primary'}`}>
+                            {fmt2Signed(progressR)}R
+                            <span className="text-text-secondary font-normal ml-1">
+                              (нужно {showIntraday ? '+0.4R' : '+0.8R'})
+                            </span>
+                          </span>
+                        </div>
+                      )}
                       {showIntraday && (
                         <div className="flex justify-between">
                           <span>Интрадей (50% выход):</span>

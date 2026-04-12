@@ -129,9 +129,9 @@ export async function closeTradePortion(
   const { pnlPercent, portionAmount, pnlUsdt } = computePortionPnl(trade, closePrice, actualPct)
   const exitFee = await calcExitFee(portionAmount, trade.leverage)
 
-  // Возврат маржи + P&L − fee
+  // P&L − fee (маржа не трогаем — она освобождается через getUsedMargin при смене статуса)
   await adjustVirtualBalance(
-    portionAmount + pnlUsdt - exitFee,
+    pnlUsdt - exitFee,
     opts.logContext ??
       `${isSL ? 'SL' : 'close'} ${trade.coin} #${trade.id} ${actualPct}% pnl=${pnlUsdt.toFixed(2)} fee=${exitFee.toFixed(4)}`,
   )
