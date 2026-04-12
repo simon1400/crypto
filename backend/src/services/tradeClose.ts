@@ -222,12 +222,16 @@ export async function closeTradePortion(
 /**
  * Отмена PENDING_ENTRY сделки: возврат зарезервированной entry fee.
  */
-export async function cancelPendingTrade(trade: Trade): Promise<Trade> {
+export async function cancelPendingTrade(trade: Trade, reason?: string): Promise<Trade> {
   if (trade.fees > 0) {
     await adjustVirtualBalance(trade.fees, `refund pending entry fee #${trade.id}`)
   }
   return prisma.trade.update({
     where: { id: trade.id },
-    data: { status: 'CANCELLED', closedAt: new Date() },
+    data: {
+      status: 'CANCELLED',
+      closedAt: new Date(),
+      exitReason: reason || 'MANUAL_CANCEL',
+    },
   })
 }

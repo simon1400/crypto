@@ -36,7 +36,7 @@ interface Props {
 }
 
 // 1h candles: 72 = 3 days forward projection for open positions
-const FUTURE_BARS = 72
+const FUTURE_BARS = 24
 const CLOSED_TAIL_BARS = 5
 
 function normalizeSymbol(coin: string): string {
@@ -86,6 +86,8 @@ export default function PositionChartModal({ position, onClose }: Props) {
   const diagonalRef = useRef<any>(null)
   // Zone time anchors, stable across live updates
   const zoneEdgesRef = useRef<{ left: UTCTimestamp; right: UTCTimestamp } | null>(null)
+  // Track live candle OHLC so updates don't overwrite high/low
+  const liveCandleRef = useRef<{ time: number; open: number; high: number; low: number } | null>(null)
   const [klines, setKlines] = useState<KlineData[]>([])
   const [latestKlineTime, setLatestKlineTime] = useState<number>(0)
   const [loading, setLoading] = useState(true)
@@ -232,6 +234,34 @@ export default function PositionChartModal({ position, onClose }: Props) {
         close: k.close,
       }))
     )
+
+    // Always ensure there is a visible candle at the current hour.
+    // Bybit may not include the currently-forming candle, leaving a gap.
+    if (klines.length > 0) {
+      const lastK = klines[klines.length - 1]
+      const nowSec = Math.floor(Date.now() / 1000)
+      const currentHourStart = (Math.floor(nowSec / 3600) * 3600) as UTCTimestamp
+      const price = position.currentPrice ?? lastK.close
+
+      // Determine base OHLC for the live candle
+      const isNewHour = currentHourStart > lastK.time
+      const targetTime = (isNewHour ? currentHourStart : lastK.time) as UTCTimestamp
+      const baseOpen = isNewHour ? lastK.close : lastK.open
+      const baseHigh = isNewHour ? Math.max(lastK.close, price) : Math.max(lastK.high, price)
+      const baseLow = isNewHour ? Math.min(lastK.close, price) : Math.min(lastK.low, price)
+
+      liveCandleRef.current = { time: targetTime, open: baseOpen, high: baseHigh, low: baseLow }
+
+      try {
+        candleSeries.update({
+          time: targetTime,
+          open: baseOpen,
+          high: baseHigh,
+          low: baseLow,
+          close: price,
+        })
+      } catch {}
+    }
 
     // ---- Position overlay ----
     const { entry, stopLoss, takeProfits, currentPrice } = position
@@ -429,10 +459,10 @@ export default function PositionChartModal({ position, onClose }: Props) {
       createSeriesMarkers(candleSeries, markers)
     }
 
-    // Fit the chart to content on initial build. Subsequent live-price updates
-    // go through a separate effect that only mutates overlay series (no rebuild),
-    // so the user's pan/zoom is never touched.
+    // Fit the chart to content on initial build, then scroll so the latest candle
+    // is visible on the right edge (not buried under future overlay zones).
     chart.timeScale().fitContent()
+    chart.timeScale().scrollToRealTime()
 
     // Resize handler
     const handleResize = () => {
@@ -455,9 +485,29 @@ export default function PositionChartModal({ position, onClose }: Props) {
       lossFgRef.current = null
       diagonalRef.current = null
       zoneEdgesRef.current = null
+      liveCandleRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [klines, isLong, depEntry, depStopLoss, depTakeProfits, depOpenedAt, depClosedAt, depPartials])
+
+  // Micro-effect: push a live-price candle as soon as BOTH series and price are available.
+  // Deps include klines.length so it re-fires after heavy effect builds the chart.
+  useEffect(() => {
+    if (depCurrentPrice == null || !candleSeriesRef.current || klines.length === 0) return
+    const lc = liveCandleRef.current
+    if (!lc) return
+    try {
+      lc.high = Math.max(lc.high, depCurrentPrice)
+      lc.low = Math.min(lc.low, depCurrentPrice)
+      candleSeriesRef.current.update({
+        time: lc.time as UTCTimestamp,
+        open: lc.open,
+        high: lc.high,
+        low: lc.low,
+        close: depCurrentPrice,
+      })
+    } catch {}
+  }, [depCurrentPrice, klines.length])
 
   // Lightweight effect: updates overlay zones in place on every live-data tick.
   // Recomputes right edge from latestKlineTime so the zone extends candle-by-candle
@@ -508,14 +558,22 @@ export default function PositionChartModal({ position, onClose }: Props) {
       }
     }
 
-    // Update last candle's close to current live price (keeps candle visually alive between kline fetches)
-    if (live != null && candleSeriesRef.current && latestKlineTime > 0) {
-      try {
-        // lightweight-charts update() merges with existing candle at same time:
-        // close is set, high/low expand if needed, open stays unchanged
-        const t = snapToHour(latestKlineTime) as UTCTimestamp
-        candleSeriesRef.current.update({ time: t, close: live, high: live, low: live, open: live })
-      } catch {}
+    // Update candle with current live price — preserve tracked high/low
+    if (live != null && candleSeriesRef.current) {
+      const lc = liveCandleRef.current
+      if (lc) {
+        try {
+          lc.high = Math.max(lc.high, live)
+          lc.low = Math.min(lc.low, live)
+          candleSeriesRef.current.update({
+            time: lc.time as UTCTimestamp,
+            open: lc.open,
+            high: lc.high,
+            low: lc.low,
+            close: live,
+          })
+        } catch {}
+      }
     }
 
     try {

@@ -243,6 +243,17 @@ export async function deleteTrade(id: number): Promise<void> {
   if (!res.ok) throw new Error('Failed to delete trade')
 }
 
+export async function cancelTrade(id: number, reason: string): Promise<Trade> {
+  const res = await fetch(`${BASE}/api/trades/${id}/cancel`, {
+    method: 'POST', headers: getHeaders(), body: JSON.stringify({ reason }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function closeAllTrades(): Promise<{ closed: number }> {
   const res = await fetch(`${BASE}/api/trades/close-all`, {
     method: 'POST', headers: getHeaders(),

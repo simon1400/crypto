@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  getTrades, getTradeStats, getTradeLivePrices, closeAllTrades, deleteAllTrades,
+  getTrades, getTradeStats, getTradeLivePrices, closeAllTrades, deleteAllTrades, cancelTrade,
   Trade, TradeStats, TradeLive,
 } from '../api/client'
 import { formatDate, pnlColor, fmt2, fmt2Signed } from '../lib/formatters'
@@ -14,17 +14,21 @@ import PositionChartModal, { PositionChartPosition } from '../components/Positio
 function tradeToPosition(t: Trade, currentPrice: number | null): PositionChartPosition {
   // For closed trades: use last close price as "current" (so the realized zone shows final state).
   // For open trades: use live price polled from the market.
+  // For pending trades (limit order not filled): no realized P&L — keep zones flat at entry.
+  const isPending = t.status === 'PENDING_ENTRY'
   const closes = t.closes || []
-  const effectivePrice = currentPrice != null
-    ? currentPrice
-    : (closes.length > 0 ? closes[closes.length - 1].price : null)
+  const effectivePrice = isPending
+    ? null
+    : currentPrice != null
+      ? currentPrice
+      : (closes.length > 0 ? closes[closes.length - 1].price : null)
   return {
     coin: t.coin,
     type: t.type,
     entry: t.entryPrice,
     stopLoss: t.stopLoss,
     takeProfits: (t.takeProfits || []).map(tp => tp.price),
-    openedAt: t.openedAt,
+    openedAt: isPending ? null : t.openedAt,
     closedAt: t.closedAt,
     currentPrice: effectivePrice,
     partialCloses: closes.map(c => ({
@@ -50,6 +54,9 @@ export default function Trades() {
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false)
   const [bulkLoading, setBulkLoading] = useState(false)
   const [chartTrade, setChartTrade] = useState<Trade | null>(null)
+  const [cancelling, setCancelling] = useState<Trade | null>(null)
+  const [cancelReason, setCancelReason] = useState('')
+  const [cancelLoading, setCancelLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -79,9 +86,9 @@ export default function Trades() {
     return () => clearInterval(interval)
   }, [trades])
 
-  const statuses = ['ALL', 'PENDING_ENTRY', 'ACTIVE', 'FINISHED']
+  const statuses = ['ALL', 'PENDING_ENTRY', 'ACTIVE', 'FINISHED', 'CANCELLED']
   const statusLabels: Record<string, string> = {
-    ALL: 'Все', PENDING_ENTRY: 'Ожидание', ACTIVE: 'Открытые', FINISHED: 'Завершённые',
+    ALL: 'Все', PENDING_ENTRY: 'Ожидание', ACTIVE: 'Открытые', FINISHED: 'Завершённые', CANCELLED: 'Отменённые',
   }
   const isFinished = statusFilter === 'FINISHED'
 
@@ -385,8 +392,8 @@ export default function Trades() {
                 <col className="w-[60px]" />
                 <col className="w-[70px]" />
                 <col className="w-[70px]" />
-                <col className="w-[55px]" />
-                <col className="w-[55px]" />
+                {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <col className="w-[55px]" />}
+                {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <col className="w-[55px]" />}
                 <col className="w-[100px]" />
                 <col className="w-[100px]" />
                 <col className="w-[30px]" />
@@ -400,9 +407,9 @@ export default function Trades() {
                   <th className="text-right py-3 px-2">Размер</th>
                   <th className="text-right py-3 px-2">SL</th>
                   <th className="text-right py-3 px-2">TP</th>
-                  <th className="text-center py-3 px-2">Закрыто</th>
-                  <th className="text-right py-3 px-2">Рлз.</th>
-                  <th className="text-right py-3 px-2">P&L</th>
+                  {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <th className="text-center py-3 px-2">Закрыто</th>}
+                  {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <th className="text-right py-3 px-2">Рлз.</th>}
+                  <th className="text-right py-3 px-2">{statusFilter === 'CANCELLED' ? 'Причина' : 'P&L'}</th>
                   <th className="text-center py-3 px-2">Статус</th>
                   <th className="text-right py-3 px-2"></th>
                 </tr>
@@ -501,8 +508,8 @@ export default function Trades() {
                       })()}
                     </td>
 
-                    <td className="py-3 px-2 text-center text-text-secondary">{t.closedPct}%</td>
-                    <td className="py-3 px-2 text-right font-mono text-sm">
+                    {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <td className="py-3 px-2 text-center text-text-secondary">{t.closedPct}%</td>}
+                    {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <td className="py-3 px-2 text-right font-mono text-sm">
                       {t.closedPct > 0 && t.closedPct < 100 ? (
                         <span className={pnlColor(t.realizedPnl - (t.fees || 0))} title={t.fees > 0 ? `Gross: ${fmt2Signed(t.realizedPnl)}$ · Комиссии: -${fmt2(t.fees)}$` : undefined}>
                           {fmt2Signed(t.realizedPnl - (t.fees || 0))}$
@@ -510,9 +517,20 @@ export default function Trades() {
                       ) : (
                         <span className="text-text-secondary">—</span>
                       )}
-                    </td>
+                    </td>}
                     <td className="py-3 px-2 text-right font-mono font-semibold">
-                      {(t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && livePrices[t.id] ? (
+                      {t.status === 'CANCELLED' ? (
+                        <span className="text-text-secondary text-xs font-sans">
+                          {{
+                            PRICE_PASSED: 'Цена прошла мимо',
+                            TP1_REACHED: 'Достиг TP1',
+                            SETUP_INVALIDATED: 'Сетап сломался',
+                            CHANGED_MIND: 'Передумал',
+                            BETTER_ENTRY: 'Лучший вход',
+                            MANUAL_CANCEL: 'Вручную',
+                          }[t.exitReason || ''] || t.exitReason || '—'}
+                        </span>
+                      ) : (t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && livePrices[t.id] ? (
                         <span className={pnlColor(livePrices[t.id].unrealizedPnl)}>
                           {fmt2Signed(livePrices[t.id].unrealizedPnl)}$
                           <span className="text-xs ml-1 opacity-70">
@@ -527,6 +545,12 @@ export default function Trades() {
                     </td>
                     <td className="py-3 px-2 text-center"><TradeStatusBadge status={t.status} pnl={t.realizedPnl} /></td>
                     <td className="py-3 px-2 text-right">
+                      {t.status === 'PENDING_ENTRY' && (
+                        <button onClick={e => { e.stopPropagation(); setCancelling(t) }}
+                          className="p-1.5 bg-short/10 text-short rounded hover:bg-short/20 transition" title="Отменить">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      )}
                       {(t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && (
                         <button onClick={e => { e.stopPropagation(); setClosing(t) }}
                           className="p-1.5 bg-accent/10 text-accent rounded hover:bg-accent/20 transition" title="Закрыть">
@@ -557,6 +581,58 @@ export default function Trades() {
       {/* Модалки */}
       {closing && <CloseModal trade={closing} onClose={() => setClosing(null)} onDone={() => { setClosing(null); load() }} />}
       {selected && <TradeDetail trade={selected} onClose={() => setSelected(null)} onRefresh={load} />}
+      {cancelling && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={() => { setCancelling(null); setCancelReason('') }}>
+          <div className="bg-card border border-input rounded-lg p-6 w-[400px]" onClick={e => e.stopPropagation()}>
+            <h3 className="text-text-primary font-semibold mb-1">Отменить сделку</h3>
+            <p className="text-text-secondary text-sm mb-4">{cancelling.coin.replace('USDT', '')} {cancelling.type} ${cancelling.entryPrice}</p>
+            <div className="space-y-2 mb-4">
+              {[
+                { value: 'PRICE_PASSED', label: 'Цена прошла мимо' },
+                { value: 'TP1_REACHED', label: 'Цена достигла TP1' },
+                { value: 'SETUP_INVALIDATED', label: 'Сетап сломался' },
+                { value: 'CHANGED_MIND', label: 'Передумал' },
+                { value: 'BETTER_ENTRY', label: 'Нашёл лучший вход' },
+              ].map(r => (
+                <button key={r.value}
+                  onClick={() => setCancelReason(r.value)}
+                  className={`w-full text-left px-3 py-2 rounded text-sm transition ${
+                    cancelReason === r.value
+                      ? 'bg-short/15 text-short border border-short/30'
+                      : 'bg-input text-text-secondary hover:text-text-primary'
+                  }`}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setCancelling(null); setCancelReason('') }}
+                className="flex-1 py-2 rounded bg-input text-text-secondary hover:text-text-primary transition text-sm"
+              >
+                Назад
+              </button>
+              <button
+                disabled={!cancelReason || cancelLoading}
+                onClick={async () => {
+                  setCancelLoading(true)
+                  try {
+                    await cancelTrade(cancelling.id, cancelReason)
+                    setCancelling(null)
+                    setCancelReason('')
+                    load()
+                  } catch {}
+                  setCancelLoading(false)
+                }}
+                className="flex-1 py-2 rounded bg-short/20 text-short hover:bg-short/30 transition text-sm disabled:opacity-40"
+              >
+                {cancelLoading ? 'Отмена...' : 'Отменить'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {chartTrade && (
         <PositionChartModal
           position={tradeToPosition(chartTrade, livePrices[chartTrade.id]?.currentPrice ?? null)}

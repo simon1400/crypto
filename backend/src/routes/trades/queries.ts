@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { prisma } from '../../db/prisma'
 import { fetchPricesBatch } from '../../services/market'
 import { getBudgetStatus } from '../../services/budget'
-import { computePortionPnl } from '../../services/tradeClose'
+import { computePortionPnl, cancelPendingTrade } from '../../services/tradeClose'
 import { asyncHandler, parsePagination, parseIdParam } from '../_helpers'
 
 const router = Router()
@@ -76,6 +76,18 @@ router.get('/live', asyncHandler(async (_req, res) => {
 
     // PENDING_ENTRY — show price but no P&L (not yet in position)
     if (t.status === 'PENDING_ENTRY') {
+      // Auto-cancel if price already passed TP1 without filling entry
+      const tps = (t.takeProfits as { price: number }[]) || []
+      if (tps.length > 0 && price != null) {
+        const tp1 = tps[0].price
+        const passedTP1 = t.type === 'LONG' ? price >= tp1 : price <= tp1
+        if (passedTP1) {
+          cancelPendingTrade(t, 'TP1_REACHED').then(() => {
+            console.log(`[Trades] auto-cancel PENDING #${t.id} ${t.coin}: price ${price} passed TP1 ${tp1}`)
+          }).catch(err => console.error(`[Trades] auto-cancel error #${t.id}:`, err))
+          return { id: t.id, status: 'CANCELLED', currentPrice: price, unrealizedPnl: 0, unrealizedPnlPct: 0 }
+        }
+      }
       return { id: t.id, status: t.status, currentPrice: price, unrealizedPnl: 0, unrealizedPnlPct: 0 }
     }
 

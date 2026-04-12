@@ -54,6 +54,26 @@ router.post('/:id/sl-hit', asyncHandler(async (req, res) => {
   res.json(result.updated)
 }, 'Trades'))
 
+// POST /api/trades/:id/cancel — отменить pending сделку с причиной
+router.post('/:id/cancel', asyncHandler(async (req, res) => {
+  const id = parseIdParam(req, res)
+  if (id == null) return
+
+  const trade = await prisma.trade.findUnique({ where: { id } })
+  if (!trade) {
+    res.status(404).json({ error: 'Trade not found' })
+    return
+  }
+  if (trade.status !== 'PENDING_ENTRY') {
+    res.status(400).json({ error: 'Only PENDING_ENTRY trades can be cancelled' })
+    return
+  }
+
+  const { reason } = req.body || {}
+  const result = await cancelPendingTrade(trade, reason || 'MANUAL_CANCEL')
+  res.json(result)
+}, 'Trades'))
+
 // POST /api/trades/close-all — закрыть все открытые сделки по рынку
 router.post('/close-all', asyncHandler(async (_req, res) => {
   const trades = await prisma.trade.findMany({
