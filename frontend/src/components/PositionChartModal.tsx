@@ -553,8 +553,8 @@ export default function PositionChartModal({ position, onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="bg-primary border border-card rounded-lg shadow-2xl w-full max-w-6xl flex flex-col"
-        style={{ height: '85vh' }}
+        className="bg-primary border border-card rounded-lg shadow-2xl flex flex-col"
+        style={{ width: '90vw', height: '90vh' }}
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
