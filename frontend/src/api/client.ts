@@ -243,6 +243,17 @@ export async function deleteTrade(id: number): Promise<void> {
   if (!res.ok) throw new Error('Failed to delete trade')
 }
 
+export async function fillTradeMarket(id: number): Promise<Trade> {
+  const res = await fetch(`${BASE}/api/trades/${id}/fill-market`, {
+    method: 'POST', headers: getHeaders(),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || 'Failed to fill trade')
+  }
+  return res.json()
+}
+
 export async function cancelTrade(id: number, reason: string): Promise<Trade> {
   const res = await fetch(`${BASE}/api/trades/${id}/cancel`, {
     method: 'POST', headers: getHeaders(), body: JSON.stringify({ reason }),

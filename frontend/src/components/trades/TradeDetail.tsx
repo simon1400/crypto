@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { updateTrade, deleteTrade, Trade, TradeTP, TradeClose } from '../../api/client'
+import { updateTrade, deleteTrade, fillTradeMarket, Trade, TradeTP, TradeClose } from '../../api/client'
 import { formatDate, pnlColor, fmt2, fmt2Signed } from '../../lib/formatters'
 import { TradeStatusBadge } from '../StatusBadge'
 import { useCoinSearch } from '../../hooks/useCoinSearch'
@@ -8,6 +8,7 @@ export default function TradeDetail({ trade, onClose, onRefresh, currentPrice }:
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [filling, setFilling] = useState(false)
 
   const editCoinSearch = useCoinSearch(trade.coin.replace('USDT', ''))
   const [eType, setEType] = useState(trade.type)
@@ -425,6 +426,21 @@ export default function TradeDetail({ trade, onClose, onRefresh, currentPrice }:
               Открыта: {formatDate(trade.openedAt)}
               {trade.closedAt && <> | Закрыта: {formatDate(trade.closedAt)}</>}
             </div>
+
+            {trade.status === 'PENDING_ENTRY' && (
+              <button
+                disabled={filling}
+                onClick={async () => {
+                  setFilling(true)
+                  try { await fillTradeMarket(trade.id); onClose(); onRefresh() }
+                  catch (e: any) { alert(e.message) }
+                  finally { setFilling(false) }
+                }}
+                className="w-full py-2 rounded-lg font-semibold text-sm bg-long text-black hover:opacity-90 disabled:opacity-50"
+              >
+                {filling ? 'Входим...' : 'Войти по маркету'}
+              </button>
+            )}
 
             <div className="pt-2 border-t border-input">
               {!confirmDelete ? (

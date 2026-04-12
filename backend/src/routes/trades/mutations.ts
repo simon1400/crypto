@@ -2,8 +2,9 @@ import { Router } from 'express'
 import { prisma } from '../../db/prisma'
 import { assertBudget } from '../../services/budget'
 import { adjustVirtualBalance } from '../../services/virtualBalance'
-import { OrderType } from '../../services/fees'
+import { OrderType, calcEntryFee } from '../../services/fees'
 import { computePortionPnlFromEntry } from '../../services/tradeClose'
+import { fetchPricesBatch } from '../../services/market'
 import { asyncHandler, handleBudgetError, parseIdParam } from '../_helpers'
 
 const router = Router()
@@ -101,6 +102,51 @@ router.put('/:id', asyncHandler(async (req, res) => {
   }
 
   const updated = await prisma.trade.update({ where: { id }, data })
+  res.json(updated)
+}, 'Trades'))
+
+// POST /api/trades/:id/fill-market — войти по рыночной цене (PENDING_ENTRY → OPEN)
+router.post('/:id/fill-market', asyncHandler(async (req, res) => {
+  const id = parseIdParam(req, res)
+  if (id == null) return
+
+  const trade = await prisma.trade.findUnique({ where: { id } })
+  if (!trade) {
+    res.status(404).json({ error: 'Trade not found' })
+    return
+  }
+  if (trade.status !== 'PENDING_ENTRY') {
+    res.status(400).json({ error: 'Only PENDING_ENTRY trades can be filled' })
+    return
+  }
+
+  const prices = await fetchPricesBatch([trade.coin])
+  const price = prices[trade.coin]
+  if (!price) {
+    res.status(500).json({ error: 'Could not fetch current price' })
+    return
+  }
+
+  // Пересчитать entry fee: была limit, теперь market
+  const oldEntryFee = trade.fees
+  const newEntryFee = await calcEntryFee(trade.amount, trade.leverage, 'market')
+  const feeDiff = newEntryFee - oldEntryFee
+  if (feeDiff > 0) {
+    await adjustVirtualBalance(-feeDiff, `fill-market fee diff ${trade.coin} #${trade.id}`)
+  }
+
+  const updated = await prisma.trade.update({
+    where: { id },
+    data: {
+      entryPrice: price,
+      status: 'OPEN',
+      openedAt: new Date(),
+      entryOrderType: 'market',
+      fees: newEntryFee,
+    },
+  })
+
+  console.log(`[Trades] #${id} ${trade.coin} filled at market $${price}`)
   res.json(updated)
 }, 'Trades'))
 
