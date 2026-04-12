@@ -1,12 +1,32 @@
 import { OHLCV } from './market'
 
+// Market structure classification from swing analysis
+export type MarketStructure = 'HH_HL' | 'LH_LL' | 'HH_LL' | 'LH_HL' | 'UNKNOWN'
+export type TrendDetail =
+  | 'BULLISH'           // clean uptrend
+  | 'BULLISH_PULLBACK'  // uptrend but in pullback
+  | 'BEARISH'           // clean downtrend
+  | 'BEARISH_PULLBACK'  // downtrend but in bounce
+  | 'SIDEWAYS'          // no clear direction
+
+export interface SwingPoint {
+  index: number
+  price: number
+  type: 'HIGH' | 'LOW'
+}
+
 export interface CoinIndicators {
   price: number
   ema9: number
   ema20: number
   ema50: number
+  ema200: number
   rsi: number
   trend: 'BULLISH' | 'BEARISH' | 'SIDEWAYS'
+  trendDetail: TrendDetail
+  marketStructure: MarketStructure
+  swingHighs: SwingPoint[]
+  swingLows: SwingPoint[]
   support: number
   resistance: number
   volRatio: number
@@ -363,6 +383,75 @@ function detectPatterns(candles: OHLCV[]): string[] {
   return patterns
 }
 
+// Detect swing highs and lows from OHLC data
+// A swing high: high[i] > high[i-1] AND high[i] > high[i+1] (with lookback window)
+function detectSwingPoints(highs: number[], lows: number[], lookback = 3): { swingHighs: SwingPoint[]; swingLows: SwingPoint[] } {
+  const swingHighs: SwingPoint[] = []
+  const swingLows: SwingPoint[] = []
+
+  for (let i = lookback; i < highs.length - lookback; i++) {
+    let isSwingHigh = true
+    let isSwingLow = true
+
+    for (let j = 1; j <= lookback; j++) {
+      if (highs[i] <= highs[i - j] || highs[i] <= highs[i + j]) isSwingHigh = false
+      if (lows[i] >= lows[i - j] || lows[i] >= lows[i + j]) isSwingLow = false
+    }
+
+    if (isSwingHigh) swingHighs.push({ index: i, price: highs[i], type: 'HIGH' })
+    if (isSwingLow) swingLows.push({ index: i, price: lows[i], type: 'LOW' })
+  }
+
+  return { swingHighs, swingLows }
+}
+
+// Classify market structure from last 2 swing highs and 2 swing lows
+function classifyMarketStructure(swingHighs: SwingPoint[], swingLows: SwingPoint[]): MarketStructure {
+  if (swingHighs.length < 2 || swingLows.length < 2) return 'UNKNOWN'
+
+  const lastHigh = swingHighs[swingHighs.length - 1]
+  const prevHigh = swingHighs[swingHighs.length - 2]
+  const lastLow = swingLows[swingLows.length - 1]
+  const prevLow = swingLows[swingLows.length - 2]
+
+  const higherHigh = lastHigh.price > prevHigh.price
+  const higherLow = lastLow.price > prevLow.price
+  const lowerHigh = lastHigh.price < prevHigh.price
+  const lowerLow = lastLow.price < prevLow.price
+
+  if (higherHigh && higherLow) return 'HH_HL'
+  if (lowerHigh && lowerLow) return 'LH_LL'
+  if (higherHigh && lowerLow) return 'HH_LL'
+  if (lowerHigh && higherLow) return 'LH_HL'
+  return 'UNKNOWN'
+}
+
+// Determine detailed trend from EMA alignment + structure + pullback detection
+function classifyTrendDetail(
+  price: number,
+  ema20: number,
+  ema50: number,
+  ema200: number,
+  structure: MarketStructure,
+): TrendDetail {
+  const bullishEMA = ema50 > ema200 && price > ema200
+  const bearishEMA = ema50 < ema200 && price < ema200
+
+  if (bullishEMA || structure === 'HH_HL') {
+    // Pullback: price dipped below EMA20 but still above EMA50
+    if (price < ema20 && price >= ema50) return 'BULLISH_PULLBACK'
+    return 'BULLISH'
+  }
+
+  if (bearishEMA || structure === 'LH_LL') {
+    // Bounce: price above EMA20 but still below EMA50
+    if (price > ema20 && price <= ema50) return 'BEARISH_PULLBACK'
+    return 'BEARISH'
+  }
+
+  return 'SIDEWAYS'
+}
+
 export function computeIndicators(candles: OHLCV[]): CoinIndicators {
   const closes = candles.map((c) => c.close)
   const highs = candles.map((c) => c.high)
@@ -372,17 +461,27 @@ export function computeIndicators(candles: OHLCV[]): CoinIndicators {
   const ema9Arr = ema(closes, 9)
   const ema20Arr = ema(closes, 20)
   const ema50Arr = ema(closes, 50)
+  const ema200Arr = ema(closes, 200)
 
   const price = closes[closes.length - 1]
   const ema9Val = ema9Arr[ema9Arr.length - 1]
   const ema20Val = ema20Arr[ema20Arr.length - 1]
   const ema50Val = ema50Arr[ema50Arr.length - 1]
+  const ema200Val = ema200Arr[ema200Arr.length - 1]
   const rsiVal = rsi(closes)
 
+  // Swing structure detection
+  const { swingHighs, swingLows } = detectSwingPoints(highs, lows)
+  const marketStructure = classifyMarketStructure(swingHighs, swingLows)
+
+  // Legacy trend (kept for backward compat)
   let trend: 'BULLISH' | 'BEARISH' | 'SIDEWAYS'
   if (ema20Val > ema50Val && price > ema20Val) trend = 'BULLISH'
   else if (ema20Val < ema50Val && price < ema20Val) trend = 'BEARISH'
   else trend = 'SIDEWAYS'
+
+  // New detailed trend using EMA200 + structure
+  const trendDetail = classifyTrendDetail(price, ema20Val, ema50Val, ema200Val, marketStructure)
 
   const last20Lows = lows.slice(-20)
   const last20Highs = highs.slice(-20)
@@ -412,8 +511,13 @@ export function computeIndicators(candles: OHLCV[]): CoinIndicators {
     ema9: round2(ema9Val),
     ema20: round2(ema20Val),
     ema50: round2(ema50Val),
+    ema200: round2(ema200Val),
     rsi: round2(rsiVal),
     trend,
+    trendDetail,
+    marketStructure,
+    swingHighs: swingHighs.slice(-4), // keep last 4 for analysis
+    swingLows: swingLows.slice(-4),
     support: round2(support),
     resistance: round2(resistance),
     volRatio,

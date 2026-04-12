@@ -1,3 +1,4 @@
+// Legacy categories (backward compat with old signals in DB)
 export const CATEGORY_STYLES: Record<string, { bg: string; text: string; label: string }> = {
   READY: { bg: 'bg-long/15', text: 'text-long', label: 'Ready' },
   READY_AGGRESSIVE: { bg: 'bg-long/10', text: 'text-long', label: 'Ready (Aggr)' },
@@ -7,6 +8,24 @@ export const CATEGORY_STYLES: Record<string, { bg: string; text: string; label: 
   LATE_ENTRY: { bg: 'bg-orange-500/15', text: 'text-orange-400', label: 'Late Entry' },
   CONFLICTED: { bg: 'bg-short/15', text: 'text-short', label: 'Conflicted' },
   REJECTED: { bg: 'bg-neutral/10', text: 'text-neutral', label: 'Rejected' },
+}
+
+// New setup categories (3-layer scoring)
+export const SETUP_CATEGORY_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  A_PLUS_READY: { bg: 'bg-long/20', text: 'text-long', label: 'A+ Ready' },
+  READY: { bg: 'bg-long/15', text: 'text-long', label: 'Ready' },
+  WATCHLIST: { bg: 'bg-neutral/15', text: 'text-neutral', label: 'Watchlist' },
+  IGNORE: { bg: 'bg-neutral/10', text: 'text-neutral', label: 'Ignore' },
+}
+
+// Execution type styles
+export const EXECUTION_TYPE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  ENTER_NOW_LONG: { bg: 'bg-long/20', text: 'text-long', label: 'Вход LONG' },
+  ENTER_NOW_SHORT: { bg: 'bg-short/20', text: 'text-short', label: 'Вход SHORT' },
+  LIMIT_LONG: { bg: 'bg-accent/15', text: 'text-accent', label: 'Лимит LONG' },
+  LIMIT_SHORT: { bg: 'bg-accent/15', text: 'text-accent', label: 'Лимит SHORT' },
+  WAIT_CONFIRMATION: { bg: 'bg-blue-500/15', text: 'text-blue-400', label: 'Ждать' },
+  IGNORE: { bg: 'bg-neutral/10', text: 'text-neutral', label: 'Игнор' },
 }
 
 export const BAND_STYLES: Record<string, { text: string; label: string }> = {
@@ -30,21 +49,34 @@ export const MODEL_LABELS: Record<string, string> = {
   pullback: 'Откат',
 }
 
+// Exit reason labels
+export const EXIT_REASON_LABELS: Record<string, string> = {
+  INITIAL_STOP: 'Стоп-лосс',
+  BE_STOP: 'Стоп на BE',
+  TRAILING_STOP: 'Trailing стоп',
+  TIME_STOP: 'Time-стоп',
+  MANUAL_EXIT: 'Ручной выход',
+  TP1_PARTIAL: 'TP1 (частичное)',
+  TP2_PARTIAL: 'TP2 (частичное)',
+  TP3_FINAL: 'TP3 (финал)',
+}
+
 export const LOADING_MESSAGES = [
   'Сканирую монеты...',
-  'Получаю данные с MEXC...',
-  'Считаю индикаторы (15m, 1h, 4h)...',
+  'Получаю данные с Bybit...',
+  'Считаю индикаторы (5m, 15m, 1h, 4h)...',
   'Проверяю Funding Rate и Open Interest...',
   'Читаю новости...',
   'Определяю режим рынка...',
   'Запускаю стратегии...',
-  'Считаю скоринг...',
+  'Hard filters + Setup Score...',
+  'Entry trigger анализ...',
   'GPT-5.4 проверяет сигналы...',
   'Формирую торговый план...',
 ]
 
 export const ENTRY_MESSAGES = [
-  'Загружаю данные по 3 таймфреймам...',
+  'Загружаю данные по 4 таймфреймам...',
   'Собираю уровни поддержки/сопротивления...',
   'Кластеризую уровни...',
   'Считаю точки входа...',

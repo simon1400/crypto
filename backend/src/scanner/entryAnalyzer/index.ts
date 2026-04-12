@@ -7,7 +7,7 @@ import { fetchAllCoinNews, NewsSentiment } from '../../services/news'
 import { detectMarketRegime, RegimeContext } from '../marketRegime'
 import { detectCoinRegime, CoinRegimeContext } from '../coinRegime'
 import { runStrategies } from '../strategies/index'
-import { scoreSignal } from '../scoring'
+import { runScoringPipeline } from '../scoring/index'
 import { gptAnnotateEntrySignal, EntryGPTAnnotation } from '../gptEntryFilter'
 import { getLiquidationStats, LiquidationStats } from '../../services/liquidations'
 import { fetchLongShortRatios, LSRData } from '../../services/longShortRatio'
@@ -208,10 +208,12 @@ function analyzeCoin(
   let reasons: string[] = []
 
   if (rawSignal) {
-    const scored = scoreSignal(rawSignal, regime, funding, news, oi, liquidations, lsr)
-    score = scored.score
-    strategy = rawSignal.strategy
-    reasons = rawSignal.reasons
+    const enriched = runScoringPipeline(rawSignal, regime, coinRegime, funding, oi, news, liquidations, lsr)
+    if (enriched) {
+      score = enriched.setup_score
+      strategy = rawSignal.strategy
+      reasons = rawSignal.reasons
+    }
   }
 
   // Collect and cluster levels

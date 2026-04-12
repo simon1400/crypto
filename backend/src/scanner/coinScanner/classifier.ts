@@ -1,4 +1,4 @@
-import { SignalWithRisk } from '../riskCalc'
+import { SignalWithRisk } from '../scoring/types'
 import { RegimeContext } from '../marketRegime'
 import { CoinRegimeContext } from '../coinRegime'
 import { SignalCategory, ScoreBand, EntryQuality, TriggerState } from './types'

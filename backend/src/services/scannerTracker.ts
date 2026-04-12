@@ -5,10 +5,16 @@ import { closeTradePortion } from './tradeClose'
 // Tracks SCANNER trades every 2 seconds:
 // 1. PENDING_ENTRY — waits for price to reach or cross entry, then activates
 // 2. OPEN/PARTIALLY_CLOSED — monitors SL/TP levels, auto-closes
+//    Also: MFE/MAE tracking, time-stop enforcement
 // 3. ENTRY_ANALYZER pairs — auto-merges when both entries fill
 
-// Store last known price per coin to detect crossings
 const lastPrices: Record<string, number> = {}
+
+// Time-stop constants
+const INTRADAY_TIME_STOP_HOURS = 7      // 6-8 hours
+const INTRADAY_MIN_PROGRESS_R = 0.4
+const SWING_TIME_STOP_HOURS = 21         // 18-24 hours
+const SWING_MIN_PROGRESS_R = 0.8
 
 export async function trackScannerTrades() {
   const trades = await prisma.trade.findMany({
@@ -19,7 +25,6 @@ export async function trackScannerTrades() {
 
   if (!trades.length) return
 
-  // Fetch prices for all unique coins in parallel
   const prices = await fetchPricesBatch(trades.map(t => t.coin))
 
   for (const trade of trades) {
@@ -32,29 +37,29 @@ export async function trackScannerTrades() {
 
       // === Phase 1: Wait for entry fill ===
       if (trade.status === 'PENDING_ENTRY') {
-        // Entry fills when price equals or crosses entry level
         let entryFilled = false
         if (prevPrice != null) {
-          // Price crossed entry between ticks
           if (isLong) {
-            // LONG limit: price was above entry, now at or below
             entryFilled = prevPrice > trade.entryPrice && price <= trade.entryPrice
           } else {
-            // SHORT limit: price was below entry, now at or above
             entryFilled = prevPrice < trade.entryPrice && price >= trade.entryPrice
           }
         }
-        // Also fill if price exactly equals entry
         if (price === trade.entryPrice) entryFilled = true
 
         if (entryFilled) {
           await prisma.trade.update({
             where: { id: trade.id },
-            data: { status: 'OPEN', openedAt: new Date() },
+            data: {
+              status: 'OPEN',
+              openedAt: new Date(),
+              // Populate initial_stop = current stopLoss at entry time
+              initialStop: trade.initialStop ?? trade.stopLoss,
+              currentStop: trade.stopLoss,
+            },
           })
           console.log(`[ScannerTracker] ${trade.coin} entry filled at $${price} (target $${trade.entryPrice})`)
 
-          // Check if this is an ENTRY_ANALYZER pair — auto-merge if both filled
           if (trade.source === 'ENTRY_ANALYZER' && trade.notes) {
             await tryMergeEntryPair(trade.id, trade.notes)
           }
@@ -63,11 +68,29 @@ export async function trackScannerTrades() {
         continue
       }
 
-      // === Phase 2: Track SL/TP with Trailing Stop ===
+      // === Phase 2: Track SL/TP + MFE/MAE + Time-stop ===
       const tps = trade.takeProfits as { price: number; percent: number }[]
       const closes = (trade.closes as any[]) || []
 
-      // Determine how many TPs already hit (for trailing SL)
+      // --- MFE/MAE tracking ---
+      const direction = isLong ? 1 : -1
+      const excursionPct = ((price - trade.entryPrice) / trade.entryPrice) * 100 * direction
+      const currentMfe = trade.mfe ?? 0
+      const currentMae = trade.mae ?? 0
+      const newMfe = Math.max(currentMfe, excursionPct)
+      const newMae = Math.min(currentMae, excursionPct)
+
+      if (newMfe !== currentMfe || newMae !== currentMae) {
+        await prisma.trade.update({
+          where: { id: trade.id },
+          data: {
+            mfe: Math.round(newMfe * 100) / 100,
+            mae: Math.round(newMae * 100) / 100,
+          },
+        })
+      }
+
+      // --- Determine trailing SL ---
       const tpsSortedByPrice = [...tps].sort((a, b) => isLong ? a.price - b.price : b.price - a.price)
       let tpsHitCount = 0
       for (const tp of tpsSortedByPrice) {
@@ -76,7 +99,6 @@ export async function trackScannerTrades() {
         else break
       }
 
-      // Trailing SL: TP1 hit → SL = entry (BE), TP2 hit → SL = TP1, TPn hit → SL = TP(n-1)
       let effectiveSL = trade.stopLoss
       if (tpsHitCount === 1) {
         effectiveSL = trade.entryPrice
@@ -84,7 +106,42 @@ export async function trackScannerTrades() {
         effectiveSL = tpsSortedByPrice[tpsHitCount - 2].price
       }
 
-      // Check SL (using effective trailing SL)
+      // --- Time-stop check ---
+      const openTime = trade.openedAt?.getTime() || trade.createdAt.getTime()
+      const hoursOpen = (Date.now() - openTime) / (1000 * 60 * 60)
+      const riskAmount = Math.abs(trade.entryPrice - (trade.initialStop ?? trade.stopLoss))
+      const progressR = riskAmount > 0 ? (excursionPct / 100 * trade.entryPrice) / riskAmount : 0
+
+      // Intraday time-stop: 7h without +0.4R progress
+      if (hoursOpen >= INTRADAY_TIME_STOP_HOURS && progressR < INTRADAY_MIN_PROGRESS_R && tpsHitCount === 0) {
+        console.log(`[ScannerTracker] ${trade.coin} TIME-STOP (intraday): ${hoursOpen.toFixed(1)}h, progress ${progressR.toFixed(2)}R < ${INTRADAY_MIN_PROGRESS_R}R`)
+        await closeTradePortion(trade, {
+          price,
+          percent: 50, // partial exit: close 50%
+          exitReason: 'TIME_STOP',
+          logContext: `time-stop intraday ${trade.coin} #${trade.id}`,
+        })
+        const updated = await prisma.trade.findUnique({ where: { id: trade.id } })
+        if (updated) Object.assign(trade, updated)
+        lastPrices[trade.coin] = price
+        continue
+      }
+
+      // Swing time-stop: 21h without sufficient progress
+      if (hoursOpen >= SWING_TIME_STOP_HOURS && progressR < SWING_MIN_PROGRESS_R && tpsHitCount <= 1) {
+        console.log(`[ScannerTracker] ${trade.coin} TIME-STOP (swing): ${hoursOpen.toFixed(1)}h, progress ${progressR.toFixed(2)}R < ${SWING_MIN_PROGRESS_R}R`)
+        await closeTradePortion(trade, {
+          price,
+          percent: 100 - trade.closedPct,
+          forceFullClose: true,
+          exitReason: 'TIME_STOP',
+          logContext: `time-stop swing ${trade.coin} #${trade.id}`,
+        })
+        lastPrices[trade.coin] = price
+        continue
+      }
+
+      // --- SL check ---
       const slHit = isLong ? price <= effectiveSL : price >= effectiveSL
       if (slHit) {
         await closeTradePortion(trade, {
@@ -92,6 +149,9 @@ export async function trackScannerTrades() {
           percent: 100 - trade.closedPct,
           isSL: true,
           forceFullClose: true,
+          exitReason: tpsHitCount > 0
+            ? (trade.trailingActivated ? 'TRAILING_STOP' : 'BE_STOP')
+            : 'INITIAL_STOP',
           logContext: `auto-SL ${trade.coin} #${trade.id}`,
         })
         const label = tpsHitCount > 0 ? `trailing SL (after TP${tpsHitCount})` : 'SL'
@@ -100,7 +160,7 @@ export async function trackScannerTrades() {
         continue
       }
 
-      // Check TPs from highest to lowest
+      // --- TP check (from highest to lowest) ---
       const sortedTps = [...tps].sort((a, b) => isLong ? b.price - a.price : a.price - b.price)
 
       for (const tp of sortedTps) {
@@ -112,18 +172,21 @@ export async function trackScannerTrades() {
           const pctToClose = Math.min(tp.percent, 100 - trade.closedPct)
           if (pctToClose <= 0) continue
 
+          // Determine TP number
+          const tpIndex = tpsSortedByPrice.findIndex(t => Math.abs(t.price - tp.price) < 0.0001)
+          const tpNum = tpIndex >= 0 ? tpIndex + 1 : 0
+
           await closeTradePortion(trade, {
             price: tp.price,
             percent: pctToClose,
-            logContext: `auto-TP ${trade.coin} #${trade.id}`,
+            tpNumber: tpNum,
+            exitReason: tpNum === tps.length ? 'TP3_FINAL' : `TP${tpNum}_PARTIAL`,
+            logContext: `auto-TP${tpNum} ${trade.coin} #${trade.id}`,
           })
 
-          // Determine which TP number was hit
-          const tpIndex = tpsSortedByPrice.findIndex(t => Math.abs(t.price - tp.price) < 0.0001)
-          const tpNum = tpIndex >= 0 ? tpIndex + 1 : '?'
           const updated = await prisma.trade.findUnique({ where: { id: trade.id } })
           if (updated) Object.assign(trade, updated)
-          console.log(`[ScannerTracker] ${trade.coin} TP${tpNum} hit at $${tp.price} (${pctToClose}%) → trailing SL moved to $${trade.stopLoss}`)
+          console.log(`[ScannerTracker] ${trade.coin} TP${tpNum} hit at $${tp.price} (${pctToClose}%) → SL=$${updated?.stopLoss}`)
 
           break
         }
@@ -138,13 +201,11 @@ export async function trackScannerTrades() {
 
 // Auto-merge ENTRY_ANALYZER pair when both entries are filled
 async function tryMergeEntryPair(_filledTradeId: number, notes: string) {
-  // Extract group ID from notes: "group:EA-1234567890 | ..."
   const groupMatch = notes.match(/group:(EA-\d+)/)
   if (!groupMatch) return
 
   const groupId = groupMatch[1]
 
-  // Find all trades in this group
   const groupTrades = await prisma.trade.findMany({
     where: {
       source: 'ENTRY_ANALYZER',
@@ -154,17 +215,14 @@ async function tryMergeEntryPair(_filledTradeId: number, notes: string) {
 
   if (groupTrades.length !== 2) return
 
-  // Both must be OPEN (just filled)
   const allOpen = groupTrades.every(t => t.status === 'OPEN')
   if (!allOpen) return
 
   const [t1, t2] = groupTrades.sort((a, b) => a.id - b.id)
 
-  // Calculate weighted average entry
   const totalAmount = t1.amount + t2.amount
   const avgEntry = Math.round(((t1.entryPrice * t1.amount + t2.entryPrice * t2.amount) / totalAmount) * 10000) / 10000
 
-  // Recalculate TP R:R from averaged entry
   const tps = t1.takeProfits as any[]
   const riskAmount = Math.abs(avgEntry - t1.stopLoss)
   const direction = t1.type === 'LONG' ? 1 : -1
@@ -174,14 +232,11 @@ async function tryMergeEntryPair(_filledTradeId: number, notes: string) {
     rr: riskAmount > 0 ? Math.round(((tp.price - avgEntry) * direction / riskAmount) * 100) / 100 : 0,
   }))
 
-  // Delete both old trades
   await prisma.trade.deleteMany({ where: { id: { in: [t1.id, t2.id] } } })
 
-  // Сохраняем Score из исходных notes (если был)
   const scoreMatch = (t1.notes || t2.notes || '').match(/Score:\s*(\d+)/)
   const scorePart = scoreMatch ? ` | Score: ${scoreMatch[1]}` : ''
 
-  // Create merged trade — переносим суммарные fees (entry fees уже были списаны)
   const merged = await prisma.trade.create({
     data: {
       coin: t1.coin,
@@ -190,6 +245,8 @@ async function tryMergeEntryPair(_filledTradeId: number, notes: string) {
       entryPrice: avgEntry,
       amount: totalAmount,
       stopLoss: t1.stopLoss,
+      initialStop: t1.stopLoss,
+      currentStop: t1.stopLoss,
       takeProfits: newTPs,
       status: 'OPEN',
       source: 'ENTRY_ANALYZER',
@@ -203,4 +260,3 @@ async function tryMergeEntryPair(_filledTradeId: number, notes: string) {
 
   console.log(`[ScannerTracker] Auto-merged ${groupId}: #${t1.id} + #${t2.id} → #${merged.id} (avg entry: $${avgEntry}, total: $${totalAmount})`)
 }
-

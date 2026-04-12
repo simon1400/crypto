@@ -281,7 +281,7 @@ export interface ScannerSignal {
   score: number
   entry: number
   stopLoss: number
-  takeProfits: { price: number; rr: number }[]
+  takeProfits: { price: number; rr: number; close_pct?: number }[]
   leverage: number
   positionPct: number
   amount: number
@@ -296,6 +296,23 @@ export interface ScannerSignal {
   createdAt: string
   takenAt: string | null
   closedAt: string | null
+  // New 3-layer scoring fields
+  initialStop: number | null
+  currentStop: number | null
+  setupScore: number | null
+  setupCategory: string | null
+  executionType: string | null
+  entryModel: string | null
+  stopMovedToBe: boolean
+  stopMoveReason: string | null
+  trailingActivated: boolean
+  exitReason: string | null
+  tp1HitTimestamp: string | null
+  tp2HitTimestamp: string | null
+  tp3HitTimestamp: string | null
+  timeInTradeMin: number | null
+  mfe: number | null
+  mae: number | null
 }
 
 export interface EntryModel {
@@ -331,7 +348,7 @@ export interface ScanSignal {
   entry: number
   stopLoss: number
   slPercent: number
-  takeProfits: { price: number; rr: number }[]
+  takeProfits: { price: number; rr: number; close_pct?: number }[]
   tp1Percent: number
   tp2Percent: number
   tp3Percent: number
@@ -348,6 +365,56 @@ export interface ScanSignal {
   aiKeyLevels: string[]
   recommendedEntryType: string
   waitForConfirmation: string | null
+  // === New 3-layer scoring ===
+  setup_category?: string
+  execution_type?: string
+  setup_score?: number
+  setup_score_breakdown?: {
+    trend: number
+    location: number
+    momentum: number
+    derivatives: number
+    geometry: number
+    penalties: number
+    total: number
+    penalties_applied: string[]
+  }
+  entry_trigger_result?: {
+    passed: boolean
+    score: number
+    conditions: {
+      pullback_zone: boolean
+      candle_reclaim: boolean
+      reversal_volume: boolean
+      distance_from_trigger: boolean
+    }
+    details: string[]
+  }
+  hard_filter_result?: {
+    passed: boolean
+    failures: string[]
+  }
+  signal_context?: Record<string, any>
+  limit_entry_plan?: {
+    entry_zone_low: number
+    entry_zone_high: number
+    preferred_limit_price: number
+    zone_source: string
+    invalidation_price: number
+    explanation: string
+  } | null
+  market_entry_plan?: {
+    market_entry_price: number
+    max_chase_price: number
+    invalidation_price: number
+    explanation: string
+  } | null
+  risk_profile?: {
+    risk_pct: number
+    max_sl_pct: number
+    entry_model: string
+    position_size_multiplier: number
+  }
 }
 
 export interface ScanFunnel {
@@ -355,11 +422,14 @@ export interface ScanFunnel {
   fetchErrors: number
   strategyCandidates: number
   rejectedByVolume: number
+  rejectedByHardFilter: number
   passedScoring: number
   rejectedByRR: number
   passedRisk: number
   byStrategy: Record<string, number>
   byCategory: Record<string, number>
+  bySetupCategory: Record<string, number>
+  byExecutionType: Record<string, number>
   final: number
 }
 
@@ -393,6 +463,7 @@ export async function triggerScan(coins?: string[], minScore?: number, useGPT?: 
 export type ScanPhase =
   | 'idle' | 'starting' | 'market_data' | 'fetching' | 'regime'
   | 'scoring' | 'risk_calc' | 'gpt' | 'saving' | 'done' | 'error'
+  // risk_calc kept for backward compat with older backend
 
 export interface ScanProgress {
   phase: ScanPhase

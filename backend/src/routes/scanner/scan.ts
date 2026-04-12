@@ -71,6 +71,18 @@ router.post('/scan', asyncHandler(async (req, res) => {
         aiKeyLevels: r.gptAnnotation.keyLevels,
         recommendedEntryType: r.gptAnnotation.recommendedEntryType,
         waitForConfirmation: r.gptAnnotation.waitForConfirmation,
+        // === New 3-layer scoring ===
+        setup_category: r.setup_category ?? null,
+        execution_type: r.execution_type ?? null,
+        setup_score: r.enriched?.setup_score ?? null,
+        setup_score_breakdown: r.setup_score_breakdown ?? null,
+        entry_trigger_result: r.entry_trigger_result ?? null,
+        hard_filter_result: r.hard_filter_result ?? null,
+        signal_context: r.signal_context ?? null,
+        signal_explanation: r.signal_explanation ?? null,
+        limit_entry_plan: r.limit_entry_plan ?? null,
+        market_entry_plan: r.market_entry_plan ?? null,
+        risk_profile: r.risk_profile ?? null,
       })),
   })
 }, 'Scanner'))

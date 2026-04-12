@@ -13,10 +13,10 @@ export type ScanPhase =
   | 'idle'
   | 'starting'
   | 'market_data'   // funding/OI/news/LSR fetch
-  | 'fetching'      // candles fetch (per-coin batch progress)
-  | 'regime'        // detect market regime
-  | 'scoring'       // strategies + scoring
-  | 'risk_calc'     // risk calculation
+  | 'fetching'      // 5m/15m/1h/4h candles fetch (per-coin batch)
+  | 'regime'        // detect market regime from BTC
+  | 'scoring'       // strategies + 3-layer scoring (hard filters → setup → entry trigger)
+  | 'risk_calc'     // legacy (kept for backward compat with old frontend)
   | 'gpt'           // GPT annotation (per-signal progress)
   | 'saving'        // save to DB
   | 'done'

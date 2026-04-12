@@ -1,16 +1,27 @@
-import { SignalWithRisk } from '../riskCalc'
+import { SignalWithRisk } from '../scoring/types'
 import { GPTAnnotation } from '../gptFilter'
 import { RegimeContext } from '../marketRegime'
 import { CoinRegimeContext } from '../coinRegime'
+import {
+  SetupCategory,
+  ExecutionType,
+  SetupScoreBreakdown,
+  EntryTriggerResult,
+  HardFilterResult,
+  SignalContext,
+  SignalExplanation,
+  EnrichedSignal,
+  LimitEntryPlan,
+  MarketEntryPlan,
+  RiskProfile,
+} from '../scoring/types'
 
 /**
  * Типы и интерфейсы для scanner/coinScanner/ модуля.
  * Вынесены отдельно чтобы не раздувать main файл и упростить импорты в classifier.
  */
 
-// === Signal categories ===
-// Each category is distinct and actionable. GPT does NOT influence gating.
-// Classification uses: score band + entry quality + conflict count + trigger detection
+// === Legacy Signal categories (kept for backward compat with old saved signals) ===
 export type SignalCategory =
   | 'READY'              // Signal quality good + entry is valid now
   | 'READY_AGGRESSIVE'   // Signal strong but only aggressive entry viable
@@ -44,6 +55,18 @@ export interface ScanResult {
   entryQuality: EntryQuality
   triggerState: TriggerState | null // non-null for WAIT_CONFIRMATION
   coinRegime?: CoinRegimeContext
+  // === New 3-layer scoring fields ===
+  enriched?: EnrichedSignal
+  setup_category?: SetupCategory
+  execution_type?: ExecutionType
+  setup_score_breakdown?: SetupScoreBreakdown
+  entry_trigger_result?: EntryTriggerResult
+  hard_filter_result?: HardFilterResult
+  signal_context?: SignalContext
+  signal_explanation?: SignalExplanation
+  limit_entry_plan?: LimitEntryPlan | null
+  market_entry_plan?: MarketEntryPlan | null
+  risk_profile?: RiskProfile
 }
 
 // Funnel analytics — отчёт по этапам фильтрации сканера
@@ -52,10 +75,13 @@ export interface ScanFunnel {
   fetchErrors: number
   strategyCandidates: number
   rejectedByVolume: number
+  rejectedByHardFilter: number
   passedScoring: number
   rejectedByRR: number
   passedRisk: number
   byStrategy: Record<string, number>
   byCategory: Record<string, number>
+  bySetupCategory: Record<string, number>
+  byExecutionType: Record<string, number>
   final: number
 }

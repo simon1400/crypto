@@ -3,7 +3,7 @@ import { takeSignalAsTrade, skipSignal, ScannerSignal, SignalClose } from '../..
 import { formatDate, fmt2, fmt2Signed } from '../../lib/formatters'
 import { ScoreBadge, StrategyBadge, ScannerStatusBadge as StatusBadge } from '../StatusBadge'
 import AiAnalysisBlock from './AiAnalysisBlock'
-import { MODEL_LABELS } from './constants'
+import { MODEL_LABELS, SETUP_CATEGORY_STYLES, EXECUTION_TYPE_STYLES } from './constants'
 
 export default function SignalCard({ signal, onStatusChange, onDelete, balance, riskPct, onShowChart }: {
   signal: ScannerSignal
@@ -66,13 +66,27 @@ export default function SignalCard({ signal, onStatusChange, onDelete, balance, 
     <div className="bg-card rounded-xl p-4 border border-card hover:border-accent/30 transition-colors">
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="font-mono font-bold text-lg text-text-primary">{signal.coin}</span>
           <span className={`px-2 py-0.5 rounded text-sm font-bold ${isLong ? 'bg-long/10 text-long' : 'bg-short/10 text-short'}`}>
             {signal.type}
           </span>
           <StrategyBadge strategy={signal.strategy} />
           <StatusBadge status={signal.status} />
+          {/* Setup category badge */}
+          {(() => {
+            const cat = signal.setupCategory ?? mc?.setup_category
+            if (!cat) return null
+            const sc = SETUP_CATEGORY_STYLES[cat] || SETUP_CATEGORY_STYLES.IGNORE
+            return <span className={`px-2 py-0.5 rounded text-xs font-bold ${sc.bg} ${sc.text}`}>{sc.label}</span>
+          })()}
+          {/* Execution type badge */}
+          {(() => {
+            const et = signal.executionType ?? mc?.execution_type
+            if (!et) return null
+            const style = EXECUTION_TYPE_STYLES[et] || EXECUTION_TYPE_STYLES.IGNORE
+            return <span className={`px-2 py-0.5 rounded text-xs font-bold ${style.bg} ${style.text}`}>{style.label}</span>
+          })()}
           {onShowChart && (
             <button
               onClick={() => onShowChart(signal)}
@@ -89,7 +103,7 @@ export default function SignalCard({ signal, onStatusChange, onDelete, balance, 
               {fmt2Signed(signal.realizedPnl)}$
             </span>
           )}
-          <ScoreBadge score={signal.score} />
+          <ScoreBadge score={signal.setupScore ?? signal.score} />
         </div>
       </div>
 
@@ -130,6 +144,33 @@ export default function SignalCard({ signal, onStatusChange, onDelete, balance, 
           </div>
         ))}
       </div>
+
+      {/* Setup score breakdown (new 6-component) */}
+      {mc?.setup_score_breakdown && (
+        <div className="flex flex-wrap gap-2 mb-3 text-xs text-text-secondary">
+          <span>Trend: {mc.setup_score_breakdown.trend}/25</span>
+          <span>Loc: {mc.setup_score_breakdown.location}/25</span>
+          <span>Mom: {mc.setup_score_breakdown.momentum}/20</span>
+          <span>Deriv: {mc.setup_score_breakdown.derivatives}/15</span>
+          <span>Geom: {mc.setup_score_breakdown.geometry}/15</span>
+          {mc.setup_score_breakdown.penalties < 0 && (
+            <span className="text-short">Pen: {mc.setup_score_breakdown.penalties}</span>
+          )}
+        </div>
+      )}
+
+      {/* Entry trigger conditions */}
+      {mc?.entry_trigger_result && (
+        <div className="flex flex-wrap gap-2 mb-3 text-xs">
+          <span className={mc.entry_trigger_result.passed ? 'text-long' : 'text-short'}>
+            Trigger: {mc.entry_trigger_result.score}/4
+          </span>
+          <span className={mc.entry_trigger_result.conditions?.pullback_zone ? 'text-long' : 'text-neutral'}>PB</span>
+          <span className={mc.entry_trigger_result.conditions?.candle_reclaim ? 'text-long' : 'text-neutral'}>Reclaim</span>
+          <span className={mc.entry_trigger_result.conditions?.reversal_volume ? 'text-long' : 'text-neutral'}>Vol</span>
+          <span className={mc.entry_trigger_result.conditions?.distance_from_trigger ? 'text-long' : 'text-neutral'}>Dist</span>
+        </div>
+      )}
 
       {/* Info row */}
       <div className="flex items-center gap-3 mb-3 text-sm flex-wrap">

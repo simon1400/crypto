@@ -9,6 +9,9 @@ export interface CloseOptions {
   isSL?: boolean               // true если это SL hit
   forceFullClose?: boolean     // true для SL/close-all — закрывает до 100%
   logContext?: string          // для adjustVirtualBalance reason
+  // Lifecycle context
+  exitReason?: string          // INITIAL_STOP, BE_STOP, TRAILING_STOP, TIME_STOP, MANUAL_EXIT, TP1_PARTIAL, etc.
+  tpNumber?: number            // which TP was hit (1, 2, 3)
 }
 
 export interface CloseResult {
@@ -22,8 +25,6 @@ export interface CloseResult {
 
 /**
  * Считает P&L для закрытия портиона позиции (симметрично для LONG и SHORT).
- * Принимает объект с полями type/entryPrice/leverage/amount.
- * Для `GeneratedSignal` (где поле называется `entry`) — используй computePortionPnlFromEntry.
  */
 export function computePortionPnl(
   trade: Pick<Trade, 'type' | 'entryPrice' | 'leverage' | 'amount'>,
@@ -39,7 +40,6 @@ export function computePortionPnl(
 
 /**
  * Core P&L math — работает с generic объектом где поле entry'а называется `entry`.
- * Используется и для Trade (через обёртку computePortionPnl), и для GeneratedSignal.
  */
 export function computePortionPnlFromEntry(
   pos: { type: string; entry: number; leverage: number; amount: number },
@@ -56,37 +56,67 @@ export function computePortionPnlFromEntry(
 
 /**
  * Trailing SL: после TP1 → SL = entry, после TPn → SL = TP(n-1).
+ * Returns: { newStopLoss, stopMovedToBe, trailingActivated, stopMoveReason }
  */
-function computeTrailingSl(trade: Trade, closePrice: number, newClosedPct: number): number {
+function computeTrailingSl(trade: Trade, closePrice: number, newClosedPct: number): {
+  newStopLoss: number
+  stopMovedToBe: boolean
+  trailingActivated: boolean
+  stopMoveReason: string | null
+} {
   const tps = (trade.takeProfits as any[]).map((tp: any) => tp.price).sort(
     (a: number, b: number) => (trade.type === 'LONG' ? a - b : b - a),
   )
-  // Определяем по цене какой TP закрылся
   let tpHitIndex = tps.findIndex((tp: number) => Math.abs(closePrice - tp) / tp < 0.005)
   if (tpHitIndex === -1) {
-    // Fallback: по накопленному closedPct
     tpHitIndex = Math.round(newClosedPct / (100 / tps.length)) - 1
   }
 
-  if (tpHitIndex === 0) return trade.entryPrice
-  if (tpHitIndex > 0) return tps[tpHitIndex - 1]
-  return trade.stopLoss
+  if (tpHitIndex === 0) {
+    return {
+      newStopLoss: trade.entryPrice,
+      stopMovedToBe: true,
+      trailingActivated: false,
+      stopMoveReason: `TP1 hit → SL moved to BE ($${trade.entryPrice})`,
+    }
+  }
+  if (tpHitIndex > 0) {
+    return {
+      newStopLoss: tps[tpHitIndex - 1],
+      stopMovedToBe: true,
+      trailingActivated: true,
+      stopMoveReason: `TP${tpHitIndex + 1} hit → SL trailing to TP${tpHitIndex} ($${tps[tpHitIndex - 1]})`,
+    }
+  }
+  return {
+    newStopLoss: trade.stopLoss,
+    stopMovedToBe: false,
+    trailingActivated: false,
+    stopMoveReason: null,
+  }
+}
+
+/**
+ * Determine exit reason from context
+ */
+function resolveExitReason(opts: CloseOptions, trade: Trade, tpsHitCount: number): string {
+  if (opts.exitReason) return opts.exitReason
+  if (opts.isSL) {
+    if (tpsHitCount > 0) {
+      if (trade.stopMovedToBe && !trade.trailingActivated) return 'BE_STOP'
+      if (trade.trailingActivated) return 'TRAILING_STOP'
+    }
+    return 'INITIAL_STOP'
+  }
+  if (opts.tpNumber === 1) return 'TP1_PARTIAL'
+  if (opts.tpNumber === 2) return 'TP2_PARTIAL'
+  if (opts.tpNumber === 3) return 'TP3_FINAL'
+  return 'MANUAL_EXIT'
 }
 
 /**
  * Универсальное закрытие портиона сделки.
- *
- * Используется:
- * - POST /trades/:id/close — частичное/полное ручное закрытие
- * - POST /trades/:id/sl-hit — полное закрытие по SL (isSL + forceFullClose)
- * - POST /trades/close-all — массовое закрытие по рынку (forceFullClose)
- * - scannerTracker — автоматическое закрытие на TP/SL
- *
- * Делает:
- * 1. Считает P&L + exit fee (taker)
- * 2. Списывает/начисляет virtualBalance (возврат маржи + P&L − fee)
- * 3. Записывает запись в trade.closes[]
- * 4. Обновляет trade (status/closedPct/realizedPnl/fees/stopLoss)
+ * Now also populates lifecycle tracking fields.
  */
 export async function closeTradePortion(
   trade: Trade,
@@ -94,7 +124,6 @@ export async function closeTradePortion(
 ): Promise<CloseResult> {
   const { price: closePrice, percent, isSL = false, forceFullClose = false } = opts
 
-  // Для SL/close-all закрываем весь остаток
   const actualPct = forceFullClose ? (100 - trade.closedPct) : percent
 
   const { pnlPercent, portionAmount, pnlUsdt } = computePortionPnl(trade, closePrice, actualPct)
@@ -123,16 +152,47 @@ export async function closeTradePortion(
   const newFees = Math.round((trade.fees + exitFee) * 1e6) / 1e6
   const isFull = newClosedPct >= 100
 
-  // Определение нового status
+  // Determine status
   let newStatus: string
   if (isSL) newStatus = 'SL_HIT'
   else if (isFull) newStatus = 'CLOSED'
   else newStatus = 'PARTIALLY_CLOSED'
 
-  // Trailing SL только для частичного non-SL закрытия
-  const newStopLoss = !isFull && !isSL
-    ? computeTrailingSl(trade, closePrice, newClosedPct)
-    : trade.stopLoss
+  // === Trailing SL + lifecycle tracking ===
+  let trailingData: Record<string, any> = {}
+
+  if (!isFull && !isSL) {
+    const trailing = computeTrailingSl(trade, closePrice, newClosedPct)
+    trailingData = {
+      stopLoss: trailing.newStopLoss,
+      currentStop: trailing.newStopLoss,
+    }
+    if (trailing.stopMovedToBe && !trade.stopMovedToBe) {
+      trailingData.stopMovedToBe = true
+      trailingData.stopMoveReason = trailing.stopMoveReason
+    }
+    if (trailing.trailingActivated && !trade.trailingActivated) {
+      trailingData.trailingActivated = true
+      trailingData.trailingActivationTime = new Date()
+    }
+  }
+
+  // TP hit timestamps
+  const tpTimestamps: Record<string, any> = {}
+  if (opts.tpNumber === 1 && !trade.tp1HitTimestamp) tpTimestamps.tp1HitTimestamp = new Date()
+  if (opts.tpNumber === 2 && !trade.tp2HitTimestamp) tpTimestamps.tp2HitTimestamp = new Date()
+  if (opts.tpNumber === 3 && !trade.tp3HitTimestamp) tpTimestamps.tp3HitTimestamp = new Date()
+
+  // Exit reason and time in trade
+  const closedData: Record<string, any> = {}
+  if (isFull || isSL) {
+    const tpsHitBefore = closes.filter((c: any) => !c.isSL).length
+    closedData.exitReason = resolveExitReason(opts, trade, tpsHitBefore)
+    closedData.closedAt = new Date()
+    // Time in trade
+    const openTime = trade.openedAt?.getTime() || trade.createdAt.getTime()
+    closedData.timeInTradeMin = Math.round((Date.now() - openTime) / 60000)
+  }
 
   const updated = await prisma.trade.update({
     where: { id: trade.id },
@@ -142,8 +202,10 @@ export async function closeTradePortion(
       realizedPnl: newRealizedPnl,
       fees: newFees,
       status: newStatus,
-      stopLoss: newStopLoss,
-      closedAt: isFull || isSL ? new Date() : null,
+      stopLoss: trailingData.stopLoss ?? trade.stopLoss,
+      ...trailingData,
+      ...tpTimestamps,
+      ...closedData,
     },
   })
 

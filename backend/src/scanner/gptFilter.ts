@@ -1,4 +1,4 @@
-import { SignalWithRisk } from './riskCalc'
+import { SignalWithRisk } from './scoring/types'
 import { RegimeContext } from './marketRegime'
 import { FundingData } from '../services/fundingRate'
 import { NewsSentiment } from '../services/news'

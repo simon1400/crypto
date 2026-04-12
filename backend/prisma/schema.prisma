@@ -81,12 +81,12 @@ model GeneratedSignal {
   score         Int                              // 0-100
   entry         Float
   stopLoss      Float
-  takeProfits   Json                             // [{price: number, rr: number}]
+  takeProfits   Json                             // [{price: number, rr: number, close_pct?: number}]
   leverage      Int
   positionPct   Float                            // % of deposit to risk
   amount        Float    @default(0)             // actual position size in USDT (set when TAKEN)
   indicators    Json                             // snapshot of multi-TF indicators
-  marketContext Json                             // fear&greed, regime, funding, OI, news, category, coinRegime
+  marketContext Json                             // fear&greed, regime, funding, OI, news, category, coinRegime, scoring context
   aiAnalysis    String?                          // GPT review text
   closes        Json     @default("[]")          // [{price, percent, pnl, pnlPercent, closedAt}]
   closedPct     Float    @default(0)             // total % closed (0-100)
@@ -105,6 +105,23 @@ model GeneratedSignal {
   hitTp3        Boolean  @default(false)         // did price reach TP3
   hitSl         Boolean  @default(false)         // did price hit SL
   bestModel     String?                          // which entry model turned out best by hindsight
+  // === New 3-layer scoring fields ===
+  initialStop       Float?                       // original stop loss (never overwritten after BE/trailing)
+  currentStop       Float?                       // current active stop loss (updated on BE/trailing)
+  setupScore        Int?                         // new setup score 0-100
+  setupCategory     String?                      // A_PLUS_READY / READY / WATCHLIST / IGNORE
+  executionType     String?                      // ENTER_NOW_LONG / LIMIT_LONG / WAIT_CONFIRMATION / IGNORE
+  entryModel        String?                      // aggressive / confirmation
+  // === Trade lifecycle tracking ===
+  stopMovedToBe     Boolean  @default(false)     // was stop moved to breakeven?
+  stopMoveReason    String?                      // reason for stop move
+  trailingActivated Boolean  @default(false)     // is trailing stop active?
+  trailingActivationTime DateTime?               // when trailing was activated
+  tp1HitTimestamp   DateTime?                    // when TP1 was hit
+  tp2HitTimestamp   DateTime?                    // when TP2 was hit
+  tp3HitTimestamp   DateTime?                    // when TP3 was hit
+  exitReason        String?                      // INITIAL_STOP, BE_STOP, TRAILING_STOP, MANUAL_EXIT, TIME_STOP, TP1_PARTIAL, etc.
+  timeInTradeMin    Int?                         // time from entry to final exit in minutes
 }
 
 model Trade {
@@ -114,7 +131,9 @@ model Trade {
   leverage      Int      @default(1)             // 1x-125x
   entryPrice    Float                            // цена входа
   amount        Float                            // размер позиции в USDT (маржа)
-  stopLoss      Float                            // стоп-лосс
+  stopLoss      Float                            // стоп-лосс (current active SL)
+  initialStop   Float?                           // original stop loss (never overwritten)
+  currentStop   Float?                           // alias for stopLoss, updated on BE/trailing
   takeProfits   Json                             // [{price: number, percent: number}] — уровни TP и % закрытия
   closes        Json     @default("[]")          // [{price: number, percent: number, pnl: number, closedAt: string}]
   closedPct     Float    @default(0)             // суммарно закрыто % позиции (0-100)
@@ -129,6 +148,19 @@ model Trade {
   openedAt      DateTime @default(now())
   closedAt      DateTime?
   createdAt     DateTime @default(now())
+  // === New trade lifecycle tracking ===
+  stopMovedToBe     Boolean  @default(false)     // was stop moved to breakeven?
+  stopMoveReason    String?                      // reason for stop move
+  trailingActivated Boolean  @default(false)     // is trailing stop active?
+  trailingActivationTime DateTime?               // when trailing was activated
+  tp1HitTimestamp   DateTime?                    // when TP1 was hit
+  tp2HitTimestamp   DateTime?                    // when TP2 was hit
+  tp3HitTimestamp   DateTime?                    // when TP3 was hit
+  exitReason        String?                      // INITIAL_STOP, BE_STOP, TRAILING_STOP, MANUAL_EXIT, TIME_STOP, etc.
+  timeInTradeMin    Int?                         // time from entry to final exit in minutes
+  // === Outcome tracking ===
+  mfe           Float?                           // Max Favorable Excursion %
+  mae           Float?                           // Max Adverse Excursion %
 }
 
 model BotConfig {

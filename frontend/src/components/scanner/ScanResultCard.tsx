@@ -3,7 +3,7 @@ import { ScanSignal } from '../../api/client'
 import { QUALITY_COLORS } from '../../lib/constants'
 import { fmt2 } from '../../lib/formatters'
 import { ScoreBadge, StrategyBadge } from '../StatusBadge'
-import { CATEGORY_STYLES, BAND_STYLES, ENTRY_Q_STYLES, MODEL_LABELS } from './constants'
+import { CATEGORY_STYLES, SETUP_CATEGORY_STYLES, EXECUTION_TYPE_STYLES, BAND_STYLES, ENTRY_Q_STYLES, MODEL_LABELS } from './constants'
 
 function CategoryBadge({ category }: { category: string }) {
   const style = CATEGORY_STYLES[category] || CATEGORY_STYLES.REJECTED
@@ -53,22 +53,25 @@ export default function ScanResultCard({ result, onTake, onSkip, onDelete, balan
             {result.type}
           </span>
           <StrategyBadge strategy={result.strategy} />
-          <CategoryBadge category={result.category} />
+          {/* Setup category badge (new pipeline) — fallback to legacy */}
+          {(() => {
+            if (result.setup_category) {
+              const sc = SETUP_CATEGORY_STYLES[result.setup_category] || SETUP_CATEGORY_STYLES.IGNORE
+              return <span className={`px-2 py-0.5 rounded text-xs font-bold ${sc.bg} ${sc.text}`}>{sc.label}</span>
+            }
+            const cs = CATEGORY_STYLES[result.category] || CATEGORY_STYLES.REJECTED
+            return <span className={`px-2 py-0.5 rounded text-xs font-bold ${cs.bg} ${cs.text}`}>{cs.label}</span>
+          })()}
+          {/* Execution type badge */}
+          {result.execution_type && (() => {
+            const et = EXECUTION_TYPE_STYLES[result.execution_type] || EXECUTION_TYPE_STYLES.IGNORE
+            return <span className={`px-2 py-0.5 rounded text-xs font-bold ${et.bg} ${et.text}`}>{et.label}</span>
+          })()}
           <span className={`font-mono font-bold text-sm ${QUALITY_COLORS[result.setupQuality] || 'text-neutral'}`}>
             {result.setupQuality}
           </span>
         </div>
-        <ScoreBadge score={result.score} />
-      </div>
-
-      {/* Signal quality vs Entry quality */}
-      <div className="flex items-center gap-3 mb-2 text-xs">
-        <span className={BAND_STYLES[result.scoreBand]?.text || 'text-neutral'}>
-          Signal: {BAND_STYLES[result.scoreBand]?.label || result.scoreBand}
-        </span>
-        <span className={ENTRY_Q_STYLES[result.entryQuality]?.text || 'text-neutral'}>
-          {ENTRY_Q_STYLES[result.entryQuality]?.label || `Entry: ${result.entryQuality}`}
-        </span>
+        <ScoreBadge score={result.setup_score ?? result.score} />
       </div>
 
       {/* Trigger state */}
@@ -82,16 +85,64 @@ export default function ScanResultCard({ result, onTake, onSkip, onDelete, balan
         </div>
       )}
 
-      {/* Score breakdown */}
-      <div className="flex flex-wrap gap-2 mb-3 text-xs text-text-secondary">
-        <span>Trend: {result.scoreBreakdown.trend}/15</span>
-        <span>Mom: {result.scoreBreakdown.momentum}/15</span>
-        <span>Vol$: {result.scoreBreakdown.volatility}/10</span>
-        <span>MR: {result.scoreBreakdown.meanRevStretch}/10</span>
-        <span>Lvl: {result.scoreBreakdown.levelInteraction}/15</span>
-        <span>Vol: {result.scoreBreakdown.volume}/15</span>
-        <span>Mkt: {result.scoreBreakdown.marketContext}/15</span>
-      </div>
+      {/* Score breakdown — new 6-component when available, legacy fallback */}
+      {result.setup_score_breakdown ? (
+        <div className="flex flex-wrap gap-2 mb-3 text-xs text-text-secondary">
+          <span>Trend: {result.setup_score_breakdown.trend}/25</span>
+          <span>Loc: {result.setup_score_breakdown.location}/25</span>
+          <span>Mom: {result.setup_score_breakdown.momentum}/20</span>
+          <span>Deriv: {result.setup_score_breakdown.derivatives}/15</span>
+          <span>Geom: {result.setup_score_breakdown.geometry}/15</span>
+          {result.setup_score_breakdown.penalties < 0 && (
+            <span className="text-short">Pen: {result.setup_score_breakdown.penalties}</span>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2 mb-3 text-xs text-text-secondary">
+          <span>Trend: {result.scoreBreakdown.trend}/15</span>
+          <span>Mom: {result.scoreBreakdown.momentum}/15</span>
+          <span>Vol$: {result.scoreBreakdown.volatility}/10</span>
+          <span>MR: {result.scoreBreakdown.meanRevStretch}/10</span>
+          <span>Lvl: {result.scoreBreakdown.levelInteraction}/15</span>
+          <span>Vol: {result.scoreBreakdown.volume}/15</span>
+          <span>Mkt: {result.scoreBreakdown.marketContext}/15</span>
+        </div>
+      )}
+
+      {/* Entry trigger conditions */}
+      {result.entry_trigger_result && (
+        <div className="flex flex-wrap gap-2 mb-3 text-xs">
+          <span className={result.entry_trigger_result.passed ? 'text-long' : 'text-short'}>
+            Trigger: {result.entry_trigger_result.score}/4
+          </span>
+          <span className={result.entry_trigger_result.conditions.pullback_zone ? 'text-long' : 'text-neutral'}>PB</span>
+          <span className={result.entry_trigger_result.conditions.candle_reclaim ? 'text-long' : 'text-neutral'}>Reclaim</span>
+          <span className={result.entry_trigger_result.conditions.reversal_volume ? 'text-long' : 'text-neutral'}>Vol</span>
+          <span className={result.entry_trigger_result.conditions.distance_from_trigger ? 'text-long' : 'text-neutral'}>Dist</span>
+        </div>
+      )}
+
+      {/* Limit entry plan */}
+      {result.limit_entry_plan && (
+        <div className="bg-accent/5 border border-accent/20 rounded-lg px-3 py-2 mb-3 text-xs">
+          <div className="text-accent font-bold mb-1">Лимитный вход: {result.limit_entry_plan.zone_source.replace(/_/g, ' ')}</div>
+          <div className="text-text-primary">
+            Зона: ${fmt2(result.limit_entry_plan.entry_zone_low)} – ${fmt2(result.limit_entry_plan.entry_zone_high)}
+          </div>
+          <div className="text-text-secondary mt-0.5">{result.limit_entry_plan.explanation}</div>
+        </div>
+      )}
+
+      {/* Market entry plan */}
+      {result.market_entry_plan && (
+        <div className="bg-long/5 border border-long/20 rounded-lg px-3 py-2 mb-3 text-xs">
+          <div className="text-long font-bold mb-1">Рыночный вход</div>
+          <div className="text-text-primary">
+            Макс. цена: ${fmt2(result.market_entry_plan.max_chase_price)}
+          </div>
+          <div className="text-text-secondary mt-0.5">{result.market_entry_plan.explanation}</div>
+        </div>
+      )}
 
       {/* Entry model selector */}
       {models.length > 1 && (

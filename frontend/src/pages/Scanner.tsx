@@ -11,7 +11,7 @@ import SignalCard from '../components/scanner/SignalCard'
 import ScanResultCard from '../components/scanner/ScanResultCard'
 import CoinSearchSelector from '../components/scanner/CoinSearchSelector'
 import EntryResultCard from '../components/scanner/EntryResultCard'
-import { CATEGORY_STYLES, LOADING_MESSAGES, ENTRY_MESSAGES } from '../components/scanner/constants'
+import { CATEGORY_STYLES, SETUP_CATEGORY_STYLES, EXECUTION_TYPE_STYLES, LOADING_MESSAGES, ENTRY_MESSAGES } from '../components/scanner/constants'
 import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
 
 function scannerSignalToPosition(s: ScannerSignal): PositionChartPosition {
@@ -80,6 +80,135 @@ export default function Scanner() {
   const [calcLeverage, setCalcLeverage] = useState('10')
   const [calcEntry2, setCalcEntry2] = useState('')
   const [calcShowEntry2, setCalcShowEntry2] = useState(false)
+
+  const [csvExporting, setCsvExporting] = useState(false)
+
+  async function exportTakenCSV() {
+    setCsvExporting(true)
+    try {
+      const allSignals: ScannerSignal[] = []
+      let p = 1
+      while (true) {
+        const res = await getScannerSignals(p)
+        allSignals.push(...res.data)
+        if (p >= res.totalPages) break
+        p++
+      }
+      const taken = allSignals.filter(s => s.takenAt)
+
+      const esc = (v: string) => `"${v.replace(/"/g, '""')}"`
+
+      const header = [
+        'Signal ID', 'Монета', 'Тип', 'Стратегия', 'Score', 'Setup Score', 'Setup Category', 'Execution Type', 'Entry Model', 'Плечо',
+        'Цена входа', 'Initial Stop', 'Current Stop', 'SL %',
+        'TP1 цена', 'TP1 R:R', 'TP2 цена', 'TP2 R:R', 'TP3 цена', 'TP3 R:R',
+        'Размер (маржа)', 'Размер (с плечом)', '% от депозита',
+        'Реализовано P&L', 'Закрыто %', 'Статус', 'Exit Reason',
+        'Создан', 'Взят', 'Закрыт', 'Время в сделке (мин)',
+        'Закрытие 1 цена', 'Закрытие 1 %', 'Закрытие 1 P&L', 'Закрытие 1 дата', 'Закрытие 1 SL?',
+        'Закрытие 2 цена', 'Закрытие 2 %', 'Закрытие 2 P&L', 'Закрытие 2 дата', 'Закрытие 2 SL?',
+        'Закрытие 3 цена', 'Закрытие 3 %', 'Закрытие 3 P&L', 'Закрытие 3 дата', 'Закрытие 3 SL?',
+        'Fear & Greed', 'Режим рынка', 'Категория', 'Фандинг', 'OI изм.',
+        'Stop → BE', 'Trailing', 'MFE %', 'MAE %', 'TP1 Hit', 'TP2 Hit', 'TP3 Hit',
+        // New context fields
+        'RSI 1h', 'ADX 1h', 'Volume Ratio', 'Funding Rate', 'OI Δ 1h', 'OI Δ 4h',
+        'Distance to EMA20', 'Distance to VWAP', 'Impulse Extension',
+        'Data Completeness',
+        'GPT анализ',
+      ]
+
+      const fmt2 = (n: number) => Number(n).toFixed(2)
+
+      const rows = taken.map(s => {
+        const tps = s.takeProfits || []
+        const closes = s.closes || []
+        const mc = s.marketContext || {} as any
+        const sc = mc.signal_context || {} as any
+        const dir = s.type === 'LONG' ? 1 : -1
+        const initialStop = s.initialStop ?? mc.initial_stop ?? s.stopLoss
+        const currentStop = s.currentStop ?? mc.current_stop ?? s.stopLoss
+        const slPct = ((initialStop - s.entry) / s.entry) * 100 * dir * s.leverage
+
+        const closeData = (i: number) => {
+          const c = closes[i]
+          if (!c) return ['', '', '', '', '']
+          return [c.price, c.percent + '%', fmt2(c.pnl) + '$', c.closedAt, c.isSL ? 'Да' : 'Нет']
+        }
+
+        return [
+          s.id,
+          s.coin,
+          s.type,
+          s.strategy,
+          s.score,
+          s.setupScore ?? mc.setup_score ?? '',
+          s.setupCategory ?? mc.setup_category ?? '',
+          s.executionType ?? mc.execution_type ?? '',
+          s.entryModel ?? mc.entry_model ?? mc.bestEntryType ?? '',
+          s.leverage,
+          s.entry,
+          initialStop,
+          currentStop,
+          fmt2(slPct) + '%',
+          tps[0]?.price ?? '', tps[0]?.rr ?? '',
+          tps[1]?.price ?? '', tps[1]?.rr ?? '',
+          tps[2]?.price ?? '', tps[2]?.rr ?? '',
+          fmt2(s.amount),
+          fmt2(s.amount * s.leverage),
+          s.positionPct + '%',
+          fmt2(s.realizedPnl),
+          s.closedPct + '%',
+          s.status,
+          s.exitReason ?? '',
+          s.createdAt,
+          s.takenAt || '',
+          s.closedAt || '',
+          s.timeInTradeMin ?? '',
+          ...closeData(0),
+          ...closeData(1),
+          ...closeData(2),
+          mc.fearGreed ?? mc.fearGreedZone ?? '',
+          mc.regime ?? '',
+          mc.category ?? '',
+          mc.funding != null ? (typeof mc.funding === 'object' ? fmt2(mc.funding.fundingRate * 100) + '%' : fmt2(mc.funding)) : '',
+          mc.oi != null ? (typeof mc.oi === 'object' ? fmt2(mc.oi.oiChangePct1h) + '%' : fmt2(mc.oiChange) + '%') : '',
+          s.stopMovedToBe ? 'Да' : 'Нет',
+          s.trailingActivated ? 'Да' : 'Нет',
+          s.mfe != null ? fmt2(s.mfe) + '%' : '',
+          s.mae != null ? fmt2(s.mae) + '%' : '',
+          s.tp1HitTimestamp ? 'Да' : 'Нет',
+          s.tp2HitTimestamp ? 'Да' : 'Нет',
+          s.tp3HitTimestamp ? 'Да' : 'Нет',
+          // Context fields from signal_context
+          sc.rsi_1h ?? '',
+          sc.adx_1h ?? '',
+          sc.volume_ratio ?? '',
+          sc.funding_rate != null ? fmt2(sc.funding_rate * 100) + '%' : '',
+          sc.oi_change_1h != null ? fmt2(sc.oi_change_1h) + '%' : '',
+          sc.oi_change_4h != null ? fmt2(sc.oi_change_4h) + '%' : '',
+          sc.distance_to_ema20 != null ? fmt2(sc.distance_to_ema20) + '%' : '',
+          sc.distance_to_vwap != null ? fmt2(sc.distance_to_vwap) + '%' : '',
+          sc.impulse_extension_at_entry_atr_1h ?? '',
+          sc.data_completeness != null ? fmt2(sc.data_completeness * 100) + '%' : '',
+          esc(s.aiAnalysis || ''),
+        ].map(v => typeof v === 'string' && v.startsWith('"') ? v : esc(String(v)))
+      })
+
+      const bom = '\uFEFF'
+      const csv = bom + [header.map(h => esc(h)).join(';'), ...rows.map(r => r.join(';'))].join('\n')
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `signals_taken_${new Date().toISOString().slice(0, 10)}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('[Scanner] CSV export error:', err)
+    } finally {
+      setCsvExporting(false)
+    }
+  }
 
   // Load saved entry analyses
   useEffect(() => {
@@ -330,13 +459,12 @@ export default function Scanner() {
               fetching: 'Свечи',
               regime: 'Режим',
               scoring: 'Скоринг',
-              risk_calc: 'R:R',
               gpt: 'GPT анализ',
               saving: 'Сохранение',
               done: 'Готово',
               error: 'Ошибка',
             }
-            const phases = ['market_data', 'fetching', 'regime', 'scoring', 'risk_calc', 'gpt', 'saving']
+            const phases = ['market_data', 'fetching', 'regime', 'scoring', 'gpt', 'saving']
             const currentIdx = phases.indexOf(progress.phase)
             const elapsed = progress.startedAt ? Math.round((Date.now() - progress.startedAt) / 1000) : 0
             return (
@@ -522,7 +650,13 @@ export default function Scanner() {
               </button>
               <span className="text-xs text-text-secondary ml-auto">{signals.length} сигналов</span>
 
-              <div className="flex items-center gap-2 ml-2">
+              <button onClick={exportTakenCSV} disabled={csvExporting}
+                className="px-2.5 py-1 bg-card text-text-secondary rounded-lg text-xs font-medium hover:text-text-primary hover:bg-input transition disabled:opacity-50 flex items-center gap-1.5 ml-2">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                {csvExporting ? '...' : 'CSV взятых'}
+              </button>
+
+              <div className="flex items-center gap-2">
                 {confirmDeleteUnused ? (
                   <>
                     <span className="text-xs text-text-secondary">Удалить невзятые?</span>
@@ -633,10 +767,14 @@ export default function Scanner() {
                 <span className="text-text-secondary">Volatility: </span>
                 <span className="text-text-primary">{scanResults.regime.volatility}</span>
               </div>
-              <div className="ml-auto flex gap-2 text-xs">
-                {scanResults.funnel && Object.entries(scanResults.funnel.byCategory).filter(([, v]) => v > 0).map(([cat, count]) => {
-                  const style = CATEGORY_STYLES[cat]
+              <div className="ml-auto flex gap-2 text-xs flex-wrap">
+                {scanResults.funnel?.bySetupCategory && Object.entries(scanResults.funnel.bySetupCategory).filter(([, v]) => v > 0).map(([cat, count]) => {
+                  const style = SETUP_CATEGORY_STYLES[cat]
                   return <span key={cat} className={style?.text || 'text-neutral'}>{count} {style?.label || cat}</span>
+                })}
+                {scanResults.funnel?.byExecutionType && Object.entries(scanResults.funnel.byExecutionType).filter(([, v]) => v > 0).map(([et, count]) => {
+                  const style = EXECUTION_TYPE_STYLES[et]
+                  return <span key={et} className={`${style?.text || 'text-neutral'} opacity-70`}>{count} {style?.label || et}</span>
                 })}
               </div>
             </div>
