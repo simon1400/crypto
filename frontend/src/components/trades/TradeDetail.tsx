@@ -210,7 +210,7 @@ export default function TradeDetail({ trade, onClose, onRefresh, currentPrice }:
                   const tpPct = ((tp.price - trade.entryPrice) * direction / trade.entryPrice) * 100 * trade.leverage
                   const portionMargin = trade.amount * (tp.percent / 100)
                   const profitUsd = portionMargin * (tpPct / 100)
-                  const hit = closes.find((c, ci) => ci === i && !c.isSL)
+                  const hit = closes.find(c => !c.isSL && Math.abs(c.price - tp.price) / tp.price < 0.005)
                   return (
                     <div key={i} className={`flex items-center justify-between px-3 py-2 rounded-lg text-sm ${hit ? 'bg-long/5' : 'bg-input'}`}>
                       <span className="text-text-secondary">TP{i + 1}</span>

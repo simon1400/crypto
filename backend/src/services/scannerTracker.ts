@@ -112,8 +112,8 @@ export async function trackScannerTrades() {
       const riskAmount = Math.abs(trade.entryPrice - (trade.initialStop ?? trade.stopLoss))
       const progressR = riskAmount > 0 ? (excursionPct / 100 * trade.entryPrice) / riskAmount : 0
 
-      // Intraday time-stop: 7h without +0.4R progress
-      if (hoursOpen >= INTRADAY_TIME_STOP_HOURS && progressR < INTRADAY_MIN_PROGRESS_R && tpsHitCount === 0) {
+      // Intraday time-stop: 7h without +0.4R progress (only on fresh OPEN trades, not already partially closed)
+      if (hoursOpen >= INTRADAY_TIME_STOP_HOURS && progressR < INTRADAY_MIN_PROGRESS_R && tpsHitCount === 0 && trade.closedPct === 0) {
         console.log(`[ScannerTracker] ${trade.coin} TIME-STOP (intraday): ${hoursOpen.toFixed(1)}h, progress ${progressR.toFixed(2)}R < ${INTRADAY_MIN_PROGRESS_R}R`)
         await closeTradePortion(trade, {
           price,

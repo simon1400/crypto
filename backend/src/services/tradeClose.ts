@@ -161,7 +161,9 @@ export async function closeTradePortion(
   // === Trailing SL + lifecycle tracking ===
   let trailingData: Record<string, any> = {}
 
-  if (!isFull && !isSL) {
+  // Only compute trailing SL for actual TP closes, not time-stop or manual exits
+  const isTPClose = !isFull && !isSL && opts.tpNumber != null
+  if (isTPClose) {
     const trailing = computeTrailingSl(trade, closePrice, newClosedPct)
     trailingData = {
       stopLoss: trailing.newStopLoss,

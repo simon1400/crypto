@@ -1,7 +1,7 @@
 import { MultiTFIndicators } from '../../services/indicators'
 import { OHLCV } from '../../services/market'
 import { EntryTriggerResult } from './types'
-import { round2 } from '../utils/round'
+import { fmtPrice } from '../utils/round'
 
 // === ENTRY TRIGGER SCORE ===
 // Separate pass/fail evaluation: is the entry valid RIGHT NOW?
@@ -34,12 +34,12 @@ export function calculateEntryTrigger(
     pullback_zone = nearEma20 || nearVwap || nearSupport
     if (pullback_zone) {
       const zones: string[] = []
-      if (nearEma20) zones.push(`EMA20($${round2(tf1h.ema20)})`)
-      if (nearVwap) zones.push(`VWAP($${round2(tf1h.vwap)})`)
-      if (nearSupport) zones.push(`Support($${round2(tf1h.support)})`)
+      if (nearEma20) zones.push(`EMA20($${fmtPrice(tf1h.ema20)})`)
+      if (nearVwap) zones.push(`VWAP($${fmtPrice(tf1h.vwap)})`)
+      if (nearSupport) zones.push(`Support($${fmtPrice(tf1h.support)})`)
       details.push(`Цена в зоне отката: ${zones.join(', ')}`)
     } else {
-      details.push(`Цена не в зоне отката (EMA20=$${round2(tf1h.ema20)}, VWAP=$${round2(tf1h.vwap)})`)
+      details.push(`Цена не в зоне отката (EMA20=$${fmtPrice(tf1h.ema20)}, VWAP=$${fmtPrice(tf1h.vwap)})`)
     }
   } else {
     const nearEma20 = price >= tf1h.ema20 * 0.997
@@ -48,9 +48,9 @@ export function calculateEntryTrigger(
     pullback_zone = nearEma20 || nearVwap || nearResistance
     if (pullback_zone) {
       const zones: string[] = []
-      if (nearEma20) zones.push(`EMA20($${round2(tf1h.ema20)})`)
-      if (nearVwap) zones.push(`VWAP($${round2(tf1h.vwap)})`)
-      if (nearResistance) zones.push(`Resistance($${round2(tf1h.resistance)})`)
+      if (nearEma20) zones.push(`EMA20($${fmtPrice(tf1h.ema20)})`)
+      if (nearVwap) zones.push(`VWAP($${fmtPrice(tf1h.vwap)})`)
+      if (nearResistance) zones.push(`Resistance($${fmtPrice(tf1h.resistance)})`)
       details.push(`Цена в зоне отката: ${zones.join(', ')}`)
     } else {
       details.push(`Цена не в зоне отката`)
@@ -74,7 +74,7 @@ export function calculateEntryTrigger(
       const closedAbove = last3[last3.length - 1].close > triggerLevel
       candle_reclaim = dippedBelow && closedAbove
       if (candle_reclaim) {
-        details.push(`Свеча отскочила от $${round2(triggerLevel)}: лоу ниже, закрытие выше`)
+        details.push(`Свеча отскочила от $${fmtPrice(triggerLevel)}: лоу ниже, закрытие выше`)
       } else {
         // Also check for rejection from support (wick touch near trigger without body penetration)
         const lastCandle = last3[last3.length - 1]
@@ -84,9 +84,9 @@ export function calculateEntryTrigger(
           ? (bodyLow - lastCandle.low) / (lastCandle.high - lastCandle.low) : 0
         if (nearTrigger && wickRatio > 0.3 && lastCandle.close > lastCandle.open) {
           candle_reclaim = true
-          details.push(`Свеча с длинной нижней тенью (${round2(wickRatio * 100)}%) у триггера — отскок`)
+          details.push(`Свеча с длинной нижней тенью (${fmtPrice(wickRatio * 100)}%) у триггера — отскок`)
         } else {
-          details.push(`Нет рекавери свечи от триггера $${round2(triggerLevel)}`)
+          details.push(`Нет рекавери свечи от триггера $${fmtPrice(triggerLevel)}`)
         }
       }
     } else {
@@ -95,7 +95,7 @@ export function calculateEntryTrigger(
       const closedBelow = last3[last3.length - 1].close < triggerLevel
       candle_reclaim = spikedAbove && closedBelow
       if (candle_reclaim) {
-        details.push(`Свеча отвержена от $${round2(triggerLevel)}: хай выше, закрытие ниже`)
+        details.push(`Свеча отвержена от $${fmtPrice(triggerLevel)}: хай выше, закрытие ниже`)
       } else {
         const lastCandle = last3[last3.length - 1]
         const bodyHigh = Math.max(lastCandle.open, lastCandle.close)
@@ -104,9 +104,9 @@ export function calculateEntryTrigger(
           ? (lastCandle.high - bodyHigh) / (lastCandle.high - lastCandle.low) : 0
         if (nearTrigger && wickRatio > 0.3 && lastCandle.close < lastCandle.open) {
           candle_reclaim = true
-          details.push(`Свеча с длинной верхней тенью (${round2(wickRatio * 100)}%) у триггера — отвержение`)
+          details.push(`Свеча с длинной верхней тенью (${fmtPrice(wickRatio * 100)}%) у триггера — отвержение`)
         } else {
-          details.push(`Нет рекавери свечи от триггера $${round2(triggerLevel)}`)
+          details.push(`Нет рекавери свечи от триггера $${fmtPrice(triggerLevel)}`)
         }
       }
     }
@@ -132,8 +132,8 @@ export function calculateEntryTrigger(
     const avgVol = recentCandles.slice(-20).reduce((s, c) => s + c.volume, 0) / 20
     reversal_volume = last.volume > avgVol
     details.push(reversal_volume
-      ? `Объём свечи ${round2(last.volume / avgVol)}x > среднего`
-      : `Объём свечи ${round2(last.volume / avgVol)}x ≤ среднего`)
+      ? `Объём свечи ${fmtPrice(last.volume / avgVol)}x > среднего`
+      : `Объём свечи ${fmtPrice(last.volume / avgVol)}x ≤ среднего`)
   } else {
     reversal_volume = tf15m.volRatio > 1.0
     details.push(reversal_volume
@@ -147,8 +147,8 @@ export function calculateEntryTrigger(
     : 999
   const distance_from_trigger = distFromTrigger <= 0.35
   details.push(distance_from_trigger
-    ? `Расстояние от триггера ${round2(distFromTrigger)} ATR(15m) <= 0.35`
-    : `Расстояние от триггера ${round2(distFromTrigger)} ATR(15m) > 0.35`)
+    ? `Расстояние от триггера ${fmtPrice(distFromTrigger)} ATR(15m) <= 0.35`
+    : `Расстояние от триггера ${fmtPrice(distFromTrigger)} ATR(15m) > 0.35`)
 
   // Score: need 3 of 4
   const conditionsMet = [pullback_zone, candle_reclaim, reversal_volume, distance_from_trigger]

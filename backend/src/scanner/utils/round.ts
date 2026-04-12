@@ -15,3 +15,11 @@ export function round(v: number): number {
 export function round2(v: number): number {
   return Math.round(v * 100) / 100
 }
+
+/** Форматирование цены в строку с сохранением точности для дешёвых альтов. */
+export function fmtPrice(v: number): string {
+  if (v >= 1000) return v.toFixed(2)
+  if (v >= 1) return v.toFixed(4)
+  if (v >= 0.01) return v.toFixed(6)
+  return v.toFixed(8)
+}

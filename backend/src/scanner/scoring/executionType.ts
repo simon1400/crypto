@@ -7,7 +7,7 @@ import {
   LimitZoneSource,
   MarketEntryPlan,
 } from './types'
-import { round, round2 } from '../utils/round'
+import { round, fmtPrice } from '../utils/round'
 import { calculateImpulseExtension } from './hardFilters'
 
 // === EXECUTION TYPE CLASSIFICATION ===
@@ -191,8 +191,8 @@ export function generateLimitPlan(
 
   // Build explanation
   const explanation = isLong
-    ? `Лимитный LONG от ${bestZone.source}: зона $${round2(entry_zone_low)}-$${round2(entry_zone_high)}. Инвалидация при пробое $${round2(invalidation_price)}.`
-    : `Лимитный SHORT от ${bestZone.source}: зона $${round2(entry_zone_low)}-$${round2(entry_zone_high)}. Инвалидация при пробое $${round2(invalidation_price)}.`
+    ? `Лимитный LONG от ${bestZone.source}: зона $${fmtPrice(entry_zone_low)}-$${fmtPrice(entry_zone_high)}. Инвалидация при пробое $${fmtPrice(invalidation_price)}.`
+    : `Лимитный SHORT от ${bestZone.source}: зона $${fmtPrice(entry_zone_low)}-$${fmtPrice(entry_zone_high)}. Инвалидация при пробое $${fmtPrice(invalidation_price)}.`
 
   return {
     entry_zone_low,
@@ -232,8 +232,8 @@ export function generateMarketPlan(
   const invalidation_price = stopLoss
 
   const explanation = isLong
-    ? `Рыночный LONG по ~$${round2(price)}. Макс. цена входа: $${round2(max_chase_price)}. Стоп: $${round2(stopLoss)}.`
-    : `Рыночный SHORT по ~$${round2(price)}. Макс. цена входа: $${round2(max_chase_price)}. Стоп: $${round2(stopLoss)}.`
+    ? `Рыночный LONG по ~$${fmtPrice(price)}. Макс. цена входа: $${fmtPrice(max_chase_price)}. Стоп: $${fmtPrice(stopLoss)}.`
+    : `Рыночный SHORT по ~$${fmtPrice(price)}. Макс. цена входа: $${fmtPrice(max_chase_price)}. Стоп: $${fmtPrice(stopLoss)}.`
 
   return {
     market_entry_price: round(price),
