@@ -162,7 +162,7 @@ export default function PositionChartModal({ position, onClose }: Props) {
 
     let timer: ReturnType<typeof setInterval> | null = null
     if (isPositionOpen) {
-      timer = setInterval(() => fetchKlines(false), 60_000)
+      timer = setInterval(() => fetchKlines(false), 15_000)
     }
 
     return () => {
@@ -506,6 +506,16 @@ export default function PositionChartModal({ position, onClose }: Props) {
         if (live < entry) profitLevel = Math.max(live, lastTP)
         else if (live > entry) lossLevel = Math.min(live, stopLoss)
       }
+    }
+
+    // Update last candle's close to current live price (keeps candle visually alive between kline fetches)
+    if (live != null && candleSeriesRef.current && latestKlineTime > 0) {
+      try {
+        // lightweight-charts update() merges with existing candle at same time:
+        // close is set, high/low expand if needed, open stays unchanged
+        const t = snapToHour(latestKlineTime) as UTCTimestamp
+        candleSeriesRef.current.update({ time: t, close: live, high: live, low: live, open: live })
+      } catch {}
     }
 
     try {
