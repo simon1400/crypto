@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   getScannerSignals, triggerScan, takeSignalAsTrade, skipSignal, deleteSignal,
-  deleteAllSignals, deleteUnusedSignals, getScannerCoins, getBalance,
+  deleteAllSignals, deleteUnusedSignals, getScannerCoins, getBudget,
   analyzeEntry, getSavedEntrySignals, deleteEntrySignal,
   getScannerCoinList, saveScannerCoinList,
   subscribeScanProgress, ScanProgress,
@@ -285,7 +285,7 @@ export default function Scanner() {
   // Load coin count, coin list & balance
   useEffect(() => {
     getScannerCoins().then(c => setCoinCount(c.length)).catch(() => {})
-    getBalance().then(r => { if (r.balance) setBalance(r.balance) }).catch(() => {})
+    getBudget().then(r => { if (r.balance) setBalance(r.balance) }).catch(() => {})
   }, [])
 
   // Load saved signals

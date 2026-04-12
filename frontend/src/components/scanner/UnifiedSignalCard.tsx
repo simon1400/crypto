@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { takeSignalAsTrade, takeSignal, skipSignal, ScannerSignal, ScanSignal, SignalClose } from '../../api/client'
 import { QUALITY_COLORS } from '../../lib/constants'
-import { formatDate, fmt2, fmt2Signed } from '../../lib/formatters'
+import { formatDate, fmt2, fmt2Signed, fmtPrice } from '../../lib/formatters'
 import { ScoreBadge, StrategyBadge, ScannerStatusBadge as StatusBadge } from '../StatusBadge'
 import AiAnalysisBlock from './AiAnalysisBlock'
 import { MODEL_LABELS, SETUP_CATEGORY_STYLES, EXECUTION_TYPE_STYLES, CATEGORY_STYLES } from './constants'
@@ -373,7 +373,7 @@ export default function UnifiedSignalCard(props: Props) {
         <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg px-3 py-2 mb-3 text-xs">
           <div className="text-blue-400 font-bold mb-1">Trigger:</div>
           <div className="text-text-primary">
-            {data.triggerState.triggerType.replace(/_/g, ' ')} ${data.triggerState.triggerLevel} на {data.triggerState.triggerTf}
+            {data.triggerState.triggerType.replace(/_/g, ' ')} ${fmtPrice(data.triggerState.triggerLevel)} на {data.triggerState.triggerTf}
           </div>
           <div className="text-short/80 mt-1">Отмена: {data.triggerState.invalidIf}</div>
         </div>
@@ -403,16 +403,16 @@ export default function UnifiedSignalCard(props: Props) {
       <div className="grid grid-cols-2 gap-2 mb-3">
         <div className="bg-input rounded-lg p-2">
           <div className="text-xs text-text-secondary">Вход{active ? ` (${MODEL_LABELS[active.type] || active.type})` : ''}</div>
-          <div className="font-mono font-bold text-accent">${active?.entry ?? data.entry}</div>
+          <div className="font-mono font-bold text-accent">${fmtPrice(active?.entry ?? data.entry)}</div>
         </div>
         <div className="bg-input rounded-lg p-2">
           <div className="text-xs text-text-secondary">Stop Loss{active ? ` (${active.slPercent}%)` : ''}</div>
-          <div className="font-mono font-bold text-short">${active?.stopLoss ?? data.stopLoss}</div>
+          <div className="font-mono font-bold text-short">${fmtPrice(active?.stopLoss ?? data.stopLoss)}</div>
         </div>
         {tps.map((tp, i) => (
           <div key={i} className="bg-input rounded-lg p-2">
             <div className="text-xs text-text-secondary">TP{i + 1} (R:R {tp.rr})</div>
-            <div className="font-mono font-bold text-long">${tp.price}</div>
+            <div className="font-mono font-bold text-long">${fmtPrice(tp.price)}</div>
           </div>
         ))}
       </div>
@@ -459,7 +459,7 @@ export default function UnifiedSignalCard(props: Props) {
         <div className="bg-accent/5 border border-accent/20 rounded-lg px-3 py-2 mb-3 text-xs">
           <div className="text-accent font-bold mb-1">Лимитный вход: {data.limitEntryPlan.zone_source.replace(/_/g, ' ')}</div>
           <div className="text-text-primary">
-            Зона: ${fmt2(data.limitEntryPlan.entry_zone_low)} – ${fmt2(data.limitEntryPlan.entry_zone_high)}
+            Зона: ${fmtPrice(data.limitEntryPlan.entry_zone_low)} – ${fmtPrice(data.limitEntryPlan.entry_zone_high)}
           </div>
           <div className="text-text-secondary mt-0.5">{data.limitEntryPlan.explanation}</div>
         </div>
@@ -470,7 +470,7 @@ export default function UnifiedSignalCard(props: Props) {
         <div className="bg-long/5 border border-long/20 rounded-lg px-3 py-2 mb-3 text-xs">
           <div className="text-long font-bold mb-1">Рыночный вход</div>
           <div className="text-text-primary">
-            Макс. цена: ${fmt2(data.marketEntryPlan.max_chase_price)}
+            Макс. цена: ${fmtPrice(data.marketEntryPlan.max_chase_price)}
           </div>
           <div className="text-text-secondary mt-0.5">{data.marketEntryPlan.explanation}</div>
         </div>
@@ -587,7 +587,7 @@ export default function UnifiedSignalCard(props: Props) {
           <div className="text-xs text-text-secondary mb-1">Закрытия:</div>
           {data.closes.map((c, i) => (
             <div key={i} className="flex items-center gap-3 text-xs bg-input rounded-lg px-3 py-1.5">
-              <span className="font-mono text-text-primary">${c.price}</span>
+              <span className="font-mono text-text-primary">${fmtPrice(c.price)}</span>
               <span className="text-text-secondary">{c.percent}%</span>
               <span className={`font-mono font-bold ${c.pnl > 0 ? 'text-long' : c.pnl < 0 ? 'text-short' : 'text-text-secondary'}`}>
                 {fmt2Signed(c.pnl)}$ ({fmt2Signed(c.pnlPercent)}%)
