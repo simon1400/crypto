@@ -8,11 +8,10 @@ import {
   ScannerSignal, ScanResponse, EntryAnalysisResponse, EntryAnalysisSignal,
   getPostTp1Analytics, getSetupPerformance, getEntryModelComparison,
 } from '../api/client'
-import SignalCard from '../components/scanner/SignalCard'
-import ScanResultCard from '../components/scanner/ScanResultCard'
+import UnifiedSignalCard from '../components/scanner/UnifiedSignalCard'
 import CoinSearchSelector from '../components/scanner/CoinSearchSelector'
 import EntryResultCard from '../components/scanner/EntryResultCard'
-import { CATEGORY_STYLES, SETUP_CATEGORY_STYLES, EXECUTION_TYPE_STYLES, LOADING_MESSAGES, ENTRY_MESSAGES } from '../components/scanner/constants'
+import { SETUP_CATEGORY_STYLES, EXECUTION_TYPE_STYLES, LOADING_MESSAGES, ENTRY_MESSAGES } from '../components/scanner/constants'
 import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
 
 function scannerSignalToPosition(s: ScannerSignal): PositionChartPosition {
@@ -309,9 +308,9 @@ export default function Scanner() {
     } catch {}
   }
 
-  async function handleScanTake(id: number, amount: number, modelType?: string, leverage?: number) {
+  async function handleScanTake(id: number, amount: number, modelType?: string, leverage?: number, orderType?: 'market' | 'limit') {
     try {
-      await takeSignalAsTrade(id, amount, modelType, leverage)
+      await takeSignalAsTrade(id, amount, modelType, leverage, orderType || 'market')
       setScanResults(prev => prev ? {
         ...prev,
         signals: prev.signals.map(s => s.savedId === id ? { ...s, _taken: true } as any : s),
@@ -722,7 +721,7 @@ export default function Scanner() {
             <>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 {visibleSignals.map(s => (
-                  <SignalCard key={s.id} signal={s} onStatusChange={loadSignals} onDelete={handleDelete} balance={balance} riskPct={riskPct} onShowChart={setChartSignal} />
+                  <UnifiedSignalCard key={s.id} mode="saved" signal={s} onStatusChange={loadSignals} onDelete={handleDelete} balance={balance} riskPct={riskPct} onShowChart={setChartSignal} />
                 ))}
               </div>
               {hasMore && !showAll && (
@@ -814,7 +813,7 @@ export default function Scanner() {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {scanResults.signals.map((s, i) => (
-                <ScanResultCard key={i} result={s} onTake={handleScanTake} onSkip={handleScanSkip} onDelete={handleScanDelete} balance={balance} riskPct={riskPct} />
+                <UnifiedSignalCard key={i} mode="scan" signal={s} onTake={handleScanTake} onSkip={handleScanSkip} onDelete={handleScanDelete} balance={balance} riskPct={riskPct} />
               ))}
             </div>
           )}
