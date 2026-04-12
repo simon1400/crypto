@@ -226,9 +226,13 @@ function analyzeCoin(
 
   // Collect and cluster levels
   const allLevels = collectLevels(ind, type)
-  if (allLevels.length === 0) return null
+  if (allLevels.length === 0) {
+    console.log(`[EntryAnalyzer] ${coin}: no levels found at all`)
+    return null
+  }
 
   const clusters = clusterLevels(allLevels, price)
+  console.log(`[EntryAnalyzer] ${coin}: ${allLevels.length} levels → ${clusters.length} clusters (min weight 3: ${clusters.filter(c => c.totalWeight >= 3).length})`)
 
   // Calculate fill probabilities
   for (const cluster of clusters) {
@@ -240,7 +244,10 @@ function analyzeCoin(
     .filter((c) => c.totalWeight >= 3)
     .sort((a, b) => b.totalWeight * b.fillProbability - a.totalWeight * a.fillProbability)
 
-  if (ranked.length === 0) return null
+  if (ranked.length === 0) {
+    console.log(`[EntryAnalyzer] ${coin}: no clusters with weight >= 3`)
+    return null
+  }
 
   // Entry 1: best cluster
   const cluster1 = ranked[0]
@@ -287,8 +294,8 @@ function analyzeCoin(
   // Calculate risk from entry2 (SL below entry2)
   const risk = calculateEntryRisk(type, entry1.price, entry2.price, ind, score)
 
-  if (risk.riskReward < 1.3) {
-    console.log(`[EntryAnalyzer] ${coin}: R:R ${risk.riskReward} too low, skipping`)
+  if (risk.riskReward < 1.0) {
+    console.log(`[EntryAnalyzer] ${coin}: R:R ${risk.riskReward} too low (min 1.0), skipping`)
     return null
   }
 
