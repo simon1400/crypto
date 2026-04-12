@@ -143,6 +143,7 @@ router.post('/signals/:id/take-trade', asyncHandler(async (req, res) => {
 
   await adjustVirtualBalance(-entryFee, `entry fee ${signal.coin} scanner ${orderTypeNorm}`)
 
+  const isMarket = orderTypeNorm === 'market'
   const trade = await prisma.trade.create({
     data: {
       coin: signal.coin.toUpperCase().replace('USDT', '') + 'USDT',
@@ -151,8 +152,11 @@ router.post('/signals/:id/take-trade', asyncHandler(async (req, res) => {
       entryPrice: entry,
       amount,
       stopLoss,
+      initialStop: isMarket ? stopLoss : undefined,
+      currentStop: isMarket ? stopLoss : undefined,
       takeProfits,
-      status: 'PENDING_ENTRY',
+      status: isMarket ? 'OPEN' : 'PENDING_ENTRY',
+      openedAt: isMarket ? new Date() : undefined,
       source: 'SCANNER',
       entryOrderType: orderTypeNorm,
       fees: entryFee,
