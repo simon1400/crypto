@@ -25,9 +25,9 @@
 
 ### Signals Decomposition
 
-- [ ] **SIG-01**: Вынести SignalModal в отдельный компонент
-- [ ] **SIG-02**: Вынести DepositSimulator в отдельный компонент
-- [ ] **SIG-03**: Вынести StrategyAnalysis в отдельный компонент
+- [x] **SIG-01**: Вынести SignalModal в отдельный компонент
+- [x] **SIG-02**: Вынести DepositSimulator в отдельный компонент
+- [x] **SIG-03**: Вынести StrategyAnalysis в отдельный компонент
 
 ### Backtester Decomposition
 
@@ -92,9 +92,9 @@
 | SCAN-04 | Phase 15 | Pending |
 | SCAN-05 | Phase 15 | Complete |
 | SCAN-06 | Phase 15 | Complete |
-| SIG-01 | Phase 16 | Pending |
-| SIG-02 | Phase 16 | Pending |
-| SIG-03 | Phase 16 | Pending |
+| SIG-01 | Phase 16 | Complete |
+| SIG-02 | Phase 16 | Complete |
+| SIG-03 | Phase 16 | Complete |
 | BT-01 | Phase 16 | Pending |
 | BT-02 | Phase 16 | Pending |
 | BT-03 | Phase 16 | Pending |
