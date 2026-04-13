@@ -31,9 +31,9 @@
 
 ### Backtester Decomposition
 
-- [ ] **BT-01**: Вынести chart setup и theme config в отдельный модуль
-- [ ] **BT-02**: Вынести drawing persistence (localStorage save/load) в хук или утилиту
-- [ ] **BT-03**: Вынести replay logic в отдельный хук
+- [x] **BT-01**: Вынести chart setup и theme config в отдельный модуль
+- [x] **BT-02**: Вынести drawing persistence (localStorage save/load) в хук или утилиту
+- [x] **BT-03**: Вынести replay logic в отдельный хук
 
 ### Settings Decomposition
 
@@ -95,9 +95,9 @@
 | SIG-01 | Phase 16 | Complete |
 | SIG-02 | Phase 16 | Complete |
 | SIG-03 | Phase 16 | Complete |
-| BT-01 | Phase 16 | Pending |
-| BT-02 | Phase 16 | Pending |
-| BT-03 | Phase 16 | Pending |
+| BT-01 | Phase 16 | Complete |
+| BT-02 | Phase 16 | Complete |
+| BT-03 | Phase 16 | Complete |
 | SET-01 | Phase 17 | Pending |
 | SET-02 | Phase 17 | Pending |
 | SET-03 | Phase 17 | Pending |
