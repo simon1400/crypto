@@ -96,7 +96,7 @@ Plans:
 - [ ] **Phase 6: Candidate Scoring Engine** - 4D scoring framework для candidate levels в generateLimitPlan()
 - [x] **Phase 7: Multi-Candidate Storage & UI** - Хранение 3 кандидатов на сигнал и отображение в сканере (completed 2026-04-13)
 - [x] **Phase 8: Integrity Monitoring** - Lifecycle и мониторинг integrity для ожидающих лимиток (completed 2026-04-13)
-- [ ] **Phase 9: Execution Reclassification** - Пересмотр ENTER_NOW -> LIMIT/WAIT_FOR_PULLBACK
+- [x] **Phase 9: Execution Reclassification** - Пересмотр ENTER_NOW -> LIMIT/WAIT_FOR_PULLBACK (completed 2026-04-13)
 
 ---
 
@@ -157,7 +157,7 @@ Plans:
 **Plans**: 2 plans
 Plans:
 - [x] 09-01-PLAN.md — Backend: WAIT_FOR_PULLBACK type + reclassify selectExecutionType + pipeline wiring
-- [ ] 09-02-PLAN.md — Frontend: WAIT_FOR_PULLBACK badge styles + UnifiedSignalCard support
+- [x] 09-02-PLAN.md — Frontend: WAIT_FOR_PULLBACK badge styles + UnifiedSignalCard support
 **Key files**: backend/src/scanner/scoring/executionType.ts
 
 ---
@@ -174,4 +174,4 @@ Plans:
 | 6. Candidate Scoring Engine | v2.0 | 2/2 | Complete | - |
 | 7. Multi-Candidate Storage & UI | v2.0 | 2/2 | Complete   | 2026-04-13 |
 | 8. Integrity Monitoring | v2.0 | 1/1 | Complete   | 2026-04-13 |
-| 9. Execution Reclassification | v2.0 | 1/2 | In Progress|  |
+| 9. Execution Reclassification | v2.0 | 2/2 | Complete   | 2026-04-13 |
