@@ -31,6 +31,8 @@ export type ExecutionType =
   | 'ENTER_NOW_SHORT'
   | 'LIMIT_LONG'
   | 'LIMIT_SHORT'
+  | 'WAIT_FOR_PULLBACK_LONG'
+  | 'WAIT_FOR_PULLBACK_SHORT'
   | 'WAIT_CONFIRMATION'
   | 'IGNORE'
 
@@ -304,6 +306,8 @@ export const EXECUTION_TYPE_LABELS: Record<ExecutionType, string> = {
   ENTER_NOW_SHORT: 'Можно входить сейчас в SHORT',
   LIMIT_LONG: 'Лимитный вход в LONG',
   LIMIT_SHORT: 'Лимитный вход в SHORT',
+  WAIT_FOR_PULLBACK_LONG: 'Ждать откат для LONG',
+  WAIT_FOR_PULLBACK_SHORT: 'Ждать откат для SHORT',
   WAIT_CONFIRMATION: 'Ждать подтверждение',
   IGNORE: 'Игнорировать',
 }

@@ -30,13 +30,11 @@ export function selectExecutionType(
   const atr15m = tf15m.atr
   const atr1h = tf1h.atr
 
-  // IGNORE: setup not worth tracking
+  // Step 1 — IGNORE / WAIT_CONFIRMATION for weak setups
   if (category === 'IGNORE') return 'IGNORE'
-
-  // WATCHLIST: setup present but weak
   if (category === 'WATCHLIST' && !entryTrigger.passed) return 'WAIT_CONFIRMATION'
 
-  // Check if immediate entry is valid
+  // Step 2 — Compute helpers
   const impulseExt = calculateImpulseExtension(price, tf1h.ema20, atr1h)
 
   // Distance from trigger in ATR(15m)
@@ -45,28 +43,59 @@ export function selectExecutionType(
     : Math.min(tf1h.ema20, tf1h.vwap)
   const distFromTrigger = atr15m > 0 ? Math.abs(price - triggerLevel) / atr15m : 999
 
-  const canEnterNow =
-    (category === 'READY' || category === 'A_PLUS_READY') &&
-    entryTrigger.passed &&
-    distFromTrigger <= 0.35 &&
-    impulseExt <= 0.6
+  // Step 3 — ENTER_NOW gate (D-01 — STRICTER: A_PLUS_READY OR READY+4/4+dist+impulse)
+  // A_PLUS_READY == setupScore >= 72 (verified in assignSignalCategory)
+  let canEnterNow =
+    category === 'A_PLUS_READY' ||
+    (
+      category === 'READY' &&
+      entryTrigger.passed &&
+      entryTrigger.score === 4 &&    // ALL 4/4 conditions met (was just "passed" before)
+      distFromTrigger <= 0.35 &&
+      impulseExt <= 0.6
+    )
 
+  // Step 4 — ENTER_NOW → LIMIT reclassification (D-03)
+  // If there is a strong structural level in 0.5-1.0 ATR range, reclassify to LIMIT
+  if (canEnterNow && atr1h > 0) {
+    const levels = collectLevels(indicators, type)
+    const clusters = clusterLevels(levels, price)
+    for (const cluster of clusters) {
+      const dist = Math.abs(cluster.price - price) / atr1h
+      if (dist >= 0.5 && dist <= 1.0 && cluster.totalWeight >= 14) {
+        // Strong structural level nearby — limit entry improves R:R
+        canEnterNow = false
+        break
+      }
+    }
+  }
+
+  // Step 5 — Return execution type
   if (canEnterNow) {
     return isLong ? 'ENTER_NOW_LONG' : 'ENTER_NOW_SHORT'
   }
 
-  // Setup valid but immediate entry too extended or degrades R:R → LIMIT
   const setupValid = category === 'READY' || category === 'A_PLUS_READY'
-  if (setupValid && (distFromTrigger > 0.35 || impulseExt > 0.6)) {
+
+  // Extended price / impulse → LIMIT (was ENTER_NOW candidate, just too extended)
+  if (setupValid && entryTrigger.passed && (distFromTrigger > 0.35 || impulseExt > 0.6)) {
     return isLong ? 'LIMIT_LONG' : 'LIMIT_SHORT'
   }
 
-  // Setup valid + trigger not confirmed yet
-  if (setupValid && !entryTrigger.passed) {
-    return 'WAIT_CONFIRMATION'
+  // D-02: READY + trigger < 4/4 → no longer ENTER_NOW
+  if (setupValid && entryTrigger.passed && entryTrigger.score < 4) {
+    if (distFromTrigger <= 1.0 && impulseExt <= 1.0) {
+      return isLong ? 'LIMIT_LONG' : 'LIMIT_SHORT'
+    }
+    return isLong ? 'WAIT_FOR_PULLBACK_LONG' : 'WAIT_FOR_PULLBACK_SHORT'
   }
 
-  // WATCHLIST with trigger → still limit
+  // D-04: Valid setup + trigger not passed → wait for price to come to you
+  if (setupValid && !entryTrigger.passed) {
+    return isLong ? 'WAIT_FOR_PULLBACK_LONG' : 'WAIT_FOR_PULLBACK_SHORT'
+  }
+
+  // WATCHLIST with trigger → limit
   if (category === 'WATCHLIST' && entryTrigger.passed) {
     return isLong ? 'LIMIT_LONG' : 'LIMIT_SHORT'
   }
