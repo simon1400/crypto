@@ -43,7 +43,7 @@ Plans:
   4. The scannerTracker updates multiple trades in a single batch call, not one prisma.trade.update per iteration
 **Plans**: 2 plans
 Plans:
-- [ ] 11-01-PLAN.md — Prisma transactions for multi-step ops + N+1 batch MFE/MAE fix
+- [x] 11-01-PLAN.md — Prisma transactions for multi-step ops + N+1 batch MFE/MAE fix
 - [ ] 11-02-PLAN.md — Graceful shutdown handler + DB performance indexes
 
 ### Phase 12: Frontend Resilience
@@ -68,5 +68,5 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 10. Security | 2/2 | Complete    | 2026-04-13 |
-| 11. Data Integrity | 0/2 | Not started | - |
+| 11. Data Integrity | 1/2 | In Progress|  |
 | 12. Frontend Resilience | 0/? | Not started | - |

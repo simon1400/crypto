@@ -9,10 +9,10 @@
 
 ## Data Integrity
 
-- [ ] **DATA-01**: Multi-step DB операции (deleteMany+create, position update+TP placement) обёрнуты в prisma.$transaction
+- [x] **DATA-01**: Multi-step DB операции (deleteMany+create, position update+TP placement) обёрнуты в prisma.$transaction
 - [ ] **DATA-02**: Graceful shutdown — prisma.$disconnect(), очистка setInterval таймеров, корректное завершение WS соединений при SIGTERM/SIGINT
 - [ ] **DATA-03**: DB индексы добавлены на Trade.status, Trade.coin, GeneratedSignal.status, GeneratedSignal.coin, Position.entryOrderId, Position.signalId
-- [ ] **DATA-04**: N+1 запрос в scannerTracker заменён на batch update — не выполнять prisma.trade.update в цикле
+- [x] **DATA-04**: N+1 запрос в scannerTracker заменён на batch update — не выполнять prisma.trade.update в цикле
 
 ## Frontend Resilience
 
@@ -29,10 +29,10 @@
 | SEC-02 | Phase 10 | Complete |
 | SEC-03 | Phase 10 | Complete |
 | SEC-04 | Phase 10 | Complete |
-| DATA-01 | Phase 11 | Pending |
+| DATA-01 | Phase 11 | Complete |
 | DATA-02 | Phase 11 | Pending |
 | DATA-03 | Phase 11 | Pending |
-| DATA-04 | Phase 11 | Pending |
+| DATA-04 | Phase 11 | Complete |
 | FE-01 | Phase 12 | Pending |
 | FE-02 | Phase 12 | Pending |
 | FE-03 | Phase 12 | Pending |

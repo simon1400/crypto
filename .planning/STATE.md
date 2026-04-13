@@ -2,27 +2,27 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Phase 10 Complete
-stopped_at: Completed 10-02-PLAN.md
-last_updated: "2026-04-13T12:47:00.000Z"
+status: Ready to execute
+stopped_at: Completed 11-01-PLAN.md
+last_updated: "2026-04-13T14:12:06.286Z"
 progress:
   total_phases: 3
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 4
+  completed_plans: 3
 ---
 
 ## Current Position
 
-Phase: 10 (security) — COMPLETE
-Plan: 2 of 2 (all done)
+Phase: 11 (data-integrity) — EXECUTING
+Plan: 2 of 2
 
 ## Project Reference
 
 See: .planning/PROJECT.md (updated 2026-04-13)
 
 **Core value:** Устранить критичные проблемы безопасности, data integrity и производительности без изменения функционала
-**Current focus:** Phase 10 — security
+**Current focus:** Phase 11 — data-integrity
 
 ## Performance Metrics
 
@@ -40,6 +40,7 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 | 11. Data Integrity | 0 | - | - |
 | 12. Frontend Resilience | 0 | - | - |
 | Phase 10 P01 | 5 | 2 tasks | 4 files |
+| Phase 11-data-integrity P01 | 12 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -57,6 +58,8 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 - [Phase 10]: In-memory Map for rate limiting (no Redis dependency, single-instance deployment)
 - [Phase 10 P02]: safeParse in gpt/common.ts preserves throw — callers already handle exceptions, warning log added before re-throw
 - [Phase 10 P02]: Signals.tsx exportCSV refactored from raw template literals to esc() helper for all fields including header
+- [Phase 11-data-integrity]: logOrderAction inlined as tx.orderLog.create in positionManager  — avoids refactoring helper, keeps ORDER_FILLED atomic
+- [Phase 11-data-integrity]: MFE/MAE batch uses array-form prisma.$transaction (independent updates) for O(n)→O(1) DB round-trips per tracker tick
 
 ### Blockers/Concerns
 
@@ -68,6 +71,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-13T12:47:00.000Z
-Stopped at: Completed 10-02-PLAN.md
+Last session: 2026-04-13T14:12:06.243Z
+Stopped at: Completed 11-01-PLAN.md
 Resume file: None
