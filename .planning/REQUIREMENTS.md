@@ -29,9 +29,9 @@ Requirements for Smart Entry milestone. Each maps to roadmap phases.
 
 ### Execution Classification
 
-- [ ] **EXEC-01**: ENTER_NOW reclassified to LIMIT when strong structural level exists within 0.5-1.0 ATR
-- [ ] **EXEC-02**: New WAIT_FOR_PULLBACK execution type for valid setups where price is not in optimal zone
-- [ ] **EXEC-03**: ENTER_NOW restricted to: score >= 72, price at/near key level, entry trigger 4/4
+- [x] **EXEC-01**: ENTER_NOW reclassified to LIMIT when strong structural level exists within 0.5-1.0 ATR
+- [x] **EXEC-02**: New WAIT_FOR_PULLBACK execution type for valid setups where price is not in optimal zone
+- [x] **EXEC-03**: ENTER_NOW restricted to: score >= 72, price at/near key level, entry trigger 4/4
 
 ## Future Requirements
 
@@ -69,9 +69,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INTEG-02 | Phase 8 | Complete |
 | INTEG-03 | Phase 8 | Complete |
 | INTEG-04 | Phase 8 | Complete |
-| EXEC-01 | Phase 9 | Pending |
-| EXEC-02 | Phase 9 | Pending |
-| EXEC-03 | Phase 9 | Pending |
+| EXEC-01 | Phase 9 | Complete |
+| EXEC-02 | Phase 9 | Complete |
+| EXEC-03 | Phase 9 | Complete |
 
 **Coverage:**
 - v2.0 requirements: 14 total

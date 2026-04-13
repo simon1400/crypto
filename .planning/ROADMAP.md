@@ -156,7 +156,7 @@ Plans:
   3. ENTER_NOW присваивается только при одновременном выполнении трёх условий: score >= 72, цена уже у ключевого уровня, entry trigger 4/4
 **Plans**: 2 plans
 Plans:
-- [ ] 09-01-PLAN.md — Backend: WAIT_FOR_PULLBACK type + reclassify selectExecutionType + pipeline wiring
+- [x] 09-01-PLAN.md — Backend: WAIT_FOR_PULLBACK type + reclassify selectExecutionType + pipeline wiring
 - [ ] 09-02-PLAN.md — Frontend: WAIT_FOR_PULLBACK badge styles + UnifiedSignalCard support
 **Key files**: backend/src/scanner/scoring/executionType.ts
 
@@ -174,4 +174,4 @@ Plans:
 | 6. Candidate Scoring Engine | v2.0 | 2/2 | Complete | - |
 | 7. Multi-Candidate Storage & UI | v2.0 | 2/2 | Complete   | 2026-04-13 |
 | 8. Integrity Monitoring | v2.0 | 1/1 | Complete   | 2026-04-13 |
-| 9. Execution Reclassification | v2.0 | 0/2 | Planned | - |
+| 9. Execution Reclassification | v2.0 | 1/2 | In Progress|  |

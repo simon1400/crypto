@@ -2,27 +2,27 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Smart Entry
-status: Phase complete — ready for verification
-stopped_at: Completed 08-integrity-monitoring/08-01-PLAN.md
-last_updated: "2026-04-13T10:34:22.222Z"
+status: Ready to execute
+stopped_at: Completed 09-01-PLAN.md
+last_updated: "2026-04-13T10:56:11.898Z"
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 5
-  completed_plans: 5
+  total_plans: 7
+  completed_plans: 6
 ---
 
 ## Current Position
 
-Phase: 08 (integrity-monitoring) — EXECUTING
-Plan: 1 of 1
+Phase: 09 (execution-reclassification) — EXECUTING
+Plan: 2 of 2
 
 ## Project Reference
 
 See: .planning/PROJECT.md (updated 2026-04-13)
 
 **Core value:** Лимитные ордера на оптимальный structural level, а не на ближайший к цене
-**Current focus:** Phase 08 — integrity-monitoring
+**Current focus:** Phase 09 — execution-reclassification
 
 ## Performance Metrics
 
@@ -44,6 +44,7 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 | Phase 07 P01 | 120s | 2 tasks | 3 files |
 | Phase 07-multi-candidate-storage-ui P02 | 120 | 2 tasks | 2 files |
 | Phase 08-integrity-monitoring P01 | 98 | 2 tasks | 3 files |
+| Phase 09-execution-reclassification P01 | 480 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -62,6 +63,9 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 - [Phase 07-02]: Candidates fallback to old limitEntryPlan display for backward compat with saved signals without candidates
 - [Phase 08-01]: Integrity state stored in marketContext.integrity JSON — no schema migration needed
 - [Phase 08-01]: INVALIDATED badge is orange to distinguish from EXPIRED (neutral gray)
+- [Phase 09-01]: WAIT_FOR_PULLBACK = valid setup but price not in optimal zone — informational with optional limit plan
+- [Phase 09-01]: ENTER_NOW->LIMIT reclassification uses totalWeight >= 14 inline heuristic from raw clusters, NOT scoreCandidate()
+- [Phase 09-01]: READY + trigger < 4/4 no longer qualifies for ENTER_NOW — becomes LIMIT or WAIT_FOR_PULLBACK
 
 ### Blockers/Concerns
 
@@ -73,6 +77,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-13T10:34:22.218Z
-Stopped at: Completed 08-integrity-monitoring/08-01-PLAN.md
+Last session: 2026-04-13T10:56:11.894Z
+Stopped at: Completed 09-01-PLAN.md
 Resume file: None
