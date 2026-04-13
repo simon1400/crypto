@@ -3,8 +3,8 @@
 ## Security
 
 - [x] **SEC-01**: Auth token убран из query параметров — только header X-Api-Secret, SSE использует альтернативный механизм (не query param)
-- [ ] **SEC-02**: Все JSON.parse вызовы обёрнуты в try-catch с fallback значениями — малформед данные не крашат приложение
-- [ ] **SEC-03**: CSV экспорт экранирует опасные символы (=, +, @, -) в начале полей — предотвращение CSV injection
+- [x] **SEC-02**: Все JSON.parse вызовы обёрнуты в try-catch с fallback значениями — малформед данные не крашат приложение
+- [x] **SEC-03**: CSV экспорт экранирует опасные символы (=, +, @, -) в начале полей — предотвращение CSV injection
 - [x] **SEC-04**: POST /api/login имеет rate limiting — не более 5 попыток в минуту с одного IP
 
 ## Data Integrity
@@ -26,8 +26,8 @@
 | REQ | Phase | Status |
 |-----|-------|--------|
 | SEC-01 | Phase 10 | Complete |
-| SEC-02 | Phase 10 | Pending |
-| SEC-03 | Phase 10 | Pending |
+| SEC-02 | Phase 10 | Complete |
+| SEC-03 | Phase 10 | Complete |
 | SEC-04 | Phase 10 | Complete |
 | DATA-01 | Phase 11 | Pending |
 | DATA-02 | Phase 11 | Pending |
