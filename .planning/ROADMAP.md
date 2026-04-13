@@ -77,7 +77,10 @@ Plans:
   2. Signals page renders signal list, opens modal, and runs deposit simulator without errors
   3. Backtester page loads chart, restores drawings from localStorage, and replay controls function identically to before
   4. Vite build completes with no new errors
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 16-01-PLAN.md - Extract SignalModal, DepositSimulator, StrategyAnalysis from Signals.tsx
+- [ ] 16-02-PLAN.md - Extract useDrawingPersistence, useReplay hooks + shared chartConfig for Backtester.tsx
 **UI hint**: yes
 
 ### Phase 17: Settings + Trades Decomposition
@@ -110,7 +113,7 @@ Plans:
 |-------|-----------|----------------|--------|-----------|
 | 13. Shared Utilities | v4.0 | 1/2 | Complete    | 2026-04-13 |
 | 14. API Client Decomposition | v4.0 | 0/1 | Complete    | 2026-04-13 |
-| 15. Scanner Decomposition | v4.0 | 3/3 | Complete   | 2026-04-13 |
-| 16. Signals + Backtester Decomposition | v4.0 | 0/? | Not started | - |
+| 15. Scanner Decomposition | v4.0 | 3/3 | Complete    | 2026-04-13 |
+| 16. Signals + Backtester Decomposition | v4.0 | 0/2 | Planned | - |
 | 17. Settings + Trades Decomposition | v4.0 | 0/? | Not started | - |
 | 18. Component Decomposition | v4.0 | 0/? | Not started | - |
