@@ -241,29 +241,30 @@ router.post('/merge-entry', asyncHandler(async (req, res) => {
     rr: riskAmount > 0 ? Math.round(((tp.price - avgEntry) * direction / riskAmount) * 100) / 100 : 0,
   }))
 
-  // Delete both old trades
-  await prisma.trade.deleteMany({ where: { id: { in: [trade1Id, trade2Id] } } })
-
   // Переносим Score из исходных notes
   const score = parseScoreFromNotes(t1.notes) ?? parseScoreFromNotes(t2.notes)
   const scorePart = score != null ? ` | Score: ${score}` : ''
 
-  const merged = await prisma.trade.create({
-    data: {
-      coin: t1.coin,
-      type: t1.type,
-      leverage: t1.leverage,
-      entryPrice: avgEntry,
-      amount: totalAmount,
-      stopLoss: t1.stopLoss,
-      takeProfits: newTPs,
-      status: 'OPEN',
-      source: 'ENTRY_ANALYZER',
-      entryOrderType: t1.entryOrderType,
-      fees: t1.fees + t2.fees,
-      fundingPaid: t1.fundingPaid + t2.fundingPaid,
-      notes: `Merged from #${trade1Id} ($${t1.entryPrice}) + #${trade2Id} ($${t2.entryPrice}) → avg $${avgEntry}${scorePart}`,
-    },
+  // Delete both old trades and create merged trade atomically
+  const merged = await prisma.$transaction(async (tx) => {
+    await tx.trade.deleteMany({ where: { id: { in: [trade1Id, trade2Id] } } })
+    return tx.trade.create({
+      data: {
+        coin: t1.coin,
+        type: t1.type,
+        leverage: t1.leverage,
+        entryPrice: avgEntry,
+        amount: totalAmount,
+        stopLoss: t1.stopLoss,
+        takeProfits: newTPs,
+        status: 'OPEN',
+        source: 'ENTRY_ANALYZER',
+        entryOrderType: t1.entryOrderType,
+        fees: t1.fees + t2.fees,
+        fundingPaid: t1.fundingPaid + t2.fundingPaid,
+        notes: `Merged from #${trade1Id} ($${t1.entryPrice}) + #${trade2Id} ($${t2.entryPrice}) → avg $${avgEntry}${scorePart}`,
+      },
+    })
   })
 
   console.log(`[EntryAnalyzer] Merged trades #${trade1Id}+#${trade2Id} → #${merged.id} (avg entry: $${avgEntry})`)

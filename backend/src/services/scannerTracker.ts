@@ -201,30 +201,31 @@ async function tryMergeEntryPair(_filledTradeId: number, notes: string) {
     rr: riskAmount > 0 ? Math.round(((tp.price - avgEntry) * direction / riskAmount) * 100) / 100 : 0,
   }))
 
-  await prisma.trade.deleteMany({ where: { id: { in: [t1.id, t2.id] } } })
-
   const scoreMatch = (t1.notes || t2.notes || '').match(/Score:\s*(\d+)/)
   const scorePart = scoreMatch ? ` | Score: ${scoreMatch[1]}` : ''
 
-  const merged = await prisma.trade.create({
-    data: {
-      coin: t1.coin,
-      type: t1.type,
-      leverage: t1.leverage,
-      entryPrice: avgEntry,
-      amount: totalAmount,
-      stopLoss: t1.stopLoss,
-      initialStop: t1.stopLoss,
-      currentStop: t1.stopLoss,
-      takeProfits: newTPs,
-      status: 'OPEN',
-      source: 'ENTRY_ANALYZER',
-      entryOrderType: t1.entryOrderType,
-      fees: t1.fees + t2.fees,
-      fundingPaid: t1.fundingPaid + t2.fundingPaid,
-      openedAt: new Date(),
-      notes: `Merged ${groupId}: #${t1.id} ($${t1.entryPrice}) + #${t2.id} ($${t2.entryPrice}) → avg $${avgEntry}${scorePart}`,
-    },
+  const merged = await prisma.$transaction(async (tx) => {
+    await tx.trade.deleteMany({ where: { id: { in: [t1.id, t2.id] } } })
+    return tx.trade.create({
+      data: {
+        coin: t1.coin,
+        type: t1.type,
+        leverage: t1.leverage,
+        entryPrice: avgEntry,
+        amount: totalAmount,
+        stopLoss: t1.stopLoss,
+        initialStop: t1.stopLoss,
+        currentStop: t1.stopLoss,
+        takeProfits: newTPs,
+        status: 'OPEN',
+        source: 'ENTRY_ANALYZER',
+        entryOrderType: t1.entryOrderType,
+        fees: t1.fees + t2.fees,
+        fundingPaid: t1.fundingPaid + t2.fundingPaid,
+        openedAt: new Date(),
+        notes: `Merged ${groupId}: #${t1.id} ($${t1.entryPrice}) + #${t2.id} ($${t2.entryPrice}) → avg $${avgEntry}${scorePart}`,
+      },
+    })
   })
 
   console.log(`[ScannerTracker] Auto-merged ${groupId}: #${t1.id} + #${t2.id} → #${merged.id} (avg entry: $${avgEntry}, total: $${totalAmount})`)

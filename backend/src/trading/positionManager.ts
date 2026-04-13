@@ -76,27 +76,34 @@ async function handleEntryOrderUpdate(order: WsOrderUpdate): Promise<void> {
   if (!position) return
 
   if (order.orderStatus === 'Filled') {
-    // Update position to OPEN with actual entry price
-    await prisma.position.update({
-      where: { id: position.id },
-      data: {
-        status: 'OPEN',
-        entryPrice: parseFloat(order.avgPrice),
-        filledAt: new Date(),
-      },
+    // Step 1: Atomically update position status + log order fill
+    await prisma.$transaction(async (tx) => {
+      await tx.position.update({
+        where: { id: position.id },
+        data: {
+          status: 'OPEN',
+          entryPrice: parseFloat(order.avgPrice),
+          filledAt: new Date(),
+        },
+      })
+
+      await tx.orderLog.create({
+        data: {
+          action: 'ORDER_FILLED',
+          positionId: position.id,
+          signalId: position.signalId ?? undefined,
+          details: {
+            orderId: order.orderId,
+            avgPrice: order.avgPrice,
+            cumExecQty: order.cumExecQty,
+          },
+        },
+      })
     })
 
-    await logOrderAction('ORDER_FILLED', {
-      positionId: position.id,
-      signalId: position.signalId ?? undefined,
-      details: {
-        orderId: order.orderId,
-        avgPrice: order.avgPrice,
-        cumExecQty: order.cumExecQty,
-      },
-    })
+    console.log(`[OrderLog] ORDER_FILLED pos=${position.id} sig=${position.signalId ?? '-'}`)
 
-    // Place TP orders now that entry is filled
+    // Step 2: External API call — place TP orders (outside transaction)
     try {
       const client = await createBybitClient()
       const executor = createOrderExecutor(client)

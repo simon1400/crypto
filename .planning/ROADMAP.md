@@ -10,7 +10,7 @@
 
 ## Phases
 
-- [ ] **Phase 10: Security** — Auth token leak fix, JSON.parse safety, CSV injection prevention, rate limiting
+- [x] **Phase 10: Security** — Auth token leak fix, JSON.parse safety, CSV injection prevention, rate limiting (completed 2026-04-13)
 - [ ] **Phase 11: Data Integrity** — Prisma transactions, graceful shutdown, DB indexes, N+1 batch fix
 - [ ] **Phase 12: Frontend Resilience** — Error handling, AbortController, type safety, shared balance state
 
@@ -43,8 +43,8 @@ Plans:
   4. The scannerTracker updates multiple trades in a single batch call, not one prisma.trade.update per iteration
 **Plans**: 2 plans
 Plans:
-- [ ] 10-01-PLAN.md — SSE auth fix (fetch+ReadableStream) + login rate limiting
-- [ ] 10-02-PLAN.md — JSON.parse safety (safeParse utility) + CSV injection prevention
+- [ ] 11-01-PLAN.md — Prisma transactions for multi-step ops + N+1 batch MFE/MAE fix
+- [ ] 11-02-PLAN.md — Graceful shutdown handler + DB performance indexes
 
 ### Phase 12: Frontend Resilience
 **Goal**: The UI handles errors, async lifecycle, and shared state without silent failures or duplicate network calls
@@ -57,8 +57,8 @@ Plans:
   4. The balance figure shown in Navbar and in any page component is always identical and fetched exactly once per polling interval — not once per component
 **Plans**: 2 plans
 Plans:
-- [ ] 10-01-PLAN.md — SSE auth fix (fetch+ReadableStream) + login rate limiting
-- [ ] 10-02-PLAN.md — JSON.parse safety (safeParse utility) + CSV injection prevention
+- [ ] 12-01-PLAN.md — [To be planned]
+- [ ] 12-02-PLAN.md — [To be planned]
 **UI hint**: yes
 
 ---
@@ -67,6 +67,6 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 10. Security | 2/2 | Complete | 2026-04-13 |
-| 11. Data Integrity | 0/? | Not started | - |
+| 10. Security | 2/2 | Complete    | 2026-04-13 |
+| 11. Data Integrity | 0/2 | Not started | - |
 | 12. Frontend Resilience | 0/? | Not started | - |
