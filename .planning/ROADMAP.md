@@ -16,7 +16,7 @@
 ## Phases
 
 - [x] **Phase 13: Shared Utilities** - Extract TP validation, P&L calc, CSV export, chart config, useAsyncData hook, and Pagination component into lib/ and hooks/ (completed 2026-04-13)
-- [ ] **Phase 14: API Client Decomposition** - Split client.ts into domain modules with backward-compatible re-export
+- [x] **Phase 14: API Client Decomposition** - Split client.ts into domain modules with backward-compatible re-export (completed 2026-04-13)
 - [ ] **Phase 15: Scanner Decomposition** - Extract all 6 Scanner.tsx tabs into separate components
 - [ ] **Phase 16: Signals + Backtester Decomposition** - Extract SignalModal, DepositSimulator, StrategyAnalysis, chart setup, drawing persistence, and replay logic
 - [ ] **Phase 17: Settings + Trades Decomposition** - Extract 6 Settings sections and Trades filters, table, and modal management
@@ -61,7 +61,11 @@ Plans:
   2. Scanner page renders all 6 tabs identically to before — no missing data, no broken interactions
   3. Switching between tabs in browser produces no console errors
   4. Scanner.tsx file size is reduced by at least 60% compared to pre-refactor (orchestrator pattern achieved)
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 15-01-PLAN.md — Extract ScannerSignalsTab + ScannerScanTab
+- [ ] 15-02-PLAN.md — Extract ScannerEntryTab + ScannerCalcTab
+- [ ] 15-03-PLAN.md — Extract ScannerCoinListTab + ScannerAnalyticsTab + finalize orchestrator
 **UI hint**: yes
 
 ### Phase 16: Signals + Backtester Decomposition
@@ -105,8 +109,8 @@ Plans:
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 13. Shared Utilities | v4.0 | 1/2 | Complete    | 2026-04-13 |
-| 14. API Client Decomposition | v4.0 | 0/1 | Planned    |  |
-| 15. Scanner Decomposition | v4.0 | 0/? | Not started | - |
+| 14. API Client Decomposition | v4.0 | 0/1 | Complete    | 2026-04-13 |
+| 15. Scanner Decomposition | v4.0 | 0/3 | Not started | - |
 | 16. Signals + Backtester Decomposition | v4.0 | 0/? | Not started | - |
 | 17. Settings + Trades Decomposition | v4.0 | 0/? | Not started | - |
 | 18. Component Decomposition | v4.0 | 0/? | Not started | - |
