@@ -82,6 +82,7 @@ Plans:
 Plans:
 - [ ] 05-01-PLAN.md — DB migration (source field) + useBacktestTrading hook + TradingPanel + price lines + hit detection
 - [ ] 05-02-PLAN.md — Trade history panel + session save/load + E2E verification checkpoint
+
 **UI hint**: yes
 
 </details>
@@ -94,7 +95,7 @@ Plans:
 
 - [ ] **Phase 6: Candidate Scoring Engine** - 4D scoring framework для candidate levels в generateLimitPlan()
 - [x] **Phase 7: Multi-Candidate Storage & UI** - Хранение 3 кандидатов на сигнал и отображение в сканере (completed 2026-04-13)
-- [ ] **Phase 8: Integrity Monitoring** - Lifecycle и мониторинг integrity для ожидающих лимиток
+- [x] **Phase 8: Integrity Monitoring** - Lifecycle и мониторинг integrity для ожидающих лимиток (completed 2026-04-13)
 - [ ] **Phase 9: Execution Reclassification** - Пересмотр ENTER_NOW -> LIMIT/WAIT_FOR_PULLBACK
 
 ---
@@ -140,8 +141,10 @@ Plans:
   2. Ожидающий сигнал проходит lifecycle: ACTIVE -> STALKING (цена приближается) -> STALE (> 8 часов) -> INVALIDATED (структура сломана)
   3. Каждые 15-30 минут для ожидающих сигналов выполняются проверки: HH/HL structure на 1H, market regime, RSI деградация (> 75 для LONG), аномальный объём (< 0.5x avg)
   4. Сигналы с истёкшим TTL (12ч default, 24ч для A_PLUS_READY) автоматически инвалидируются с записанной причиной
-**Plans**: TBD
-**Key files**: backend/src/services/scannerTracker.ts
+**Plans**: 1 plan
+Plans:
+- [x] 08-01-PLAN.md — Integrity monitor: lifecycle, checks, TTL, trade cancellation + wiring + UI badge
+**Key files**: backend/src/services/integrityMonitor.ts, backend/src/index.ts
 
 ### Phase 9: Execution Reclassification
 **Goal**: ENTER_NOW используется только для действительно оптимальных условий входа прямо сейчас
@@ -167,5 +170,5 @@ Plans:
 | 5. Virtual Trading | v1.0 | 0/2 | Planned | - |
 | 6. Candidate Scoring Engine | v2.0 | 2/2 | Complete | - |
 | 7. Multi-Candidate Storage & UI | v2.0 | 2/2 | Complete   | 2026-04-13 |
-| 8. Integrity Monitoring | v2.0 | 0/? | Not started | - |
+| 8. Integrity Monitoring | v2.0 | 1/1 | Complete   | 2026-04-13 |
 | 9. Execution Reclassification | v2.0 | 0/? | Not started | - |

@@ -22,10 +22,10 @@ Requirements for Smart Entry milestone. Each maps to roadmap phases.
 
 ### Integrity Monitoring
 
-- [ ] **INTEG-01**: Signals with preferred entry > 1.2 ATR from price get integrity monitoring enabled
-- [ ] **INTEG-02**: Waiting signals follow lifecycle: ACTIVE → STALKING → STALE → INVALIDATED
-- [ ] **INTEG-03**: Integrity checks run every 15-30 min: HH/HL structure, market regime, RSI degradation, volume anomaly
-- [ ] **INTEG-04**: TTL enforcement: 12h default, 24h for A_PLUS_READY; auto-invalidation with reason logged
+- [x] **INTEG-01**: Signals with preferred entry > 1.2 ATR from price get integrity monitoring enabled
+- [x] **INTEG-02**: Waiting signals follow lifecycle: ACTIVE → STALKING → STALE → INVALIDATED
+- [x] **INTEG-03**: Integrity checks run every 15-30 min: HH/HL structure, market regime, RSI degradation, volume anomaly
+- [x] **INTEG-04**: TTL enforcement: 12h default, 24h for A_PLUS_READY; auto-invalidation with reason logged
 
 ### Execution Classification
 
@@ -65,10 +65,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CAND-01 | Phase 7 | Complete |
 | CAND-02 | Phase 7 | Complete |
 | CAND-03 | Phase 7 | Complete |
-| INTEG-01 | Phase 8 | Pending |
-| INTEG-02 | Phase 8 | Pending |
-| INTEG-03 | Phase 8 | Pending |
-| INTEG-04 | Phase 8 | Pending |
+| INTEG-01 | Phase 8 | Complete |
+| INTEG-02 | Phase 8 | Complete |
+| INTEG-03 | Phase 8 | Complete |
+| INTEG-04 | Phase 8 | Complete |
 | EXEC-01 | Phase 9 | Pending |
 | EXEC-02 | Phase 9 | Pending |
 | EXEC-03 | Phase 9 | Pending |

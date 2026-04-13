@@ -2,27 +2,27 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Smart Entry
-status: Phase 07 complete — checkpoint approved
-stopped_at: Phase 07-multi-candidate-storage-ui fully complete (Task 3 checkpoint approved)
-last_updated: "2026-04-13T09:42:09.702Z"
+status: Phase complete — ready for verification
+stopped_at: Completed 08-integrity-monitoring/08-01-PLAN.md
+last_updated: "2026-04-13T10:34:22.222Z"
 progress:
   total_phases: 4
-  completed_phases: 2
-  total_plans: 4
-  completed_plans: 4
+  completed_phases: 3
+  total_plans: 5
+  completed_plans: 5
 ---
 
 ## Current Position
 
-Phase: 07 (multi-candidate-storage-ui) — EXECUTING
-Plan: 2 of 2
+Phase: 08 (integrity-monitoring) — EXECUTING
+Plan: 1 of 1
 
 ## Project Reference
 
 See: .planning/PROJECT.md (updated 2026-04-13)
 
 **Core value:** Лимитные ордера на оптимальный structural level, а не на ближайший к цене
-**Current focus:** Phase 07 — multi-candidate-storage-ui
+**Current focus:** Phase 08 — integrity-monitoring
 
 ## Performance Metrics
 
@@ -43,6 +43,7 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 | Phase 06 P02 | 300s | 2 tasks | 2 files |
 | Phase 07 P01 | 120s | 2 tasks | 3 files |
 | Phase 07-multi-candidate-storage-ui P02 | 120 | 2 tasks | 2 files |
+| Phase 08-integrity-monitoring P01 | 98 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -59,6 +60,8 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 - [Phase 07]: generateLimitPlan returns EntryCandidateSet (preferred/secondary/deep); candidates stored in limit_entry_plan JSON, entry price remains preferred_limit_price only (CAND-03)
 - [Phase 07-02]: CandidateRow defined inline in UnifiedSignalCard — tightly coupled to card design tokens
 - [Phase 07-02]: Candidates fallback to old limitEntryPlan display for backward compat with saved signals without candidates
+- [Phase 08-01]: Integrity state stored in marketContext.integrity JSON — no schema migration needed
+- [Phase 08-01]: INVALIDATED badge is orange to distinguish from EXPIRED (neutral gray)
 
 ### Blockers/Concerns
 
@@ -70,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-13T09:42:09.699Z
-Stopped at: Phase 07 complete — checkpoint approved by user
+Last session: 2026-04-13T10:34:22.218Z
+Stopped at: Completed 08-integrity-monitoring/08-01-PLAN.md
 Resume file: None
