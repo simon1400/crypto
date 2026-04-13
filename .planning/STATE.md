@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Smart Entry
-status: Ready to execute
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-04-13T09:16:52.077Z"
+status: Phase complete — ready for verification
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-04-13T09:20:29.386Z"
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
 ---
 
 ## Current Position
@@ -40,6 +40,7 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 
 *Updated after each plan completion*
 | Phase 06 P01 | 129s | 2 tasks | 2 files |
+| Phase 06 P02 | 300s | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -52,6 +53,7 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 - НЕ менять setupScore pipeline, risk profiles, TP calculation
 - [Phase 06-01]: 4D scoring: hard filter → weighted sum (3,3,2,2) → penalty multipliers (NOT multiplicative). Confluence avoids x0.9 penalty.
 - [Phase 06-01]: scoreGeometryBonus computes R:R improvement vs market entry (limitRR - marketRR)
+- [Phase 06]: generateLimitPlan returns LimitEntryPlan | null — null when no candidate passes hard filter, causing WAIT_CONFIRMATION downgrade
 
 ### Blockers/Concerns
 
@@ -63,6 +65,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-13T09:16:52.074Z
-Stopped at: Completed 06-01-PLAN.md
+Last session: 2026-04-13T09:20:29.382Z
+Stopped at: Completed 06-02-PLAN.md
 Resume file: None

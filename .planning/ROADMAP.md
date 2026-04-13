@@ -113,7 +113,7 @@ Plans:
 **Plans**: 2 plans
 Plans:
 - [x] 06-01-PLAN.md — Types + 4D candidate scoring module (candidateScoring.ts)
-- [ ] 06-02-PLAN.md — Rewrite generateLimitPlan() with levelClusterer + scoring integration
+- [x] 06-02-PLAN.md — Rewrite generateLimitPlan() with levelClusterer + scoring integration
 **Key files**: backend/src/scanner/scoring/executionType.ts, backend/src/scanner/entryAnalyzer/levelClusterer.ts, backend/src/scanner/scoring/types.ts, backend/src/scanner/scoring/candidateScoring.ts
 
 ### Phase 7: Multi-Candidate Storage & UI
