@@ -87,6 +87,15 @@ export type LimitZoneSource =
   | 'LOCAL_SUPPORT'
   | 'LOCAL_RESISTANCE'
   | 'IMPULSE_50_PULLBACK'
+  // New deep level sources (Phase 6)
+  | 'EMA50_1H' | 'EMA20_4H' | 'EMA50_4H'
+  | 'BB_LOWER_4H' | 'BB_UPPER_4H'
+  | 'PIVOT_S1_4H' | 'PIVOT_S2_4H' | 'PIVOT_R1_4H' | 'PIVOT_R2_4H'
+  | 'FIB_618' | 'FIB_500' | 'FIB_382'
+  | 'SUPPORT_4H' | 'RESISTANCE_4H'
+  | 'VWAP_4H' | 'BB_LOWER_1H' | 'BB_UPPER_1H'
+  | 'PIVOT_S1_1H' | 'PIVOT_R1_1H'
+  | 'CLUSTER'  // merged cluster of multiple levels
 
 export interface LimitEntryPlan {
   entry_zone_low: number
@@ -101,6 +110,37 @@ export interface LimitEntryPlan {
   cancel_if_not_triggered: boolean
   cancel_if_structure_invalidated: boolean
   explanation: string
+}
+
+// === 4D Candidate Scoring (Phase 6) ===
+
+export interface CandidateScore {
+  structural_strength: number  // 0-10
+  geometry_bonus: number       // 0-10
+  fill_realism: number         // 0-10
+  setup_integrity: number      // 0-10
+  weighted_total: number       // weighted sum before penalties
+  penalties_applied: string[]  // penalty descriptions
+  final_score: number          // after penalty multipliers
+}
+
+export interface EntryCandidate {
+  price: number
+  zone_low: number
+  zone_high: number
+  source: LimitZoneSource
+  sources_in_cluster: string[]  // all level sources if cluster
+  confluence_count: number      // number of levels in cluster
+  distance_atr: number          // distance from current price in ATR units
+  candidate_score: CandidateScore
+  fill_category: 'likely' | 'possible' | 'unlikely'
+  integrity_estimate: 'strong' | 'moderate' | 'weak'
+  rr_improvement: number  // R:R improvement vs market entry
+}
+
+export interface CandidateFilterResult {
+  passed: boolean
+  reason: string | null  // reason for rejection
 }
 
 // === Market Entry Plan ===
