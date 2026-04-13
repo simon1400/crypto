@@ -57,8 +57,8 @@
 
 ### API Client Decomposition
 
-- [ ] **API-01**: Разбить client.ts на domain-модули (signals, scanner, trades, positions, settings)
-- [ ] **API-02**: Сохранить единый re-export из client.ts для обратной совместимости
+- [x] **API-01**: Разбить client.ts на domain-модули (signals, scanner, trades, positions, settings)
+- [x] **API-02**: Сохранить единый re-export из client.ts для обратной совместимости
 
 ## Future Requirements
 
@@ -84,8 +84,8 @@
 | UTIL-04 | Phase 13 | Complete |
 | UTIL-05 | Phase 13 | Complete |
 | UTIL-06 | Phase 13 | Complete |
-| API-01 | Phase 14 | Pending |
-| API-02 | Phase 14 | Pending |
+| API-01 | Phase 14 | Complete |
+| API-02 | Phase 14 | Complete |
 | SCAN-01 | Phase 15 | Pending |
 | SCAN-02 | Phase 15 | Pending |
 | SCAN-03 | Phase 15 | Pending |

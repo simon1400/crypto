@@ -15,7 +15,7 @@
 
 ## Phases
 
-- [ ] **Phase 13: Shared Utilities** - Extract TP validation, P&L calc, CSV export, chart config, useAsyncData hook, and Pagination component into lib/ and hooks/
+- [x] **Phase 13: Shared Utilities** - Extract TP validation, P&L calc, CSV export, chart config, useAsyncData hook, and Pagination component into lib/ and hooks/ (completed 2026-04-13)
 - [ ] **Phase 14: API Client Decomposition** - Split client.ts into domain modules with backward-compatible re-export
 - [ ] **Phase 15: Scanner Decomposition** - Extract all 6 Scanner.tsx tabs into separate components
 - [ ] **Phase 16: Signals + Backtester Decomposition** - Extract SignalModal, DepositSimulator, StrategyAnalysis, chart setup, drawing persistence, and replay logic
@@ -48,7 +48,9 @@ Plans:
   2. Vite production build (`npm run build`) succeeds with no broken import warnings
   3. App loads in browser without console errors related to API functions (network tab shows same requests as before)
   4. No page loses any API call — every function previously in client.ts is reachable via the re-export barrel
-**Plans**: TBD
+**Plans**: 1 plan
+Plans:
+- [ ] 14-01-PLAN.md — Create domain modules (base, signals, trades, scanner, settings, positions, klines) + barrel re-export
 
 ### Phase 15: Scanner Decomposition
 **Goal**: Scanner.tsx delegates each of its 6 tabs to dedicated components — Scanner.tsx becomes a thin orchestrator
@@ -102,8 +104,8 @@ Plans:
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 13. Shared Utilities | v4.0 | 1/2 | In Progress|  |
-| 14. API Client Decomposition | v4.0 | 0/? | Not started | - |
+| 13. Shared Utilities | v4.0 | 1/2 | Complete    | 2026-04-13 |
+| 14. API Client Decomposition | v4.0 | 0/1 | Planned    |  |
 | 15. Scanner Decomposition | v4.0 | 0/? | Not started | - |
 | 16. Signals + Backtester Decomposition | v4.0 | 0/? | Not started | - |
 | 17. Settings + Trades Decomposition | v4.0 | 0/? | Not started | - |
