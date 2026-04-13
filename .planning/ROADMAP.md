@@ -11,7 +11,7 @@
 ## Phases
 
 - [x] **Phase 10: Security** — Auth token leak fix, JSON.parse safety, CSV injection prevention, rate limiting (completed 2026-04-13)
-- [ ] **Phase 11: Data Integrity** — Prisma transactions, graceful shutdown, DB indexes, N+1 batch fix
+- [x] **Phase 11: Data Integrity** — Prisma transactions, graceful shutdown, DB indexes, N+1 batch fix (completed 2026-04-13)
 - [ ] **Phase 12: Frontend Resilience** — Error handling, AbortController, type safety, shared balance state
 
 ---
@@ -44,7 +44,7 @@ Plans:
 **Plans**: 2 plans
 Plans:
 - [x] 11-01-PLAN.md — Prisma transactions for multi-step ops + N+1 batch MFE/MAE fix
-- [ ] 11-02-PLAN.md — Graceful shutdown handler + DB performance indexes
+- [x] 11-02-PLAN.md — Graceful shutdown handler + DB performance indexes
 
 ### Phase 12: Frontend Resilience
 **Goal**: The UI handles errors, async lifecycle, and shared state without silent failures or duplicate network calls
@@ -68,5 +68,5 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 10. Security | 2/2 | Complete    | 2026-04-13 |
-| 11. Data Integrity | 1/2 | In Progress|  |
+| 11. Data Integrity | 2/2 | Complete   | 2026-04-13 |
 | 12. Frontend Resilience | 0/? | Not started | - |
