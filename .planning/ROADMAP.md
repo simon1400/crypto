@@ -107,7 +107,10 @@ Plans:
   2. `tsc --noEmit` passes after PositionChartModal data fetching is extracted into a hook and chart config uses shared lib/chartConfig.ts (from Phase 13)
   3. Signal cards render identically across Scanner and Signals pages — all badge styles, scores, and action buttons present
   4. Position chart modal opens, fetches candles, and renders chart with drawings without errors
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 18-01-PLAN.md — Decompose UnifiedSignalCard into sub-components
+- [ ] 18-02-PLAN.md — Extract usePositionChart hook + shared chartConfig
 **UI hint**: yes
 
 ## Progress
@@ -118,5 +121,5 @@ Plans:
 | 14. API Client Decomposition | v4.0 | 0/1 | Complete    | 2026-04-13 |
 | 15. Scanner Decomposition | v4.0 | 3/3 | Complete    | 2026-04-13 |
 | 16. Signals + Backtester Decomposition | v4.0 | 2/2 | Complete    | 2026-04-13 |
-| 17. Settings + Trades Decomposition | v4.0 | 2/2 | Complete   | 2026-04-13 |
-| 18. Component Decomposition | v4.0 | 0/? | Not started | - |
+| 17. Settings + Trades Decomposition | v4.0 | 2/2 | Complete    | 2026-04-13 |
+| 18. Component Decomposition | v4.0 | 0/2 | Not started | - |
