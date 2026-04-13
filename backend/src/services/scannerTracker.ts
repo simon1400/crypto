@@ -23,6 +23,8 @@ export async function trackScannerTrades() {
 
   const prices = await fetchPricesBatch(trades.map(t => t.coin))
 
+  const pendingMfeUpdates: { id: number; mfe: number; mae: number }[] = []
+
   for (const trade of trades) {
     try {
       const price = prices[trade.coin]
@@ -77,12 +79,10 @@ export async function trackScannerTrades() {
       const newMae = Math.min(currentMae, excursionPct)
 
       if (newMfe !== currentMfe || newMae !== currentMae) {
-        await prisma.trade.update({
-          where: { id: trade.id },
-          data: {
-            mfe: Math.round(newMfe * 100) / 100,
-            mae: Math.round(newMae * 100) / 100,
-          },
+        pendingMfeUpdates.push({
+          id: trade.id,
+          mfe: Math.round(newMfe * 100) / 100,
+          mae: Math.round(newMae * 100) / 100,
         })
       }
 
@@ -165,6 +165,18 @@ export async function trackScannerTrades() {
     } catch (err) {
       console.error(`[ScannerTracker] Error tracking ${trade.coin}:`, err)
     }
+  }
+
+  // Flush all MFE/MAE updates in a single batch transaction (O(1) instead of O(n))
+  if (pendingMfeUpdates.length > 0) {
+    await prisma.$transaction(
+      pendingMfeUpdates.map(u =>
+        prisma.trade.update({
+          where: { id: u.id },
+          data: { mfe: u.mfe, mae: u.mae },
+        })
+      )
+    )
   }
 }
 
