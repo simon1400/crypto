@@ -2,6 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import { authMiddleware } from './middleware/auth'
+import { loginRateLimit } from './middleware/rateLimit'
 import marketRouter from './routes/market'
 import signalsRouter from './routes/signals'
 import tradesRouter from './routes/trades'
@@ -30,7 +31,7 @@ app.use(cors())
 app.use(express.json())
 
 // Login endpoint — no auth required
-app.post('/api/login', (req, res) => {
+app.post('/api/login', loginRateLimit, (req, res) => {
   const { password } = req.body as { password?: string }
   if (password === process.env.APP_PASSWORD) {
     res.json({ token: process.env.API_SECRET })
