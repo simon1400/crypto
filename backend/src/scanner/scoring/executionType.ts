@@ -7,6 +7,7 @@ import {
   LimitZoneSource,
   MarketEntryPlan,
   EntryCandidate,
+  EntryCandidateSet,
 } from './types'
 import { round, fmtPrice } from '../utils/round'
 import { calculateImpulseExtension } from './hardFilters'
@@ -116,6 +117,18 @@ export function generateLimitPlan(
   // Best candidate = preferred
   const best = scored[0]
 
+  // Build top 3 candidates set
+  const secondary = scored.length > 1 ? scored[1] : null
+  // deep = furthest candidate (last in sorted array), different from secondary
+  const deepRaw = scored.length > 2 ? scored[scored.length - 1] : null
+  const finalDeep = deepRaw && secondary && deepRaw.price === secondary.price ? null : deepRaw
+
+  const candidates: EntryCandidateSet = {
+    preferred: best,
+    secondary,
+    deep: finalDeep,
+  }
+
   // Build zone with +/- 0.15 ATR spread (same as before)
   const spread = atr * 0.15
   const entry_zone_low = isLong
@@ -153,6 +166,7 @@ export function generateLimitPlan(
     cancel_if_not_triggered: true,
     cancel_if_structure_invalidated: true,
     explanation,
+    candidates,
   }
 }
 

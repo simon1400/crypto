@@ -110,6 +110,7 @@ export interface LimitEntryPlan {
   cancel_if_not_triggered: boolean
   cancel_if_structure_invalidated: boolean
   explanation: string
+  candidates: EntryCandidateSet
 }
 
 // === 4D Candidate Scoring (Phase 6) ===
@@ -136,6 +137,12 @@ export interface EntryCandidate {
   fill_category: 'likely' | 'possible' | 'unlikely'
   integrity_estimate: 'strong' | 'moderate' | 'weak'
   rr_improvement: number  // R:R improvement vs market entry
+}
+
+export interface EntryCandidateSet {
+  preferred: EntryCandidate
+  secondary: EntryCandidate | null
+  deep: EntryCandidate | null
 }
 
 export interface CandidateFilterResult {

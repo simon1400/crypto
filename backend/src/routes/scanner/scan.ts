@@ -83,6 +83,7 @@ router.post('/scan', asyncHandler(async (req, res) => {
         limit_entry_plan: r.limit_entry_plan ?? null,
         market_entry_plan: r.market_entry_plan ?? null,
         risk_profile: r.risk_profile ?? null,
+        candidates: r.enriched?.limit_plan?.candidates ?? null,
       })),
   })
 }, 'Scanner'))
