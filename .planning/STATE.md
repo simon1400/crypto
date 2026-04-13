@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Frontend Refactoring
-status: Phase complete — ready for verification
-stopped_at: Completed 16-02-PLAN.md
-last_updated: "2026-04-13T18:59:12.808Z"
+status: Ready to execute
+stopped_at: Completed 17-01-PLAN.md
+last_updated: "2026-04-13T19:18:34.863Z"
 progress:
   total_phases: 6
   completed_phases: 4
-  total_plans: 8
-  completed_plans: 8
+  total_plans: 10
+  completed_plans: 9
 ---
 
 ## Current Position
 
-Phase: 16 (signals-backtester-decomposition) — EXECUTING
+Phase: 17 (settings-trades-decomposition) — EXECUTING
 Plan: 2 of 2
 
 ## Project Reference
@@ -22,7 +22,7 @@ Plan: 2 of 2
 See: .planning/PROJECT.md (updated 2026-04-13)
 
 **Core value:** Сигнал из сканера превращается в ордер на Bybit с оптимальным entry level
-**Current focus:** Phase 16 — signals-backtester-decomposition
+**Current focus:** Phase 17 — settings-trades-decomposition
 
 ## Performance Metrics
 
@@ -49,6 +49,8 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 - [Phase 16]: Signals.tsx decomposed: SignalModal, DepositSimulator, StrategyAnalysis extracted to components/signals/ — 888L → 453L
 - [Phase 16-signals-backtester-decomposition]: useReplay called after useBacktestTrading to get callbacks; replayMode: false passed to useBacktestTrading since it doesn't use the value
 - [Phase 16-signals-backtester-decomposition]: useDrawingPersistence is a thin hook returning pure functions -- no internal state needed since drawing state lives in DrawingManager
+- [Phase 17]: TickerMappingsSection is fully self-contained — only showToast from parent
+- [Phase 17]: saveSettings body cast as any — backend accepts apiKey/apiSecret but TS interface uses bybitApiKey/bybitApiSecret
 
 ### Blockers/Concerns
 
@@ -60,6 +62,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-13T18:59:12.805Z
-Stopped at: Completed 16-02-PLAN.md
+Last session: 2026-04-13T19:18:34.860Z
+Stopped at: Completed 17-01-PLAN.md
 Resume file: None

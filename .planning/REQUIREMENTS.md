@@ -37,12 +37,12 @@
 
 ### Settings Decomposition
 
-- [ ] **SET-01**: Вынести API Keys section в отдельный компонент
-- [ ] **SET-02**: Вынести Position Sizing section в отдельный компонент
-- [ ] **SET-03**: Вынести Channel Subscriptions section в отдельный компонент
-- [ ] **SET-04**: Вынести Telegram Notifications section в отдельный компонент
-- [ ] **SET-05**: Вынести Ticker Mappings section в отдельный компонент
-- [ ] **SET-06**: Вынести Virtual Balance section в отдельный компонент
+- [x] **SET-01**: Вынести API Keys section в отдельный компонент
+- [x] **SET-02**: Вынести Position Sizing section в отдельный компонент
+- [x] **SET-03**: Вынести Channel Subscriptions section в отдельный компонент
+- [x] **SET-04**: Вынести Telegram Notifications section в отдельный компонент
+- [x] **SET-05**: Вынести Ticker Mappings section в отдельный компонент
+- [x] **SET-06**: Вынести Virtual Balance section в отдельный компонент
 
 ### Trades Decomposition
 
@@ -98,12 +98,12 @@
 | BT-01 | Phase 16 | Complete |
 | BT-02 | Phase 16 | Complete |
 | BT-03 | Phase 16 | Complete |
-| SET-01 | Phase 17 | Pending |
-| SET-02 | Phase 17 | Pending |
-| SET-03 | Phase 17 | Pending |
-| SET-04 | Phase 17 | Pending |
-| SET-05 | Phase 17 | Pending |
-| SET-06 | Phase 17 | Pending |
+| SET-01 | Phase 17 | Complete |
+| SET-02 | Phase 17 | Complete |
+| SET-03 | Phase 17 | Complete |
+| SET-04 | Phase 17 | Complete |
+| SET-05 | Phase 17 | Complete |
+| SET-06 | Phase 17 | Complete |
 | TRD-01 | Phase 17 | Pending |
 | TRD-02 | Phase 17 | Pending |
 | TRD-03 | Phase 17 | Pending |

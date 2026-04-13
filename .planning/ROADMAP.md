@@ -94,7 +94,7 @@ Plans:
   4. Pagination works in Trades (using shared Pagination component from Phase 13)
 **Plans**: 2 plans
 Plans:
-- [ ] 17-01-PLAN.md — Extract 6 Settings sections into components/settings/
+- [x] 17-01-PLAN.md — Extract 6 Settings sections into components/settings/
 - [ ] 17-02-PLAN.md — Extract Trades filters, table, cancel modal + shared Pagination
 **UI hint**: yes
 
@@ -118,5 +118,5 @@ Plans:
 | 14. API Client Decomposition | v4.0 | 0/1 | Complete    | 2026-04-13 |
 | 15. Scanner Decomposition | v4.0 | 3/3 | Complete    | 2026-04-13 |
 | 16. Signals + Backtester Decomposition | v4.0 | 2/2 | Complete    | 2026-04-13 |
-| 17. Settings + Trades Decomposition | v4.0 | 0/2 | Not started | - |
+| 17. Settings + Trades Decomposition | v4.0 | 1/2 | In Progress|  |
 | 18. Component Decomposition | v4.0 | 0/? | Not started | - |
