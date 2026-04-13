@@ -56,6 +56,9 @@ model Position {
 
   signal           Signal?   @relation(fields: [signalId], references: [id])
   orderLogs        OrderLog[]
+
+  @@index([entryOrderId])
+  @@index([signalId])
 }
 
 model OrderLog {
@@ -122,6 +125,9 @@ model GeneratedSignal {
   tp3HitTimestamp   DateTime?                    // when TP3 was hit
   exitReason        String?                      // INITIAL_STOP, BE_STOP, TRAILING_STOP, MANUAL_EXIT, TIME_STOP, TP1_PARTIAL, etc.
   timeInTradeMin    Int?                         // time from entry to final exit in minutes
+
+  @@index([status])
+  @@index([coin])
 }
 
 model Trade {
@@ -161,6 +167,9 @@ model Trade {
   // === Outcome tracking ===
   mfe           Float?                           // Max Favorable Excursion %
   mae           Float?                           // Max Adverse Excursion %
+
+  @@index([status])
+  @@index([coin])
 }
 
 model BotConfig {
