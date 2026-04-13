@@ -6,9 +6,12 @@ import {
   LimitEntryPlan,
   LimitZoneSource,
   MarketEntryPlan,
+  EntryCandidate,
 } from './types'
 import { round, fmtPrice } from '../utils/round'
 import { calculateImpulseExtension } from './hardFilters'
+import { collectLevels, clusterLevels, calcFillProbability } from '../entryAnalyzer/levelClusterer'
+import { scoreCandidate } from './candidateScoring'
 
 // === EXECUTION TYPE CLASSIFICATION ===
 // Distinguishes setup quality from entry timing / execution quality.
@@ -70,140 +73,83 @@ export function selectExecutionType(
   return 'WAIT_CONFIRMATION'
 }
 
-// Boost weight for zones that have confluence (another zone within 0.3%)
-function boostConfluence(zones: { price: number; source: string; weight: number }[], refPrice: number) {
-  for (let i = 0; i < zones.length; i++) {
-    for (let j = i + 1; j < zones.length; j++) {
-      const dist = Math.abs(zones[i].price - zones[j].price) / refPrice
-      if (dist < 0.003) { // within 0.3% — strong confluence
-        // Boost the one with higher base weight
-        if (zones[i].weight >= zones[j].weight) {
-          zones[i].weight += 2
-        } else {
-          zones[j].weight += 2
-        }
-      } else if (dist < 0.006) { // within 0.6% — mild confluence
-        if (zones[i].weight >= zones[j].weight) {
-          zones[i].weight += 1
-        } else {
-          zones[j].weight += 1
-        }
-      }
-    }
-  }
-}
-
 // === LIMIT ENTRY PLAN ===
 // For LIMIT_LONG and LIMIT_SHORT signals, generates a structured entry plan
+// using levelClusterer for candidate collection and 4D scoring for ranking
 
 export function generateLimitPlan(
   type: 'LONG' | 'SHORT',
   indicators: MultiTFIndicators,
   stopLoss: number,
   takeProfits: { price: number; rr: number }[],
-): LimitEntryPlan {
-  const { tf1h, tf4h } = indicators
+): LimitEntryPlan | null {
+  const { tf1h } = indicators
   const isLong = type === 'LONG'
   const price = tf1h.price
   const atr = tf1h.atr
 
-  // Collect zone candidates with confluence weighting
-  // Confluence: zones that cluster with other levels get higher weight
-  const zones: { price: number; source: LimitZoneSource; weight: number }[] = []
+  // Step 1: Collect all levels via levelClusterer (per D-04)
+  const levels = collectLevels(indicators, type)
+  if (levels.length === 0) return null
 
-  if (isLong) {
-    // EMA20 1H — primary pullback level
-    if (tf1h.ema20 < price && tf1h.ema20 > price * 0.95) {
-      zones.push({ price: tf1h.ema20, source: 'EMA20_RETEST', weight: 3 })
-    }
-    // VWAP — fair value
-    if (tf1h.vwap < price && tf1h.vwap > price * 0.95) {
-      zones.push({ price: tf1h.vwap, source: 'VWAP_RETEST', weight: 3 })
-    }
-    // Local support from swing lows
-    if (tf1h.support < price && tf1h.support > price * 0.93) {
-      zones.push({ price: tf1h.support, source: 'LOCAL_SUPPORT', weight: 2 })
-    }
-    // 50% retracement of latest impulse leg (using swing points when available)
-    const recentSwingLow = tf1h.swingLows.length > 0
-      ? tf1h.swingLows[tf1h.swingLows.length - 1].price
-      : tf1h.support
-    const recentSwingHigh = tf1h.swingHighs.length > 0
-      ? tf1h.swingHighs[tf1h.swingHighs.length - 1].price
-      : price
-    const midPullback = (recentSwingLow + recentSwingHigh) / 2
-    if (midPullback < price && midPullback > recentSwingLow) {
-      zones.push({ price: midPullback, source: 'IMPULSE_50_PULLBACK', weight: 2 })
-    }
-    // Breakout retest — previous resistance now support
-    if (tf4h.support > tf1h.support && tf4h.support < price && tf4h.support > price * 0.95) {
-      zones.push({ price: tf4h.support, source: 'BREAKOUT_RETEST', weight: 3 })
-    }
+  // Step 2: Cluster nearby levels (per D-04, D-05)
+  const clusters = clusterLevels(levels, price)
 
-    // Confluence bonus: if two zones are within 0.3% of each other, boost the better one
-    boostConfluence(zones, price)
-  } else {
-    // SHORT mirror
-    if (tf1h.ema20 > price && tf1h.ema20 < price * 1.05) {
-      zones.push({ price: tf1h.ema20, source: 'EMA20_RETEST', weight: 3 })
-    }
-    if (tf1h.vwap > price && tf1h.vwap < price * 1.05) {
-      zones.push({ price: tf1h.vwap, source: 'VWAP_RETEST', weight: 3 })
-    }
-    if (tf1h.resistance > price && tf1h.resistance < price * 1.07) {
-      zones.push({ price: tf1h.resistance, source: 'LOCAL_RESISTANCE', weight: 2 })
-    }
-    const recentSwingHigh = tf1h.swingHighs.length > 0
-      ? tf1h.swingHighs[tf1h.swingHighs.length - 1].price
-      : tf1h.resistance
-    const recentSwingLow = tf1h.swingLows.length > 0
-      ? tf1h.swingLows[tf1h.swingLows.length - 1].price
-      : price
-    const midBounce = (recentSwingHigh + recentSwingLow) / 2
-    if (midBounce > price && midBounce < recentSwingHigh) {
-      zones.push({ price: midBounce, source: 'IMPULSE_50_PULLBACK', weight: 2 })
-    }
-    if (tf4h.resistance < tf1h.resistance && tf4h.resistance > price && tf4h.resistance < price * 1.05) {
-      zones.push({ price: tf4h.resistance, source: 'BREAKOUT_RETEST', weight: 3 })
-    }
+  // Step 3: Score each cluster through 4D scoring (per D-05)
+  const scored: EntryCandidate[] = []
+  for (const cluster of clusters) {
+    // Fill probability (used for logging, scoring uses its own fill_realism)
+    calcFillProbability(cluster, atr, price)
 
-    boostConfluence(zones, price)
+    const { candidate, filtered } = scoreCandidate(cluster, type, indicators, stopLoss, takeProfits as { price: number; rr: number; close_pct: number }[])
+    if (filtered.passed && candidate) {
+      scored.push(candidate)
+    }
   }
 
-  // Sort by weight (descending) and pick best zone
-  zones.sort((a, b) => b.weight - a.weight)
-  const bestZone = zones[0] || { price: isLong ? price - atr * 0.3 : price + atr * 0.3, source: 'EMA20_RETEST' as LimitZoneSource, weight: 1 }
+  // Step 4: Rank by final_score descending
+  scored.sort((a, b) => b.candidate_score.final_score - a.candidate_score.final_score)
 
-  // Build zone with ±0.15 ATR spread
+  // Fallback: no candidates passed hard filters (per D-07)
+  if (scored.length === 0) return null
+
+  // Best candidate = preferred
+  const best = scored[0]
+
+  // Build zone with +/- 0.15 ATR spread (same as before)
   const spread = atr * 0.15
   const entry_zone_low = isLong
-    ? round(bestZone.price - spread)
-    : round(bestZone.price)
+    ? round(best.price - spread)
+    : round(best.price)
   const entry_zone_high = isLong
-    ? round(bestZone.price)
-    : round(bestZone.price + spread)
-  const preferred_limit_price = round(bestZone.price)
+    ? round(best.price)
+    : round(best.price + spread)
+  const preferred_limit_price = round(best.price)
 
   // Invalidation: below support for LONG, above resistance for SHORT
   const invalidation_price = isLong
     ? round(tf1h.support - atr * 0.3)
     : round(tf1h.resistance + atr * 0.3)
 
-  // Build explanation
+  // Explanation with scoring info
+  const scoreInfo = `score=${best.candidate_score.final_score}, str=${best.candidate_score.structural_strength}, geo=${best.candidate_score.geometry_bonus}, fill=${best.candidate_score.fill_realism}, int=${best.candidate_score.setup_integrity}`
+  const confluenceInfo = best.confluence_count > 1
+    ? ` (confluence: ${best.sources_in_cluster.join(' + ')})`
+    : ''
   const explanation = isLong
-    ? `Лимитный LONG от ${bestZone.source}: зона $${fmtPrice(entry_zone_low)}-$${fmtPrice(entry_zone_high)}. Инвалидация при пробое $${fmtPrice(invalidation_price)}.`
-    : `Лимитный SHORT от ${bestZone.source}: зона $${fmtPrice(entry_zone_low)}-$${fmtPrice(entry_zone_high)}. Инвалидация при пробое $${fmtPrice(invalidation_price)}.`
+    ? `Лимитный LONG от ${best.source}${confluenceInfo}: зона $${fmtPrice(entry_zone_low)}-$${fmtPrice(entry_zone_high)}. ${scoreInfo}. Dist: ${best.distance_atr} ATR. Инвалидация при пробое $${fmtPrice(invalidation_price)}.`
+    : `Лимитный SHORT от ${best.source}${confluenceInfo}: зона $${fmtPrice(entry_zone_low)}-$${fmtPrice(entry_zone_high)}. ${scoreInfo}. Dist: ${best.distance_atr} ATR. Инвалидация при пробое $${fmtPrice(invalidation_price)}.`
 
   return {
     entry_zone_low,
     entry_zone_high,
     preferred_limit_price,
-    zone_source: bestZone.source,
+    zone_source: best.source,
     invalidation_price,
     tp1_price: takeProfits[0]?.price || 0,
     tp2_price: takeProfits[1]?.price || 0,
     tp3_price: takeProfits[2]?.price || 0,
-    ttl_minutes: 240, // 4 hours
+    ttl_minutes: 240,
     cancel_if_not_triggered: true,
     cancel_if_structure_invalidated: true,
     explanation,
