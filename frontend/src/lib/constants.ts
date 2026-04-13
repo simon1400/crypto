@@ -16,6 +16,7 @@ export const SCANNER_STATUS_MAP: Record<string, { label: string; color: string }
   CLOSED: { label: 'Закрыт', color: 'text-long bg-long/10' },
   SL_HIT: { label: 'Стоп-лосс', color: 'text-short bg-short/10' },
   EXPIRED: { label: 'Пропущен', color: 'text-neutral bg-neutral/10' },
+  INVALIDATED: { label: 'Невалидный', color: 'text-orange-400 bg-orange-400/10' },
 }
 
 // === Strategy mappings ===
