@@ -71,22 +71,28 @@ export default function Trades() {
       setTrades(tRes.data)
       setTotalPages(tRes.totalPages)
       setStats(sRes)
-    } catch { } finally { setLoading(false) }
+    } catch (err) { console.error('[Trades] Failed to load trades:', err) } finally { setLoading(false) }
   }, [page, statusFilter])
 
   useEffect(() => { load() }, [load])
 
   // Poll live prices for open trades every 3 seconds
   useEffect(() => {
+    const controller = new AbortController()
     async function fetchLive() {
-      const data = await getTradeLivePrices()
-      const map: Record<number, TradeLive> = {}
-      data.forEach(d => { map[d.id] = d })
-      setLivePrices(map)
+      try {
+        const data = await getTradeLivePrices(controller.signal)
+        const map: Record<number, TradeLive> = {}
+        data.forEach(d => { map[d.id] = d })
+        setLivePrices(map)
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return
+        console.error('[Trades] Failed to fetch live prices:', err)
+      }
     }
     fetchLive()
     const interval = setInterval(fetchLive, 3000)
-    return () => clearInterval(interval)
+    return () => { controller.abort(); clearInterval(interval) }
   }, [trades])
 
   const statuses = ['ALL', 'PENDING_ENTRY', 'ACTIVE', 'FINISHED', 'CANCELLED']
@@ -214,7 +220,7 @@ export default function Trades() {
           {confirmCloseAll ? (
             <div className="flex items-center gap-2">
               <span className="text-xs text-text-secondary">Закрыть все по рынку?</span>
-              <button onClick={async () => { setBulkLoading(true); try { await closeAllTrades(); load() } catch {} finally { setBulkLoading(false); setConfirmCloseAll(false) } }}
+              <button onClick={async () => { setBulkLoading(true); try { await closeAllTrades(); load() } catch (err: any) { alert(err?.message || 'Failed to close all trades') } finally { setBulkLoading(false); setConfirmCloseAll(false) } }}
                 disabled={bulkLoading} className="px-3 py-1.5 bg-accent text-black rounded text-xs font-medium disabled:opacity-50">
                 {bulkLoading ? '...' : 'Да'}
               </button>
@@ -229,7 +235,7 @@ export default function Trades() {
           {confirmDeleteAll ? (
             <div className="flex items-center gap-2">
               <span className="text-xs text-short">Удалить ВСЕ сделки?</span>
-              <button onClick={async () => { setBulkLoading(true); try { await deleteAllTrades(); load() } catch {} finally { setBulkLoading(false); setConfirmDeleteAll(false) } }}
+              <button onClick={async () => { setBulkLoading(true); try { await deleteAllTrades(); load() } catch (err: any) { alert(err?.message || 'Failed to delete all trades') } finally { setBulkLoading(false); setConfirmDeleteAll(false) } }}
                 disabled={bulkLoading} className="px-3 py-1.5 bg-short text-white rounded text-xs font-medium disabled:opacity-50">
                 {bulkLoading ? '...' : 'Да, удалить'}
               </button>
@@ -673,7 +679,7 @@ export default function Trades() {
                     setCancelling(null)
                     setCancelReason('')
                     load()
-                  } catch {}
+                  } catch (err: any) { alert(err?.message || 'Failed to cancel trade') }
                   setCancelLoading(false)
                 }}
                 className="flex-1 py-2 rounded bg-short/20 text-short hover:bg-short/30 transition text-sm disabled:opacity-40"

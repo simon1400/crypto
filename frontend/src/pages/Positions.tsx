@@ -50,12 +50,13 @@ export default function Positions() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Fetch functions
-  const fetchPositions = useCallback(async () => {
+  const fetchPositions = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await getLivePositions()
+      const res = await getLivePositions(signal)
       setPositions(res.data)
-    } catch (err) {
-      console.error('Failed to fetch positions:', err)
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return
+      console.error('[Positions] Failed to fetch positions:', err)
     } finally {
       setLoading(false)
     }
@@ -98,10 +99,13 @@ export default function Positions() {
 
   // Initial load and polling
   useEffect(() => {
-    fetchPositions()
+    const controller = new AbortController()
+    const fetch = () => fetchPositions(controller.signal)
+    fetch()
     // Poll positions every 10 seconds for live P&L
-    intervalRef.current = setInterval(fetchPositions, 10000)
+    intervalRef.current = setInterval(fetch, 10000)
     return () => {
+      controller.abort()
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
   }, [fetchPositions])

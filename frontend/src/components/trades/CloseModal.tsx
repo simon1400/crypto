@@ -20,14 +20,20 @@ export default function CloseModal({ trade, onClose, onDone }: { trade: Trade; o
   }, [trade])
 
   useEffect(() => {
+    const controller = new AbortController()
     async function fetchPrice() {
-      const data = await getTradeLivePrices()
-      const live = data.find(d => d.id === trade.id)
-      if (live?.currentPrice) setMarketPrice(live.currentPrice)
+      try {
+        const data = await getTradeLivePrices(controller.signal)
+        const live = data.find(d => d.id === trade.id)
+        if (live?.currentPrice) setMarketPrice(live.currentPrice)
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return
+        console.error('[CloseModal] Failed to fetch market price:', err)
+      }
     }
     fetchPrice()
     const interval = setInterval(fetchPrice, 3000)
-    return () => clearInterval(interval)
+    return () => { controller.abort(); clearInterval(interval) }
   }, [trade.id])
 
   async function submit() {
@@ -35,7 +41,7 @@ export default function CloseModal({ trade, onClose, onDone }: { trade: Trade; o
     try {
       await closeTrade(trade.id, Number(price), Number(percent))
       onDone()
-    } catch { } finally { setLoading(false) }
+    } catch (err: any) { alert(err?.message || 'Failed to close trade') } finally { setLoading(false) }
   }
 
   async function doSL() {
@@ -43,7 +49,7 @@ export default function CloseModal({ trade, onClose, onDone }: { trade: Trade; o
     try {
       await hitStopLoss(trade.id)
       onDone()
-    } catch { } finally { setLoading(false) }
+    } catch (err: any) { alert(err?.message || 'Failed to trigger stop loss') } finally { setLoading(false) }
   }
 
   function setMarket() {

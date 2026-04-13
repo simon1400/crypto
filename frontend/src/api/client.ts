@@ -165,8 +165,8 @@ export interface TradeLive {
   unrealizedPnlPct: number
 }
 
-export async function getTradeLivePrices(): Promise<TradeLive[]> {
-  const res = await fetch(`${BASE}/api/trades/live`, { headers: getHeaders() })
+export async function getTradeLivePrices(signal?: AbortSignal): Promise<TradeLive[]> {
+  const res = await fetch(`${BASE}/api/trades/live`, { headers: getHeaders(), signal })
   if (!res.ok) return []
   return res.json()
 }
@@ -1173,8 +1173,8 @@ export interface KillSwitchResponse {
   modeSet: string
 }
 
-export async function getLivePositions(): Promise<{ data: BybitPosition[] }> {
-  const res = await fetch(`${BASE}/api/trading/positions/live`, { headers: getHeaders() })
+export async function getLivePositions(signal?: AbortSignal): Promise<{ data: BybitPosition[] }> {
+  const res = await fetch(`${BASE}/api/trading/positions/live`, { headers: getHeaders(), signal })
   if (!res.ok) throw new Error('Failed to fetch positions')
   return res.json()
 }
