@@ -11,15 +11,16 @@ import { trackActiveSignals } from './services/signalTracker'
 import scannerRouter from './routes/scanner'
 import settingsRouter from './routes/settings'
 import { expireOldSignals } from './scanner/coinScanner'
-import { startWsListener } from './trading/wsListener'
-import { startTtlChecker } from './trading/tradingService'
+import { startWsListener, stopWsListener } from './trading/wsListener'
+import { startTtlChecker, stopTtlChecker } from './trading/tradingService'
 import { reconcilePositions } from './trading/positionManager'
-import { startAutoListener } from './trading/autoListener'
+import { startAutoListener, stopAutoListener } from './trading/autoListener'
 import { seedTickerMappings } from './trading/tickerMapper'
 import { trackScannerTrades } from './services/scannerTracker'
 import { checkSignalIntegrity } from './services/integrityMonitor'
-import { startFundingTracker } from './services/fundingTracker'
-import { startLiquidationListener } from './services/liquidations'
+import { startFundingTracker, stopFundingTracker } from './services/fundingTracker'
+import { startLiquidationListener, stopLiquidationListener } from './services/liquidations'
+import { stopHealthCheck } from './services/telegram'
 import { SCAN_COINS } from './scanner/coinScanner'
 import { prisma } from './db/prisma'
 import klinesRouter from './routes/klines'
@@ -50,26 +51,34 @@ app.use('/api/settings', settingsRouter)
 app.use('/api/trading', tradingRouter)
 app.use('/api/klines', klinesRouter)
 
-app.listen(PORT, () => {
+// Module-level interval references for graceful shutdown
+let signalTrackerInterval: NodeJS.Timeout
+let expireSignalsInterval: NodeJS.Timeout
+let scannerTrackerInterval: NodeJS.Timeout
+let integrityInterval: NodeJS.Timeout
+let reconcileInterval: NodeJS.Timeout
+let ttlInterval: NodeJS.Timeout
+
+const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
 
   // Track signal prices every hour
-  setInterval(() => {
+  signalTrackerInterval = setInterval(() => {
     trackActiveSignals().catch(err => console.error('[SignalTracker] Interval error:', err))
   }, 60 * 60 * 1000)
 
   // Expire old scanner signals every 30 minutes
-  setInterval(() => {
+  expireSignalsInterval = setInterval(() => {
     expireOldSignals().catch(err => console.error('[Scanner] Expire error:', err))
   }, 30 * 60 * 1000)
 
   // Track scanner trades (entry fill, SL/TP) every 2 seconds
-  setInterval(() => {
+  scannerTrackerInterval = setInterval(() => {
     trackScannerTrades().catch(err => console.error('[ScannerTracker] Error:', err))
   }, 2000)
 
   // Integrity monitoring for pending limit signals (every 15 min)
-  setInterval(() => {
+  integrityInterval = setInterval(() => {
     checkSignalIntegrity().catch(err => console.error('[IntegrityMonitor] Interval error:', err))
   }, 15 * 60 * 1000)
 
@@ -87,10 +96,10 @@ app.listen(PORT, () => {
   )
 
   // Start TTL checker for expired pending orders (every 60s)
-  startTtlChecker()
+  ttlInterval = startTtlChecker()
 
   // Reconcile positions with Bybit every 60 seconds via REST polling
-  setInterval(() => {
+  reconcileInterval = setInterval(() => {
     reconcilePositions().catch(err => console.error('[PositionManager] Reconcile error:', err))
   }, 60 * 1000)
 
@@ -110,3 +119,34 @@ app.listen(PORT, () => {
 
   // Auto-scan disabled — manual scan only via POST /api/scanner/scan
 })
+
+async function gracefulShutdown(signal: string) {
+  console.log(`[Shutdown] Received ${signal}, cleaning up...`)
+
+  // 1. Stop accepting new connections
+  server.close()
+
+  // 2. Clear all intervals
+  clearInterval(signalTrackerInterval)
+  clearInterval(expireSignalsInterval)
+  clearInterval(scannerTrackerInterval)
+  clearInterval(integrityInterval)
+  clearInterval(reconcileInterval)
+  stopTtlChecker(ttlInterval)
+  stopFundingTracker()
+  stopHealthCheck()
+
+  // 3. Close WebSocket connections
+  stopWsListener()
+  stopLiquidationListener()
+  await stopAutoListener().catch(() => {})
+
+  // 4. Disconnect database
+  await prisma.$disconnect()
+
+  console.log('[Shutdown] Cleanup complete, exiting.')
+  process.exit(0)
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))

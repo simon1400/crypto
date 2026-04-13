@@ -149,6 +149,14 @@ export function getLiquidationStats(coin: string, windowMinutes = 15): Liquidati
   }
 }
 
+export function stopLiquidationListener(): void {
+  if (wsClient) {
+    wsClient.closeAll()
+    wsClient = null
+  }
+  started = false
+}
+
 export function isLiquidationListenerActive(): boolean {
   return started
 }

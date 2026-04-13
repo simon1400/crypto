@@ -121,6 +121,8 @@ export async function processFunding(): Promise<void> {
 }
 
 let started = false
+let fundingInterval: NodeJS.Timeout | null = null
+
 export function startFundingTracker(): void {
   if (started) return
   started = true
@@ -128,9 +130,17 @@ export function startFundingTracker(): void {
   // Запускаем сразу при старте, потом каждые 5 минут
   processFunding().catch(err => console.error('[FundingTracker] Initial run error:', err.message))
 
-  setInterval(() => {
+  fundingInterval = setInterval(() => {
     processFunding().catch(err => console.error('[FundingTracker] Interval error:', err.message))
   }, 5 * 60 * 1000)
 
   console.log('[FundingTracker] Started — checking every 5 minutes')
+}
+
+export function stopFundingTracker(): void {
+  if (fundingInterval) {
+    clearInterval(fundingInterval)
+    fundingInterval = null
+  }
+  started = false
 }
