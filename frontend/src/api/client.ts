@@ -546,23 +546,57 @@ export interface ScanProgress {
 }
 
 /**
- * Подписаться на live-прогресс сканера через SSE.
- * EventSource не поддерживает custom headers, поэтому передаём токен в query.
+ * Подписаться на live-прогресс сканера через fetch+ReadableStream.
+ * Используем fetch+ReadableStream чтобы отправлять X-Api-Secret header.
  * Возвращает функцию для отписки.
  */
 export function subscribeScanProgress(onUpdate: (p: ScanProgress) => void): () => void {
-  const url = `${BASE}/api/scanner/progress-stream?token=${encodeURIComponent(authToken)}`
-  const es = new EventSource(url)
-  es.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data) as ScanProgress
-      onUpdate(data)
-    } catch {}
+  const controller = new AbortController()
+  let cancelled = false
+
+  async function connect() {
+    while (!cancelled) {
+      try {
+        const res = await fetch(`${BASE}/api/scanner/progress-stream`, {
+          headers: getHeaders(),
+          signal: controller.signal,
+        })
+        if (!res.ok || !res.body) {
+          throw new Error(`SSE connect failed: ${res.status}`)
+        }
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6)) as ScanProgress
+                onUpdate(data)
+              } catch {}
+            }
+          }
+        }
+      } catch (err: any) {
+        if (cancelled || err.name === 'AbortError') return
+        console.warn('[SSE] Connection lost, reconnecting in 3s...')
+        await new Promise(r => setTimeout(r, 3000))
+      }
+    }
   }
-  es.onerror = () => {
-    // EventSource будет автоматически реконнектиться
+
+  connect()
+
+  return () => {
+    cancelled = true
+    controller.abort()
   }
-  return () => es.close()
 }
 
 export async function getScannerSignals(page = 1, status?: string, dateFrom?: string, dateTo?: string): Promise<{ data: ScannerSignal[]; total: number; page: number; totalPages: number }> {
