@@ -58,7 +58,7 @@ export default function Scanner() {
   const [coinCount, setCoinCount] = useState(0)
   const [balance, setBalance] = useState(0)
   const [manualBalance, setManualBalance] = useState('')
-  const [riskPct, setRiskPct] = useState(5)
+  const [riskPct, setRiskPct] = useState(2)
 
   // Entry Analyzer state
   const [entryResults, setEntryResults] = useState<EntryAnalysisResponse | null>(null)

@@ -326,55 +326,7 @@ export default function TradeDetail({ trade, onClose, onRefresh, currentPrice }:
                   </div>
                 )}
 
-                {/* Time-stop progress */}
-                {(trade.status === 'OPEN' || trade.status === 'PARTIALLY_CLOSED') && trade.openedAt && (() => {
-                  const hoursOpen = (Date.now() - new Date(trade.openedAt).getTime()) / 3600000
-                  const tpsHit = [trade.tp1HitTimestamp, trade.tp2HitTimestamp, trade.tp3HitTimestamp].filter(Boolean).length
-                  const intradayLeft = Math.max(0, 7 - hoursOpen)
-                  const swingLeft = Math.max(0, 21 - hoursOpen)
-                  const showIntraday = tpsHit === 0 && hoursOpen < 7
-                  const showSwing = tpsHit <= 1 && hoursOpen < 21
-
-                  const riskAmount = Math.abs(trade.entryPrice - (trade.initialStop ?? trade.stopLoss))
-                  const direction = trade.type === 'LONG' ? 1 : -1
-                  const progressR = currentPrice && riskAmount > 0
-                    ? ((currentPrice - trade.entryPrice) * direction) / riskAmount
-                    : null
-
-                  if (!showIntraday && !showSwing) return null
-                  return (
-                    <div className="bg-input rounded-lg p-2.5 text-xs space-y-1">
-                      <div className="text-text-secondary">Time-stop:</div>
-                      {progressR != null && (
-                        <div className="flex justify-between">
-                          <span>Прогресс:</span>
-                          <span className={`font-mono font-bold ${progressR >= 0.4 ? 'text-long' : progressR < 0 ? 'text-short' : 'text-text-primary'}`}>
-                            {fmt2Signed(progressR)}R
-                            <span className="text-text-secondary font-normal ml-1">
-                              (нужно {showIntraday ? '+0.4R' : '+0.8R'})
-                            </span>
-                          </span>
-                        </div>
-                      )}
-                      {showIntraday && (
-                        <div className="flex justify-between">
-                          <span>Интрадей (50% выход):</span>
-                          <span className={intradayLeft < 1 ? 'text-short' : 'text-text-primary'}>
-                            {intradayLeft > 0 ? `через ${fmt2(intradayLeft)}ч` : 'скоро'}
-                          </span>
-                        </div>
-                      )}
-                      {showSwing && (
-                        <div className="flex justify-between">
-                          <span>Свинг (полное закрытие):</span>
-                          <span className={swingLeft < 2 ? 'text-short' : 'text-text-primary'}>
-                            {swingLeft > 0 ? `через ${fmt2(swingLeft)}ч` : 'скоро'}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  )
-                })()}
+                {/* Time-stop removed — trades close only via SL, TP, or manual action */}
 
                 {/* Exit reason + time in trade */}
                 {(trade.exitReason || trade.timeInTradeMin != null) && (

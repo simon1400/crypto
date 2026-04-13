@@ -10,11 +10,7 @@ import { closeTradePortion } from './tradeClose'
 
 const lastPrices: Record<string, number> = {}
 
-// Time-stop constants
-const INTRADAY_TIME_STOP_HOURS = 7      // 6-8 hours
-const INTRADAY_MIN_PROGRESS_R = 0.4
-const SWING_TIME_STOP_HOURS = 21         // 18-24 hours
-const SWING_MIN_PROGRESS_R = 0.8
+// Time-stop disabled — trades close only via SL, TP, or manual action
 
 export async function trackScannerTrades() {
   const trades = await prisma.trade.findMany({
@@ -112,34 +108,7 @@ export async function trackScannerTrades() {
       const riskAmount = Math.abs(trade.entryPrice - (trade.initialStop ?? trade.stopLoss))
       const progressR = riskAmount > 0 ? (excursionPct / 100 * trade.entryPrice) / riskAmount : 0
 
-      // Intraday time-stop: 7h without +0.4R progress (only on fresh OPEN trades, not already partially closed)
-      if (hoursOpen >= INTRADAY_TIME_STOP_HOURS && progressR < INTRADAY_MIN_PROGRESS_R && tpsHitCount === 0 && trade.closedPct === 0) {
-        console.log(`[ScannerTracker] ${trade.coin} TIME-STOP (intraday): ${hoursOpen.toFixed(1)}h, progress ${progressR.toFixed(2)}R < ${INTRADAY_MIN_PROGRESS_R}R`)
-        await closeTradePortion(trade, {
-          price,
-          percent: 50, // partial exit: close 50%
-          exitReason: 'TIME_STOP',
-          logContext: `time-stop intraday ${trade.coin} #${trade.id}`,
-        })
-        const updated = await prisma.trade.findUnique({ where: { id: trade.id } })
-        if (updated) Object.assign(trade, updated)
-        lastPrices[trade.coin] = price
-        continue
-      }
-
-      // Swing time-stop: 21h without sufficient progress
-      if (hoursOpen >= SWING_TIME_STOP_HOURS && progressR < SWING_MIN_PROGRESS_R && tpsHitCount <= 1) {
-        console.log(`[ScannerTracker] ${trade.coin} TIME-STOP (swing): ${hoursOpen.toFixed(1)}h, progress ${progressR.toFixed(2)}R < ${SWING_MIN_PROGRESS_R}R`)
-        await closeTradePortion(trade, {
-          price,
-          percent: 100 - trade.closedPct,
-          forceFullClose: true,
-          exitReason: 'TIME_STOP',
-          logContext: `time-stop swing ${trade.coin} #${trade.id}`,
-        })
-        lastPrices[trade.coin] = price
-        continue
-      }
+      // Time-stop disabled — trades close only via SL, TP, or manual action
 
       // --- SL check ---
       const slHit = isLong ? price <= effectiveSL : price >= effectiveSL

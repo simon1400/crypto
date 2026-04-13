@@ -57,6 +57,8 @@ export default function Trades() {
   const [cancelling, setCancelling] = useState<Trade | null>(null)
   const [cancelReason, setCancelReason] = useState('')
   const [cancelLoading, setCancelLoading] = useState(false)
+  const [sortCol, setSortCol] = useState<string>('date')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -400,25 +402,73 @@ export default function Trades() {
               </colgroup>
               <thead>
                 <tr className="text-text-secondary text-xs border-b border-input">
-                  <th className="text-left py-3 px-2">Дата</th>
-                  <th className="text-left py-3 px-2">Монета</th>
-                  <th className="text-right py-3 px-2">Вход</th>
-                  <th className="text-right py-3 px-2">Цена</th>
-                  <th className="text-right py-3 px-2">Размер</th>
-                  <th className="text-right py-3 px-2">SL</th>
-                  <th className="text-right py-3 px-2">TP</th>
-                  {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <th className="text-center py-3 px-2">Закрыто</th>}
-                  {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <th className="text-right py-3 px-2">Рлз.</th>}
-                  <th className="text-right py-3 px-2">{statusFilter === 'CANCELLED' ? 'Причина' : 'P&L'}</th>
+                  {([
+                    { key: 'date', label: 'Дата', align: 'text-left' },
+                    { key: 'coin', label: 'Монета', align: 'text-left' },
+                    { key: 'entry', label: 'Вход', align: 'text-right' },
+                    { key: 'price', label: 'Цена', align: 'text-right' },
+                    { key: 'size', label: 'Размер', align: 'text-right' },
+                    { key: 'sl', label: 'SL', align: 'text-right' },
+                    { key: 'tp', label: 'TP', align: 'text-right' },
+                  ] as const).map(col => (
+                    <th key={col.key}
+                      className={`${col.align} py-3 px-2 cursor-pointer hover:text-accent transition-colors select-none`}
+                      onClick={() => { setSortDir(sortCol === col.key && sortDir === 'desc' ? 'asc' : 'desc'); setSortCol(col.key) }}
+                    >
+                      {col.label}{sortCol === col.key ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}
+                    </th>
+                  ))}
+                  {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && (
+                    <th className="text-center py-3 px-2 cursor-pointer hover:text-accent transition-colors select-none"
+                      onClick={() => { setSortDir(sortCol === 'closed' && sortDir === 'desc' ? 'asc' : 'desc'); setSortCol('closed') }}
+                    >Закрыто{sortCol === 'closed' ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}</th>
+                  )}
+                  {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && (
+                    <th className="text-right py-3 px-2 cursor-pointer hover:text-accent transition-colors select-none"
+                      onClick={() => { setSortDir(sortCol === 'realized' && sortDir === 'desc' ? 'asc' : 'desc'); setSortCol('realized') }}
+                    >Рлз.{sortCol === 'realized' ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}</th>
+                  )}
+                  <th className="text-right py-3 px-2 cursor-pointer hover:text-accent transition-colors select-none"
+                    onClick={() => { setSortDir(sortCol === 'pnl' && sortDir === 'desc' ? 'asc' : 'desc'); setSortCol('pnl') }}
+                  >{statusFilter === 'CANCELLED' ? 'Причина' : 'P&L'}{sortCol === 'pnl' ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}</th>
                   <th className="text-center py-3 px-2">Статус</th>
                   <th className="text-right py-3 px-2"></th>
                 </tr>
               </thead>
               <tbody>
                 {[...trades].sort((a, b) => {
-                  const scoreA = Number(a.notes?.match(/Score:\s*(\d+)/)?.[1] || 0)
-                  const scoreB = Number(b.notes?.match(/Score:\s*(\d+)/)?.[1] || 0)
-                  return scoreB - scoreA
+                  const dir = sortDir === 'desc' ? -1 : 1
+                  const getScore = (t: Trade) => Number(t.notes?.match(/Score:\s*(\d+)/)?.[1] || 0)
+                  const getPnl = (t: Trade) => {
+                    const live = livePrices[t.id]
+                    if ((t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && live) return live.unrealizedPnl
+                    return t.realizedPnl - (t.fees || 0)
+                  }
+                  const getRemaining = (t: Trade) => t.amount * ((100 - t.closedPct) / 100)
+                  let va = 0, vb = 0
+                  switch (sortCol) {
+                    case 'date': va = new Date(a.openedAt || a.createdAt).getTime(); vb = new Date(b.openedAt || b.createdAt).getTime(); break
+                    case 'coin': return dir * (a.coin.localeCompare(b.coin) || getScore(b) - getScore(a))
+                    case 'entry': va = a.entryPrice; vb = b.entryPrice; break
+                    case 'price': va = livePrices[a.id]?.currentPrice || 0; vb = livePrices[b.id]?.currentPrice || 0; break
+                    case 'size': va = getRemaining(a); vb = getRemaining(b); break
+                    case 'sl': {
+                      const slA = Math.abs((a.stopLoss - a.entryPrice) / a.entryPrice) * 100 * a.leverage
+                      const slB = Math.abs((b.stopLoss - b.entryPrice) / b.entryPrice) * 100 * b.leverage
+                      va = slA; vb = slB; break
+                    }
+                    case 'tp': {
+                      const tpsA = (a.takeProfits as any[]) || []; const tpsB = (b.takeProfits as any[]) || []
+                      const maxA = tpsA.length ? Math.abs((tpsA[tpsA.length - 1].price - a.entryPrice) / a.entryPrice) * 100 * a.leverage : 0
+                      const maxB = tpsB.length ? Math.abs((tpsB[tpsB.length - 1].price - b.entryPrice) / b.entryPrice) * 100 * b.leverage : 0
+                      va = maxA; vb = maxB; break
+                    }
+                    case 'closed': va = a.closedPct; vb = b.closedPct; break
+                    case 'realized': va = a.realizedPnl - (a.fees || 0); vb = b.realizedPnl - (b.fees || 0); break
+                    case 'pnl': va = getPnl(a); vb = getPnl(b); break
+                    default: va = new Date(a.openedAt || a.createdAt).getTime(); vb = new Date(b.openedAt || b.createdAt).getTime()
+                  }
+                  return dir * (va - vb)
                 }).map(t => (
                   <tr key={t.id} className="border-b border-input/50 hover:bg-card/50 cursor-pointer"
                     onClick={() => setSelected(t)}>

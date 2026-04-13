@@ -43,14 +43,20 @@ export function selectExecutionType(
     : Math.min(tf1h.ema20, tf1h.vwap)
   const distFromTrigger = atr15m > 0 ? Math.abs(price - triggerLevel) / atr15m : 999
 
-  // Step 3 — ENTER_NOW gate (D-01 — STRICTER: A_PLUS_READY OR READY+4/4+dist+impulse)
+  // Step 3 — ENTER_NOW gate (STRICTER: A_PLUS_READY+trigger>=3 OR READY+4/4+dist+impulse)
   // A_PLUS_READY == setupScore >= 72 (verified in assignSignalCategory)
+  // Even A+ needs minimum trigger confirmation (at least 3/4 conditions)
   let canEnterNow =
-    category === 'A_PLUS_READY' ||
+    (
+      category === 'A_PLUS_READY' &&
+      entryTrigger.score >= 3 &&      // A+ still needs 3/4 trigger conditions
+      distFromTrigger <= 0.35 &&
+      impulseExt <= 0.6
+    ) ||
     (
       category === 'READY' &&
       entryTrigger.passed &&
-      entryTrigger.score === 4 &&    // ALL 4/4 conditions met (was just "passed" before)
+      entryTrigger.score === 4 &&    // ALL 4/4 conditions met
       distFromTrigger <= 0.35 &&
       impulseExt <= 0.6
     )
