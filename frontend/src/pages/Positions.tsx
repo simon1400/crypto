@@ -6,13 +6,13 @@ import {
   cancelOrder,
   getPnlStats,
   getOrderLogs,
-  getBalance,
   getCoinStats,
   BybitPosition,
   PnlStats,
   OrderLogEntry,
   CoinStat,
 } from '../api/client'
+import { useBalance } from '../contexts/BalanceContext'
 import PositionCard from '../components/PositionCard'
 import PnlSummary from '../components/PnlSummary'
 import PnlChart from '../components/PnlChart'
@@ -30,8 +30,9 @@ export default function Positions() {
   const [statsLoading, setStatsLoading] = useState(true)
   const [period, setPeriod] = useState<'day' | 'week' | 'month'>('month')
 
-  // Balance for exposure calculation
-  const [balance, setBalance] = useState<number | null>(null)
+  // Balance for exposure calculation (from shared context)
+  const { budget: balanceBudget } = useBalance()
+  const balance = balanceBudget?.balance ?? null
 
   // Order logs state
   const [logs, setLogs] = useState<OrderLogEntry[]>([])
@@ -117,10 +118,7 @@ export default function Positions() {
     fetchCoinStats()
   }, [fetchCoinStats])
 
-  // Fetch balance for exposure header
-  useEffect(() => {
-    getBalance().then(b => setBalance(parseFloat(String(b.balance)) || 0)).catch(() => {})
-  }, [])
+  // Balance is read from BalanceContext (shared polling, no local fetch needed)
 
   // Close position handler
   const handleClose = async (id: number) => {

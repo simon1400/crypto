@@ -9,6 +9,7 @@ import Positions from './pages/Positions'
 import Backtester from './pages/Backtester'
 import Login from './pages/Login'
 import { setAuthToken } from './api/client'
+import { BalanceProvider } from './contexts/BalanceContext'
 
 function AppLayout({ onLogout }: { onLogout: () => void }) {
   const location = useLocation()
@@ -57,7 +58,9 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <AppLayout onLogout={handleLogout} />
+      <BalanceProvider>
+        <AppLayout onLogout={handleLogout} />
+      </BalanceProvider>
     </BrowserRouter>
   )
 }

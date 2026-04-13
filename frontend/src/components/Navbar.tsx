@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { getBudget, BudgetStatus } from '../api/client'
+import { useBalance } from '../contexts/BalanceContext'
 
 interface Props {
   onLogout?: () => void
@@ -8,18 +8,8 @@ interface Props {
 
 export default function Navbar({ onLogout }: Props) {
   const { pathname } = useLocation()
-  const [budget, setBudget] = useState<BudgetStatus | null>(null)
+  const { budget } = useBalance()
   const [menuOpen, setMenuOpen] = useState(false)
-
-  const refreshBalance = () => {
-    getBudget().then(setBudget).catch(() => {})
-  }
-
-  useEffect(() => {
-    refreshBalance()
-    const interval = setInterval(refreshBalance, 15_000)
-    return () => clearInterval(interval)
-  }, [])
 
   useEffect(() => {
     setMenuOpen(false)
