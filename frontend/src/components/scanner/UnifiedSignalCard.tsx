@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { takeSignalAsTrade, takeSignal, skipSignal, ScannerSignal, ScanSignal, SignalClose } from '../../api/client'
+import { takeSignalAsTrade, takeSignal, skipSignal, ScannerSignal, ScanSignal, SignalClose, CandidateInfo, CandidateSetInfo } from '../../api/client'
 import { QUALITY_COLORS } from '../../lib/constants'
 import { formatDate, fmt2, fmt2Signed, fmtPrice } from '../../lib/formatters'
 import { ScoreBadge, StrategyBadge, ScannerStatusBadge as StatusBadge } from '../StatusBadge'
@@ -98,6 +98,7 @@ interface CardData {
   triggerState: { triggerType: string; triggerLevel: number; triggerTf: string; invalidIf: string } | null
   limitEntryPlan: { entry_zone_low: number; entry_zone_high: number; zone_source: string; explanation: string } | null
   marketEntryPlan: { max_chase_price: number; explanation: string } | null
+  candidates: CandidateSetInfo | null
 
   // reasons & AI
   reasons: string[]
@@ -158,6 +159,7 @@ function normalizeFromSaved(s: ScannerSignal): CardData {
     triggerState: null,
     limitEntryPlan: mc.limit_entry_plan || null,
     marketEntryPlan: mc.market_entry_plan || null,
+    candidates: mc.limit_entry_plan?.candidates || null,
     reasons: mc.reasons || [],
     aiAnalysis: s.aiAnalysis,
     aiCommentary: null,
@@ -210,6 +212,7 @@ function normalizeFromScan(s: ScanSignal): CardData {
     triggerState: s.triggerState || null,
     limitEntryPlan: s.limit_entry_plan || null,
     marketEntryPlan: s.market_entry_plan || null,
+    candidates: s.candidates || s.limit_entry_plan?.candidates || null,
     reasons: s.reasons || [],
     aiAnalysis: null,
     aiCommentary: s.aiCommentary || null,
@@ -250,6 +253,81 @@ interface ScanProps {
 }
 
 type Props = SavedProps | ScanProps
+
+function CandidateRow({ candidate, role }: { candidate: CandidateInfo; role: 'preferred' | 'secondary' | 'deep' }) {
+  const styles = {
+    preferred: {
+      border: 'border-accent/40',
+      bg: 'bg-accent/10',
+      label: 'Preferred',
+      labelColor: 'text-accent',
+      textColor: 'text-text-primary',
+    },
+    secondary: {
+      border: 'border-text-secondary/20',
+      bg: 'bg-card',
+      label: 'Secondary',
+      labelColor: 'text-text-secondary',
+      textColor: 'text-text-secondary',
+    },
+    deep: {
+      border: 'border-short/30',
+      bg: 'bg-short/5',
+      label: 'Deep',
+      labelColor: 'text-short',
+      textColor: 'text-text-secondary',
+    },
+  }
+  const s = styles[role]
+  const score = candidate.candidate_score
+
+  const fillColors: Record<string, string> = {
+    likely: 'text-long',
+    possible: 'text-accent',
+    unlikely: 'text-short',
+  }
+  const fillLabels: Record<string, string> = {
+    likely: 'Likely',
+    possible: 'Possible',
+    unlikely: 'Unlikely',
+  }
+
+  return (
+    <div className={`${s.bg} border ${s.border} rounded-lg px-3 py-2 text-xs`}>
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2">
+          <span className={`${s.labelColor} font-bold`}>{s.label}</span>
+          <span className={`${s.textColor} font-mono`}>${fmtPrice(candidate.price)}</span>
+          <span className="text-text-secondary">({candidate.source.replace(/_/g, ' ')})</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`font-mono ${fillColors[candidate.fill_category] || 'text-neutral'}`}>
+            {fillLabels[candidate.fill_category] || candidate.fill_category}
+          </span>
+          <span className="text-text-secondary font-mono">{candidate.distance_atr} ATR</span>
+        </div>
+      </div>
+      <div className="flex items-center gap-3 text-text-secondary">
+        <span>Score: <span className="text-text-primary font-mono">{score.final_score.toFixed(1)}</span></span>
+        <span>Str: <span className="font-mono">{score.structural_strength.toFixed(0)}</span></span>
+        <span>Geo: <span className="font-mono">{score.geometry_bonus.toFixed(0)}</span></span>
+        <span>Fill: <span className="font-mono">{score.fill_realism.toFixed(0)}</span></span>
+        <span>Int: <span className="font-mono">{score.setup_integrity.toFixed(0)}</span></span>
+        {candidate.rr_improvement > 0 && (
+          <span className="text-long">R:R +{candidate.rr_improvement.toFixed(1)}</span>
+        )}
+      </div>
+      {role === 'deep' && (
+        <div className="text-short mt-1 text-[10px]">Aggressive — далеко от текущей цены</div>
+      )}
+      {candidate.confluence_count > 1 && (
+        <div className="text-accent/70 mt-0.5 text-[10px]">
+          Confluence: {candidate.sources_in_cluster.join(' + ')}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function UnifiedSignalCard(props: Props) {
   const { mode, balance, riskPct } = props
@@ -454,8 +532,18 @@ export default function UnifiedSignalCard(props: Props) {
         </div>
       )}
 
-      {/* === Limit entry plan === */}
-      {data.limitEntryPlan && (
+      {/* === Entry candidates (preferred / secondary / deep) === */}
+      {data.candidates ? (
+        <div className="mb-3 space-y-1.5">
+          <CandidateRow candidate={data.candidates.preferred} role="preferred" />
+          {data.candidates.secondary && (
+            <CandidateRow candidate={data.candidates.secondary} role="secondary" />
+          )}
+          {data.candidates.deep && (
+            <CandidateRow candidate={data.candidates.deep} role="deep" />
+          )}
+        </div>
+      ) : data.limitEntryPlan ? (
         <div className="bg-accent/5 border border-accent/20 rounded-lg px-3 py-2 mb-3 text-xs">
           <div className="text-accent font-bold mb-1">Лимитный вход: {data.limitEntryPlan.zone_source.replace(/_/g, ' ')}</div>
           <div className="text-text-primary">
@@ -463,7 +551,7 @@ export default function UnifiedSignalCard(props: Props) {
           </div>
           <div className="text-text-secondary mt-0.5">{data.limitEntryPlan.explanation}</div>
         </div>
-      )}
+      ) : null}
 
       {/* === Market entry plan === */}
       {data.marketEntryPlan && (
