@@ -300,6 +300,88 @@ export async function getSignalPrices(coins: string[]): Promise<Record<string, n
 
 // ===================== Scanner (Auto-Signals) =====================
 
+// Mirrors backend CoinIndicators (subset of fields used by frontend)
+export interface ScannerCoinIndicators {
+  price: number
+  ema9: number
+  ema20: number
+  ema50: number
+  ema200: number
+  rsi: number
+  trend: 'BULLISH' | 'BEARISH' | 'SIDEWAYS'
+  trendDetail: string
+  marketStructure: string
+  support: number
+  resistance: number
+  volRatio: number
+  change24h: number
+  macd: number
+  macdSignal: number
+  macdHistogram: number
+  bbUpper: number
+  bbMiddle: number
+  bbLower: number
+  bbWidth: number
+  stochK: number
+  stochD: number
+  adx: number
+  plusDI: number
+  minusDI: number
+  fibLevels: { level: string; price: number }[]
+  pivot: number
+  pivotR1: number
+  pivotR2: number
+  pivotS1: number
+  pivotS2: number
+  patterns: string[]
+  vwap: number
+  atr: number
+}
+
+export interface ScannerIndicators {
+  tf15m: ScannerCoinIndicators
+  tf1h: ScannerCoinIndicators
+  tf4h: ScannerCoinIndicators
+}
+
+export interface ScannerMarketContext {
+  regime: string
+  regimeConfidence: number
+  btcTrend: string
+  fearGreedZone: string
+  volatility: string
+  funding: Record<string, unknown> | null
+  oi: Record<string, unknown> | null
+  news: Record<string, unknown> | null
+  liquidations: Record<string, unknown> | null
+  lsr: Record<string, unknown> | null
+  setupQuality: string
+  coinRegime: Record<string, unknown> | null
+  setup_category: string
+  execution_type: string
+  setup_score: number
+  setup_score_breakdown: Record<string, number>
+  entry_trigger_result: Record<string, unknown>
+  hard_filter_result: Record<string, unknown>
+  signal_context: Record<string, unknown>
+  signal_explanation: Record<string, unknown>
+  limit_entry_plan: Record<string, unknown> | null
+  market_entry_plan: Record<string, unknown> | null
+  risk_profile: Record<string, unknown>
+  // Entry analyzer variant
+  source?: string
+  [key: string]: unknown  // allow extra fields from different signal sources
+}
+
+export interface OrderLogDetails {
+  symbol?: string
+  side?: string
+  qty?: number
+  price?: number
+  orderId?: string
+  [key: string]: unknown
+}
+
 export interface SignalClose {
   price: number
   percent: number
@@ -321,8 +403,8 @@ export interface ScannerSignal {
   leverage: number
   positionPct: number
   amount: number
-  indicators: any
-  marketContext: any
+  indicators: ScannerIndicators
+  marketContext: ScannerMarketContext
   aiAnalysis: string | null
   closes: SignalClose[]
   closedPct: number
@@ -1081,7 +1163,7 @@ export interface OrderLogEntry {
   positionId: number | null
   signalId: number | null
   action: string
-  details: any
+  details: OrderLogDetails
   createdAt: string
 }
 

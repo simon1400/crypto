@@ -42,39 +42,40 @@ function actionBadgeColor(action: string): string {
 }
 
 function extractCoin(log: OrderLogEntry): string {
-  const d = log.details as any
+  const d = log.details
   if (!d) return '-'
-  if (d.symbol) return (d.symbol as string).replace('USDT', '')
+  if (d.symbol) return d.symbol.replace('USDT', '')
   return '-'
 }
 
 function extractSide(log: OrderLogEntry): string | null {
-  const d = log.details as any
+  const d = log.details
   if (!d?.side) return null
   return d.side === 'Buy' ? 'LONG' : 'SHORT'
 }
 
 function extractPrice(log: OrderLogEntry): string {
-  const d = log.details as any
+  const d = log.details
   if (!d?.price) return '-'
-  const p = parseFloat(d.price)
+  const p = parseFloat(String(d.price))
   if (p >= 1000) return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   if (p >= 1) return p.toFixed(4)
   return p.toFixed(6)
 }
 
 function extractQty(log: OrderLogEntry): string {
-  const d = log.details as any
+  const d = log.details
   if (!d?.qty) return '-'
   return String(d.qty)
 }
 
 function extractPnl(log: OrderLogEntry): { value: number; display: string } | null {
-  const d = log.details as any
-  if (d?.pnl === undefined || d?.pnl === null) return null
-  if (typeof d?.pnl !== 'number') return null
-  const prefix = d.pnl >= 0 ? '+' : ''
-  return { value: d.pnl, display: `${prefix}$${Math.abs(d.pnl).toFixed(2)}` }
+  const d = log.details
+  const pnl = d?.pnl
+  if (pnl === undefined || pnl === null) return null
+  if (typeof pnl !== 'number') return null
+  const prefix = pnl >= 0 ? '+' : ''
+  return { value: pnl, display: `${prefix}$${Math.abs(pnl).toFixed(2)}` }
 }
 
 export default function OrderLogTable({

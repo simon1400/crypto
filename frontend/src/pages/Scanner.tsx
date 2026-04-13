@@ -128,8 +128,9 @@ export default function Scanner() {
       const rows = taken.map(s => {
         const tps = s.takeProfits || []
         const closes = s.closes || []
-        const mc = s.marketContext || {} as any
-        const sc = mc.signal_context || {} as any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mc = (s.marketContext as any) || {}
+        const sc = mc.signal_context || {}
         const dir = s.type === 'LONG' ? 1 : -1
         const initialStop = s.initialStop ?? mc.initial_stop ?? s.stopLoss
         const currentStop = s.currentStop ?? mc.current_stop ?? s.stopLoss
@@ -297,7 +298,7 @@ export default function Scanner() {
   async function loadSignals() {
     try {
       const res = await getScannerSignals(page, statusFilter || undefined, dateFrom || undefined, dateTo || undefined)
-      setSignals(res.data.filter((s: any) => s.strategy !== 'entry_analysis'))
+      setSignals(res.data.filter((s: ScannerSignal) => s.strategy !== 'entry_analysis'))
       setTotalPages(res.totalPages)
     } catch {}
   }
