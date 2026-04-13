@@ -124,14 +124,22 @@ export function runScoringPipeline(
 
   // === Entry Plans ===
   const isLimit = executionType === 'LIMIT_LONG' || executionType === 'LIMIT_SHORT'
+  const isWaitPullback = executionType === 'WAIT_FOR_PULLBACK_LONG' || executionType === 'WAIT_FOR_PULLBACK_SHORT'
   const isMarket = executionType === 'ENTER_NOW_LONG' || executionType === 'ENTER_NOW_SHORT'
-  let limitPlan = isLimit ? generateLimitPlan(raw.type, raw.indicators, stopLoss, takeProfits) : null
 
-  // Fallback: if limit was requested but no candidate passed scoring → downgrade to WAIT_CONFIRMATION
+  // Generate limit plan for LIMIT and WAIT_FOR_PULLBACK (informational: shows suggested pullback level)
+  let limitPlan = (isLimit || isWaitPullback) ? generateLimitPlan(raw.type, raw.indicators, stopLoss, takeProfits) : null
+
+  // Fallback: if LIMIT was requested but no candidate passed scoring → downgrade to WAIT_CONFIRMATION
+  // WAIT_FOR_PULLBACK without candidates is fine — signal remains informational
   let finalExecutionType = executionType
   if (isLimit && !limitPlan) {
     console.log(`[Scoring] ${raw.type} ${(raw as any).coin || ''}: no limit candidates passed 4D scoring, downgrading to WAIT_CONFIRMATION`)
     finalExecutionType = 'WAIT_CONFIRMATION'
+  }
+
+  if (isWaitPullback) {
+    console.log(`[Scoring] ${raw.type} ${(raw as any).coin || ''}: WAIT_FOR_PULLBACK — setup valid, price not in optimal zone${limitPlan ? `, suggested entry at ${limitPlan.preferred_limit_price}` : ''}`)
   }
 
   const marketPlan = isMarket ? generateMarketPlan(raw.type, raw.indicators, stopLoss, takeProfits) : null
