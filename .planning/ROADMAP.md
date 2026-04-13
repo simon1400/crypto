@@ -36,7 +36,7 @@
 **Plans**: 2 plans
 Plans:
 - [ ] 13-01-PLAN.md — lib/validation.ts + lib/pnl.ts + lib/csvExport.ts
-- [ ] 13-02-PLAN.md — lib/chartConfig.ts + hooks/useAsyncData.ts + components/Pagination.tsx
+- [x] 13-02-PLAN.md — lib/chartConfig.ts + hooks/useAsyncData.ts + components/Pagination.tsx
 **UI hint**: yes
 
 ### Phase 14: API Client Decomposition
@@ -102,7 +102,7 @@ Plans:
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 13. Shared Utilities | v4.0 | 0/2 | Planning complete | - |
+| 13. Shared Utilities | v4.0 | 1/2 | In Progress|  |
 | 14. API Client Decomposition | v4.0 | 0/? | Not started | - |
 | 15. Scanner Decomposition | v4.0 | 0/? | Not started | - |
 | 16. Signals + Backtester Decomposition | v4.0 | 0/? | Not started | - |

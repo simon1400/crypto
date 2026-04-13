@@ -1,28 +1,28 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: v3.0 milestone complete
-stopped_at: Completed 12-01-PLAN.md
-last_updated: "2026-04-13T14:44:12.757Z"
+milestone: v4.0
+milestone_name: Frontend Refactoring
+status: Phase complete — ready for verification
+stopped_at: Completed 13-02-PLAN.md
+last_updated: "2026-04-13T17:03:51.609Z"
 progress:
-  total_phases: 3
-  completed_phases: 3
-  total_plans: 6
-  completed_plans: 6
+  total_phases: 6
+  completed_phases: 0
+  total_plans: 2
+  completed_plans: 1
 ---
 
 ## Current Position
 
-Phase: 12
-Plan: Not started
+Phase: 13 (shared-utilities) — EXECUTING
+Plan: 2 of 2
 
 ## Project Reference
 
 See: .planning/PROJECT.md (updated 2026-04-13)
 
-**Core value:** Устранить критичные проблемы безопасности, data integrity и производительности без изменения функционала
-**Current focus:** Phase 12 — frontend-resilience
+**Core value:** Сигнал из сканера превращается в ордер на Bybit с оптимальным entry level
+**Current focus:** Phase 13 — shared-utilities
 
 ## Performance Metrics
 
@@ -32,39 +32,17 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 - Average duration: —
 - Total execution time: —
 
-**By Phase:**
-
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 10. Security | 0 | - | - |
-| 11. Data Integrity | 0 | - | - |
-| 12. Frontend Resilience | 0 | - | - |
-| Phase 10 P01 | 5 | 2 tasks | 4 files |
-| Phase 11-data-integrity P01 | 12 | 2 tasks | 3 files |
-| Phase 11-data-integrity P02 | 10 | 2 tasks | 5 files |
-| Phase 12-frontend-resilience P01 | 15 | 2 tasks | 7 files |
-
 ## Accumulated Context
 
 ### Decisions
 
-- Scoring: hard filter → weighted sum → penalties (НЕ multiplicative — как setupScore)
-- levelClusterer.ts переиспользуется для сбора candidate levels (уровни уже есть с весами 3-9)
-- 3 кандидата (preferred/secondary/deep), исполняется автоматически только preferred
-- Биржа: Bybit API (НЕ Binance)
-- НЕ менять setupScore pipeline, risk profiles, TP calculation
-- Float→Decimal migration отложена — слишком рискованно для hardening milestone
-- Prisma enums отложены — требуют миграцию всех where-запросов
-- Cascade FK rules отложены — нужен анализ всех deletion flows
 - [Phase 10]: SSE via fetch+ReadableStream instead of EventSource to enable X-Api-Secret header
-- [Phase 10]: In-memory Map for rate limiting (no Redis dependency, single-instance deployment)
-- [Phase 10 P02]: safeParse in gpt/common.ts preserves throw — callers already handle exceptions, warning log added before re-throw
-- [Phase 10 P02]: Signals.tsx exportCSV refactored from raw template literals to esc() helper for all fields including header
-- [Phase 11-data-integrity]: logOrderAction inlined as tx.orderLog.create in positionManager  — avoids refactoring helper, keeps ORDER_FILLED atomic
-- [Phase 11-data-integrity]: MFE/MAE batch uses array-form prisma.$transaction (independent updates) for O(n)→O(1) DB round-trips per tracker tick
-- [Phase 11-data-integrity]: Migration for DB indexes created manually — DB not available locally; applied on deploy via prisma migrate deploy
-- [Phase 12-frontend-resilience]: Scanner.tsx CSV export: cast mc to any narrowly — exploratory dynamic access of optional nested fields is legitimately unsafe at that level
-- [Phase 12-frontend-resilience]: BalanceContext: single 15s polling via React Context replaces duplicate getBudget/getBalance calls in Navbar and Positions
+- [Phase 11]: MFE/MAE batch uses array-form prisma.$transaction
+- [Phase 12]: BalanceContext — single 15s polling via React Context
+- [v4.0]: Pure refactoring — zero functional changes allowed; success = TypeScript compiles, build passes, same runtime behavior
+- [Phase 13-shared-utilities]: calcSignalPnl uses inline interface to keep pnl.ts dependency-free from api/client
+- [Phase 13-shared-utilities]: downloadCsv separator defaults to comma; semicolon passed by Scanner/Trades callers
+- [Phase 13-shared-utilities]: createDarkChartOptions factory accommodates all 4 chart consumers via background/timeVisible/crosshairMode overrides
 
 ### Blockers/Concerns
 
@@ -76,6 +54,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-13T14:28:57.781Z
-Stopped at: Completed 12-01-PLAN.md
+Last session: 2026-04-13T17:03:51.606Z
+Stopped at: Completed 13-02-PLAN.md
 Resume file: None
