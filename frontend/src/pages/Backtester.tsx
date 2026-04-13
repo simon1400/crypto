@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { safeParse } from '../utils/safeParse'
 import { createChart, IChartApi, CandlestickSeries, HistogramSeries, LineSeries } from 'lightweight-charts'
-import { DrawingManager, getToolRegistry, SerializedDrawing } from 'lightweight-charts-drawing'
+import { DrawingManager, getToolRegistry } from 'lightweight-charts-drawing'
 import { getKlines, KlineData } from '../api/client'
 import DrawingToolbar from '../components/backtester/DrawingToolbar'
 import ReplayControls from '../components/backtester/ReplayControls'
@@ -10,66 +10,24 @@ import TradingPanel from '../components/backtester/TradingPanel'
 import TradeHistory from '../components/backtester/TradeHistory'
 import { useBacktestTrading } from '../hooks/useBacktestTrading'
 import { ema, rsiSeries, macdSeries } from '../lib/indicators'
+import { createDarkChartOptions } from '../lib/chartConfig'
+import { useDrawingPersistence } from '../hooks/useDrawingPersistence'
+import { useReplay } from '../hooks/useReplay'
 
 const SESSION_KEY = 'backtest_session'
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1D', 'M']
 
-function getStorageKey(sym: string): string {
-  return `drawings_${sym}`
-}
-
-function saveDrawings(manager: DrawingManager, sym: string): void {
-  try {
-    const data = manager.exportDrawings()
-    localStorage.setItem(getStorageKey(sym), JSON.stringify(data))
-  } catch (e) {
-    console.warn('[Backtester] Failed to save drawings:', e)
-  }
-}
-
-function loadDrawings(manager: DrawingManager, sym: string): void {
-  try {
-    const raw = localStorage.getItem(getStorageKey(sym))
-    if (!raw) return
-    const data: SerializedDrawing[] = safeParse<SerializedDrawing[]>(raw, [], 'Backtester:drawings')
-    if (data.length === 0) return
-    const registry = getToolRegistry()
-    manager.importDrawings(data, (type, d) => {
-      return registry.createDrawing(type, d.id, d.anchors, d.style, d.options)
-    })
-  } catch (e) {
-    console.warn('[Backtester] Failed to load drawings:', e)
-  }
-}
 
 function createSubChart(container: HTMLDivElement, height: number): IChartApi {
   return createChart(container, {
-    width: container.clientWidth,
-    height,
-    layout: {
-      background: { color: '#0b0e11' },
-      textColor: '#848e9c',
-      fontFamily: 'JetBrains Mono, monospace',
-      fontSize: 11,
-    },
-    grid: {
-      vertLines: { color: '#1e2329' },
-      horzLines: { color: '#1e2329' },
-    },
-    crosshair: {
-      horzLine: { color: '#f0b90b', labelBackgroundColor: '#f0b90b' },
-      vertLine: { color: '#f0b90b', labelBackgroundColor: '#f0b90b' },
-    },
-    timeScale: {
+    ...createDarkChartOptions({
+      width: container.clientWidth,
+      height,
       timeVisible: true,
-      borderColor: '#2b3139',
       secondsVisible: false,
-    },
-    rightPriceScale: {
-      borderColor: '#2b3139',
-    },
-  })
+    }),
+  } as any)
 }
 
 export default function Backtester() {
@@ -93,12 +51,11 @@ export default function Backtester() {
     'parallel-channel': 3, 'triangle': 3,
   }
 
+  // Drawing persistence hook
+  const { saveDrawings, loadDrawings, getStorageKey } = useDrawingPersistence()
+
   // Replay state
   const [allCandles, setAllCandles] = useState<KlineData[]>([])
-  const [replayMode, setReplayMode] = useState(false)
-  const [currentIndex, setCurrentIndex] = useState(0)
-  const [isPlaying, setIsPlaying] = useState(false)
-  const [speed, setSpeed] = useState(1)
 
   // Indicator toggle state
   const [emaEnabled, setEmaEnabled] = useState(false)
@@ -110,7 +67,6 @@ export default function Backtester() {
   const managerRef = useRef<DrawingManager | null>(null)
   const candleSeriesRef = useRef<any>(null)
   const volumeSeriesRef = useRef<any>(null)
-  const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // EMA refs (on main chart)
   const ema20SeriesRef = useRef<any>(null)
@@ -143,7 +99,7 @@ export default function Backtester() {
   } | null>(null)
   const [pendingSessionIndex, setPendingSessionIndex] = useState<number | null>(null)
 
-  // Virtual trading hook
+  // Virtual trading hook (replayMode will be provided from useReplay below)
   const {
     activeOrder,
     currentPnl,
@@ -152,7 +108,27 @@ export default function Backtester() {
     updatePnl,
     placeOrder,
     cancelOrder,
-  } = useBacktestTrading({ candleSeriesRef, symbol, replayMode })
+  } = useBacktestTrading({ candleSeriesRef, symbol, replayMode: false })
+
+  // Replay hook
+  const {
+    replayMode, setReplayMode,
+    currentIndex, setCurrentIndex,
+    isPlaying, setIsPlaying,
+    speed,
+    displayCandles,
+    handleStartReplay,
+    handlePlay,
+    handlePause,
+    handleStep,
+    handleSpeedChange,
+    handleExitReplay,
+  } = useReplay(allCandles, { candleSeriesRef, volumeSeriesRef, chartRef }, {
+    updateIndicatorsForNewCandle,
+    setIndicatorData,
+    checkCandle,
+    updatePnl,
+  })
 
   // Deferred price line recreation: fires once candleSeriesRef is ready and pending order is set
   useEffect(() => {
@@ -333,32 +309,14 @@ export default function Backtester() {
     }
 
     const chart = createChart(containerRef.current, {
-      width: containerRef.current.clientWidth,
-      height: window.innerHeight - 275,
-      layout: {
-        background: { color: '#0b0e11' },
-        textColor: '#848e9c',
-        fontFamily: 'JetBrains Mono, monospace',
-        fontSize: 11,
-      },
-      grid: {
-        vertLines: { color: '#1e2329' },
-        horzLines: { color: '#1e2329' },
-      },
-      crosshair: {
-        mode: 0, // Normal mode (free crosshair, not snapping to bars)
-        horzLine: { color: '#f0b90b', labelBackgroundColor: '#f0b90b' },
-        vertLine: { color: '#f0b90b', labelBackgroundColor: '#f0b90b' },
-      },
-      timeScale: {
+      ...createDarkChartOptions({
+        width: containerRef.current.clientWidth,
+        height: window.innerHeight - 275,
         timeVisible: true,
-        borderColor: '#2b3139',
         secondsVisible: false,
-      },
-      rightPriceScale: {
-        borderColor: '#2b3139',
-      },
-    })
+        crosshairMode: 0,
+      }),
+    } as any)
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#0ecb81',
@@ -764,48 +722,6 @@ export default function Backtester() {
     }
   }, [macdEnabled, klines])
 
-  // Auto-play useEffect
-  useEffect(() => {
-    if (!isPlaying || !replayMode) {
-      if (playIntervalRef.current) {
-        clearInterval(playIntervalRef.current)
-        playIntervalRef.current = null
-      }
-      return
-    }
-
-    const intervalMs = 1000 / speed // 1x=1000ms, 2x=500ms, 5x=200ms, 10x=100ms
-
-    playIntervalRef.current = setInterval(() => {
-      setCurrentIndex(prev => {
-        const next = prev + 1
-        if (next >= allCandles.length) {
-          setIsPlaying(false)
-          return prev
-        }
-        const k = allCandles[next]
-        if (candleSeriesRef.current) {
-          candleSeriesRef.current.update({ time: k.time as any, open: k.open, high: k.high, low: k.low, close: k.close })
-        }
-        if (volumeSeriesRef.current) {
-          volumeSeriesRef.current.update({ time: k.time as any, value: k.volume, color: k.close >= k.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)' })
-        }
-        updateIndicatorsForNewCandle(allCandles, next)
-        checkCandle(allCandles[next])
-        updatePnl(allCandles[next].close)
-        chartRef.current?.timeScale().scrollToRealTime()
-        return next
-      })
-    }, intervalMs)
-
-    return () => {
-      if (playIntervalRef.current) {
-        clearInterval(playIntervalRef.current)
-        playIntervalRef.current = null
-      }
-    }
-  }, [isPlaying, speed, replayMode, allCandles, checkCandle, updatePnl])
-
   // Keyboard shortcuts for Delete and Escape
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -885,78 +801,12 @@ export default function Backtester() {
     }
   }
 
-  function displayCandles(idx: number) {
-    if (!candleSeriesRef.current || !volumeSeriesRef.current) return
-    const visible = allCandles.slice(0, idx + 1)
-    candleSeriesRef.current.setData(
-      visible.map(k => ({ time: k.time as any, open: k.open, high: k.high, low: k.low, close: k.close }))
-    )
-    volumeSeriesRef.current.setData(
-      visible.map(k => ({
-        time: k.time as any,
-        value: k.volume,
-        color: k.close >= k.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)',
-      }))
-    )
-    setIndicatorData(visible)
-    chartRef.current?.timeScale().scrollToRealTime()
-  }
-
-  function handleStartReplay(dateStr: string) {
-    if (!dateStr) return
-    // Reset from current position
-    if (currentIndex > 0) setCurrentIndex(0)
-    const ts = Math.floor(new Date(dateStr).getTime() / 1000)
-    let idx = allCandles.findIndex(c => c.time >= ts)
-    if (idx === -1) {
+  // handleStartReplay with error display (wraps hook's handleStartReplay)
+  function onStartReplay(dateStr: string) {
+    const result = handleStartReplay(dateStr)
+    if (result === undefined && dateStr) {
       setError('Дата за пределами данных')
-      return
     }
-    if (idx === 0) idx = 1 // need at least 1 visible candle
-    setReplayMode(true)
-    setCurrentIndex(idx)
-    setIsPlaying(false)
-    setSpeed(1)
-    displayCandles(idx)
-  }
-
-  function handlePlay() {
-    setIsPlaying(true)
-  }
-
-  function handlePause() {
-    setIsPlaying(false)
-  }
-
-  function handleStep() {
-    if (!replayMode) return
-    const atEnd = currentIndex >= allCandles.length - 1
-    if (atEnd) return
-    const next = currentIndex + 1
-    setCurrentIndex(next)
-    const k = allCandles[next]
-    if (candleSeriesRef.current) {
-      candleSeriesRef.current.update({ time: k.time as any, open: k.open, high: k.high, low: k.low, close: k.close })
-    }
-    if (volumeSeriesRef.current) {
-      volumeSeriesRef.current.update({ time: k.time as any, value: k.volume, color: k.close >= k.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)' })
-    }
-    updateIndicatorsForNewCandle(allCandles, next)
-    checkCandle(allCandles[next])
-    updatePnl(allCandles[next].close)
-    chartRef.current?.timeScale().scrollToRealTime()
-  }
-
-  function handleSpeedChange(s: number) {
-    setSpeed(s)
-  }
-
-  function handleExitReplay() {
-    if (!replayMode) return
-    setReplayMode(false)
-    setIsPlaying(false)
-    setCurrentIndex(0)
-    displayCandles(allCandles.length - 1)
   }
 
   function handleSelectTool(tool: string | null) {
@@ -1081,7 +931,7 @@ export default function Backtester() {
         speed={speed}
         currentIndex={currentIndex}
         totalCandles={allCandles.length}
-        onStartReplay={handleStartReplay}
+        onStartReplay={onStartReplay}
         onPlay={handlePlay}
         onPause={handlePause}
         onStep={handleStep}
