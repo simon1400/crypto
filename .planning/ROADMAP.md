@@ -92,7 +92,10 @@ Plans:
   2. Settings page renders all 6 sections and each section's save/update actions work correctly in browser
   3. Trades page renders trade list with filters applied, modals open and close correctly
   4. Pagination works in Trades (using shared Pagination component from Phase 13)
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 17-01-PLAN.md — Extract 6 Settings sections into components/settings/
+- [ ] 17-02-PLAN.md — Extract Trades filters, table, cancel modal + shared Pagination
 **UI hint**: yes
 
 ### Phase 18: Component Decomposition
@@ -114,6 +117,6 @@ Plans:
 | 13. Shared Utilities | v4.0 | 1/2 | Complete    | 2026-04-13 |
 | 14. API Client Decomposition | v4.0 | 0/1 | Complete    | 2026-04-13 |
 | 15. Scanner Decomposition | v4.0 | 3/3 | Complete    | 2026-04-13 |
-| 16. Signals + Backtester Decomposition | v4.0 | 2/2 | Complete   | 2026-04-13 |
-| 17. Settings + Trades Decomposition | v4.0 | 0/? | Not started | - |
+| 16. Signals + Backtester Decomposition | v4.0 | 2/2 | Complete    | 2026-04-13 |
+| 17. Settings + Trades Decomposition | v4.0 | 0/2 | Not started | - |
 | 18. Component Decomposition | v4.0 | 0/? | Not started | - |
