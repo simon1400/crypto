@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import {
   createChart,
   IChartApi,
@@ -9,101 +9,50 @@ import {
   UTCTimestamp,
   createSeriesMarkers,
 } from 'lightweight-charts'
-import { getKlines, KlineData } from '../api/client'
+import { createDarkChartOptions } from '../lib/chartConfig'
+import { usePositionChart, toUnix, snapToHour, pickPrecision, FUTURE_BARS, CLOSED_TAIL_BARS } from '../hooks/usePositionChart'
 
 // =============================================================================
 // Position overlay modal: renders a TradingView-style Long/Short Position tool
 // on top of a 1h candlestick chart. Reused by Trades and Scanner pages.
+// Data fetching is handled by usePositionChart hook.
 // =============================================================================
 
-export interface PositionChartPosition {
-  coin: string                               // "BTC" or "BTCUSDT" — both supported
-  type: 'LONG' | 'SHORT'
-  entry: number
-  stopLoss: number
-  takeProfits: number[]                      // sorted in trade direction (LONG: asc, SHORT: desc)
-  openedAt: string | null                    // ISO; null for NEW scanner signals (not taken yet)
-  closedAt: string | null                    // ISO; null if still open
-  currentPrice?: number | null               // live price for open positions, final price for closed
-  partialCloses?: { price: number; percent: number; closedAt: string; isSL?: boolean }[]
-  // optional display-only fields
-  title?: string                             // modal header override
-}
+export type { PositionChartPosition } from '../hooks/usePositionChart'
+import type { PositionChartPosition } from '../hooks/usePositionChart'
 
 interface Props {
   position: PositionChartPosition
   onClose: () => void
 }
 
-// 1h candles: 72 = 3 days forward projection for open positions
-const FUTURE_BARS = 24
-const CLOSED_TAIL_BARS = 5
-
-function normalizeSymbol(coin: string): string {
-  const upper = coin.toUpperCase()
-  return upper.endsWith('USDT') ? upper : `${upper}USDT`
-}
-
-function toUnix(iso: string | null): number | null {
-  if (!iso) return null
-  const t = Date.parse(iso)
-  return Number.isNaN(t) ? null : Math.floor(t / 1000)
-}
-
-/** Snap a unix-seconds timestamp to the floor of a 1h candle boundary. */
-function snapToHour(unixSec: number): UTCTimestamp {
-  return (Math.floor(unixSec / 3600) * 3600) as UTCTimestamp
-}
-
-/**
- * Pick a price precision that shows enough significant digits for the given price.
- * Price ~100   → 2 digits  ($102.34)
- * Price ~1     → 4 digits  ($1.2345)
- * Price ~0.03  → 5 digits  ($0.03451)
- * Price ~0.00001 → 8 digits
- */
-function pickPrecision(price: number): number {
-  const p = Math.abs(price)
-  if (p <= 0 || !Number.isFinite(p)) return 4
-  if (p >= 1000) return 2
-  if (p >= 100) return 2
-  if (p >= 1) return 4
-  // For sub-dollar prices, keep 3 significant digits after the first non-zero.
-  const magnitude = Math.floor(Math.log10(p))
-  return Math.min(8, Math.max(4, -magnitude + 3))
-}
-
 export default function PositionChartModal({ position, onClose }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  // Candle series ref — updated in place when new klines arrive.
-  const candleSeriesRef = useRef<any>(null)
-  // Overlay baseline series refs — updated in place without rebuilding the chart.
-  const profitBgRef = useRef<any>(null)
-  const lossBgRef = useRef<any>(null)
-  const profitFgRef = useRef<any>(null)
-  const lossFgRef = useRef<any>(null)
-  const diagonalRef = useRef<any>(null)
-  // Zone time anchors, stable across live updates
-  const zoneEdgesRef = useRef<{ left: UTCTimestamp; right: UTCTimestamp } | null>(null)
-  // Track live candle OHLC so updates don't overwrite high/low
-  const liveCandleRef = useRef<{ time: number; open: number; high: number; low: number } | null>(null)
-  const [klines, setKlines] = useState<KlineData[]>([])
-  const [latestKlineTime, setLatestKlineTime] = useState<number>(0)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
 
-  const symbol = normalizeSymbol(position.coin)
-  const isLong = position.type === 'LONG'
-
-  // Stable primitive deps — avoid rebuilding chart when parent re-renders with a new position object.
-  const depEntry = position.entry
-  const depStopLoss = position.stopLoss
-  const depTakeProfits = position.takeProfits.join(',')
-  const depOpenedAt = position.openedAt
-  const depClosedAt = position.closedAt
-  const depCurrentPrice = position.currentPrice ?? null
-  const depPartials = (position.partialCloses || []).map(c => `${c.closedAt}:${c.price}:${c.percent}:${c.isSL ? 1 : 0}`).join('|')
+  const {
+    klines,
+    loading,
+    error,
+    symbol,
+    isLong,
+    latestKlineTime,
+    depEntry,
+    depStopLoss,
+    depTakeProfits,
+    depOpenedAt,
+    depClosedAt,
+    depCurrentPrice,
+    depPartials,
+    candleSeriesRef,
+    profitBgRef,
+    lossBgRef,
+    profitFgRef,
+    lossFgRef,
+    diagonalRef,
+    zoneEdgesRef,
+    liveCandleRef,
+  } = usePositionChart(position)
 
   // Close on Escape
   useEffect(() => {
@@ -114,65 +63,6 @@ export default function PositionChartModal({ position, onClose }: Props) {
     return () => window.removeEventListener('keydown', handler)
   }, [onClose])
 
-  // Fetch klines on mount, then poll every 60s while the position is still open
-  // so the zone right-edge follows new candles in real time.
-  const isPositionOpen = position.closedAt == null
-  useEffect(() => {
-    let cancelled = false
-
-    async function fetchKlines(isInitial: boolean) {
-      try {
-        const res = await getKlines(symbol, '1h', 500)
-        if (cancelled) return
-        if (isInitial) {
-          setKlines(res.data)
-          if (res.data.length > 0) {
-            setLatestKlineTime(res.data[res.data.length - 1].time)
-          }
-        } else {
-          // Light update: only mutate candleSeries in-place, don't touch React klines state
-          // (otherwise the heavy effect would rebuild the chart and lose pan/zoom).
-          const candleSeries = candleSeriesRef.current
-          if (candleSeries && res.data.length > 0) {
-            try {
-              // setData replaces all candles but doesn't reset timeScale or overlay series
-              candleSeries.setData(
-                res.data.map(k => ({
-                  time: k.time as UTCTimestamp,
-                  open: k.open,
-                  high: k.high,
-                  low: k.low,
-                  close: k.close,
-                }))
-              )
-            } catch {}
-            // Trigger the zone-edge light effect via latestKlineTime state
-            setLatestKlineTime(res.data[res.data.length - 1].time)
-          }
-        }
-      } catch (err: any) {
-        if (cancelled) return
-        if (isInitial) setError(err?.message || 'Failed to load chart data')
-      } finally {
-        if (!cancelled && isInitial) setLoading(false)
-      }
-    }
-
-    setLoading(true)
-    setError(null)
-    fetchKlines(true)
-
-    let timer: ReturnType<typeof setInterval> | null = null
-    if (isPositionOpen) {
-      timer = setInterval(() => fetchKlines(false), 15_000)
-    }
-
-    return () => {
-      cancelled = true
-      if (timer) clearInterval(timer)
-    }
-  }, [symbol, isPositionOpen])
-
   // Build chart whenever klines arrive or structural position fields change.
   // IMPORTANT: this effect does NOT depend on currentPrice — that's updated
   // by the lightweight effect below via setData, without touching the chart.
@@ -180,32 +70,15 @@ export default function PositionChartModal({ position, onClose }: Props) {
     if (!containerRef.current || klines.length === 0) return
 
     const chart = createChart(containerRef.current, {
-      width: containerRef.current.clientWidth,
-      height: containerRef.current.clientHeight,
-      layout: {
-        background: { color: '#0b0e11' },
-        textColor: '#848e9c',
-        fontFamily: 'JetBrains Mono, monospace',
-        fontSize: 11,
-      },
-      grid: {
-        vertLines: { color: '#1e2329' },
-        horzLines: { color: '#1e2329' },
-      },
-      crosshair: {
-        mode: 0,
-        horzLine: { color: '#f0b90b', labelBackgroundColor: '#f0b90b' },
-        vertLine: { color: '#f0b90b', labelBackgroundColor: '#f0b90b' },
-      },
-      timeScale: {
+      ...createDarkChartOptions({
+        width: containerRef.current.clientWidth,
+        height: containerRef.current.clientHeight,
+        background: 'primary',
         timeVisible: true,
-        borderColor: '#2b3139',
         secondsVisible: false,
-      },
-      rightPriceScale: {
-        borderColor: '#2b3139',
-      },
-    })
+        crosshairMode: 0,
+      }),
+    } as any)
     chartRef.current = chart
 
     const precision = pickPrecision(position.entry)
@@ -264,7 +137,7 @@ export default function PositionChartModal({ position, onClose }: Props) {
     }
 
     // ---- Position overlay ----
-    const { entry, stopLoss, takeProfits, currentPrice } = position
+    const { entry, stopLoss, takeProfits } = position
     const lastTP = takeProfits.length > 0 ? takeProfits[takeProfits.length - 1] : entry
 
     // Time anchors
@@ -292,90 +165,47 @@ export default function PositionChartModal({ position, onClose }: Props) {
     zoneEdgesRef.current = { left: leftEdge, right: rightEdge }
 
     // Colors: pale = background "full zone", opaque = realized part
-    const GREEN_OPAQUE_1 = 'rgba(14, 203, 129, 0.38)'
-    const GREEN_OPAQUE_2 = 'rgba(14, 203, 129, 0.22)'
-    const GREEN_PALE_1 = 'rgba(14, 203, 129, 0.12)'
-    const GREEN_PALE_2 = 'rgba(14, 203, 129, 0.06)'
-    const RED_OPAQUE_1 = 'rgba(246, 70, 93, 0.38)'
-    const RED_OPAQUE_2 = 'rgba(246, 70, 93, 0.22)'
-    const RED_PALE_1 = 'rgba(246, 70, 93, 0.12)'
-    const RED_PALE_2 = 'rgba(246, 70, 93, 0.06)'
-    const TRANSPARENT = 'rgba(0, 0, 0, 0)'
+    const T = 'rgba(0, 0, 0, 0)'
+    const G = (a: number) => `rgba(14, 203, 129, ${a})`
+    const R = (a: number) => `rgba(246, 70, 93, ${a})`
 
-    // --- Pale background: full profit zone (Entry → lastTP) ---
-    // LONG: lastTP > entry → top fill green
-    // SHORT: lastTP < entry → bottom fill green
-    const profitBg = chart.addSeries(BaselineSeries, {
-      baseValue: { type: 'price', price: entry },
-      topFillColor1: isLong ? GREEN_PALE_1 : TRANSPARENT,
-      topFillColor2: isLong ? GREEN_PALE_2 : TRANSPARENT,
-      topLineColor: TRANSPARENT,
-      bottomFillColor1: isLong ? TRANSPARENT : GREEN_PALE_1,
-      bottomFillColor2: isLong ? TRANSPARENT : GREEN_PALE_2,
-      bottomLineColor: TRANSPARENT,
-      lastValueVisible: false,
-      priceLineVisible: false,
-    })
-    profitBg.setData([
-      { time: leftEdge, value: lastTP },
-      { time: rightEdge, value: lastTP },
-    ])
+    // Helper: add a flat baseline zone series and set its initial data
+    function addZone(
+      basePrice: number,
+      topC1: string, topC2: string,
+      botC1: string, botC2: string,
+      initValue: number,
+    ) {
+      const s = chart.addSeries(BaselineSeries, {
+        baseValue: { type: 'price', price: basePrice },
+        topFillColor1: topC1, topFillColor2: topC2, topLineColor: T,
+        bottomFillColor1: botC1, bottomFillColor2: botC2, bottomLineColor: T,
+        lastValueVisible: false, priceLineVisible: false,
+      })
+      s.setData([{ time: leftEdge, value: initValue }, { time: rightEdge, value: initValue }])
+      return s
+    }
+
+    // Pale background: full zones
+    const profitBg = addZone(entry,
+      isLong ? G(0.12) : T, isLong ? G(0.06) : T,
+      isLong ? T : G(0.12), isLong ? T : G(0.06), lastTP)
     profitBgRef.current = profitBg
 
-    // --- Pale background: full loss zone (Entry → SL) ---
-    const lossBg = chart.addSeries(BaselineSeries, {
-      baseValue: { type: 'price', price: entry },
-      topFillColor1: isLong ? TRANSPARENT : RED_PALE_1,
-      topFillColor2: isLong ? TRANSPARENT : RED_PALE_2,
-      topLineColor: TRANSPARENT,
-      bottomFillColor1: isLong ? RED_PALE_1 : TRANSPARENT,
-      bottomFillColor2: isLong ? RED_PALE_2 : TRANSPARENT,
-      bottomLineColor: TRANSPARENT,
-      lastValueVisible: false,
-      priceLineVisible: false,
-    })
-    lossBg.setData([
-      { time: leftEdge, value: stopLoss },
-      { time: rightEdge, value: stopLoss },
-    ])
+    const lossBg = addZone(entry,
+      isLong ? T : R(0.12), isLong ? T : R(0.06),
+      isLong ? R(0.12) : T, isLong ? R(0.06) : T, stopLoss)
     lossBgRef.current = lossBg
 
-    // --- Opaque foreground: profit realized part ---
-    // Starts empty (value = entry → zero area). Updated by the light effect below
-    // when currentPrice changes, without rebuilding the chart.
-    const profitFg = chart.addSeries(BaselineSeries, {
-      baseValue: { type: 'price', price: entry },
-      topFillColor1: isLong ? GREEN_OPAQUE_1 : TRANSPARENT,
-      topFillColor2: isLong ? GREEN_OPAQUE_2 : TRANSPARENT,
-      topLineColor: TRANSPARENT,
-      bottomFillColor1: isLong ? TRANSPARENT : GREEN_OPAQUE_1,
-      bottomFillColor2: isLong ? TRANSPARENT : GREEN_OPAQUE_2,
-      bottomLineColor: TRANSPARENT,
-      lastValueVisible: false,
-      priceLineVisible: false,
-    })
-    profitFg.setData([
-      { time: leftEdge, value: entry },
-      { time: rightEdge, value: entry },
-    ])
+    // Opaque foreground: realized parts (start at entry = zero area, updated by zone effect)
+    const profitFg = addZone(entry,
+      isLong ? G(0.38) : T, isLong ? G(0.22) : T,
+      isLong ? T : G(0.38), isLong ? T : G(0.22), entry)
     profitFgRef.current = profitFg
 
-    // --- Opaque foreground: loss realized part ---
-    const lossFg = chart.addSeries(BaselineSeries, {
-      baseValue: { type: 'price', price: entry },
-      topFillColor1: isLong ? TRANSPARENT : RED_OPAQUE_1,
-      topFillColor2: isLong ? TRANSPARENT : RED_OPAQUE_2,
-      topLineColor: TRANSPARENT,
-      bottomFillColor1: isLong ? RED_OPAQUE_1 : TRANSPARENT,
-      bottomFillColor2: isLong ? RED_OPAQUE_2 : TRANSPARENT,
-      bottomLineColor: TRANSPARENT,
-      lastValueVisible: false,
-      priceLineVisible: false,
-    })
-    lossFg.setData([
-      { time: leftEdge, value: entry },
-      { time: rightEdge, value: entry },
-    ])
+    const lossFg = addZone(entry,
+      isLong ? T : R(0.38), isLong ? T : R(0.22),
+      isLong ? R(0.38) : T, isLong ? R(0.22) : T, entry)
     lossFgRef.current = lossFg
 
     // --- Dashed diagonal: Entry → last TP ---
