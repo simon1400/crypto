@@ -381,7 +381,7 @@ export default function UnifiedSignalCard(props: Props) {
     try {
       await skipSignal(data.id!)
       ;(props as SavedProps).onStatusChange()
-    } catch {}
+    } catch (err: any) { alert(err?.message || 'Operation failed') }
   }
 
   function handleTakeScan() {
@@ -808,7 +808,7 @@ export default function UnifiedSignalCard(props: Props) {
             <>
               <button onClick={openTakeForm} className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20" title="Создать сделку в системе">Взять</button>
               <button
-                onClick={async () => { try { await takeSignal(data.id!, 0); (props as SavedProps).onStatusChange() } catch {} }}
+                onClick={async () => { try { await takeSignal(data.id!, 0); (props as SavedProps).onStatusChange() } catch (err: any) { alert(err?.message || 'Failed to take signal') } }}
                 className="px-2 py-1 text-xs rounded bg-accent/10 text-accent hover:bg-accent/20"
                 title="Пометить как взятый (торгую на бирже вручную)"
               >Отметить</button>

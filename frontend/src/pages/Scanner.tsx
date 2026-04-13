@@ -226,7 +226,7 @@ export default function Scanner() {
     try {
       const data = await getSavedEntrySignals()
       setSavedEntries(data)
-    } catch {}
+    } catch (err) { console.error('[Scanner] Failed to load saved entries:', err) }
   }
 
   async function loadAnalytics(days?: number) {
@@ -239,7 +239,7 @@ export default function Scanner() {
         getEntryModelComparison(d),
       ])
       setAnalyticsData({ postTp1, setupPerf, entryModels })
-    } catch {} finally {
+    } catch (err) { console.error('[Scanner] Failed to load analytics:', err) } finally {
       setAnalyticsLoading(false)
     }
   }
@@ -251,7 +251,7 @@ export default function Scanner() {
       const data = await getScannerCoinList()
       setAllCoins(data.available)
       setSelectedCoins(data.selected)
-    } catch {} finally {
+    } catch (err) { console.error('[Scanner] Failed to load coin list:', err) } finally {
       setCoinListLoading(false)
     }
   }
@@ -261,7 +261,7 @@ export default function Scanner() {
     try {
       await saveScannerCoinList(selectedCoins)
       setCoinCount(selectedCoins.length)
-    } catch {} finally {
+    } catch (err: any) { alert(err?.message || 'Failed to save coin list') } finally {
       setCoinListSaving(false)
     }
   }
@@ -300,14 +300,14 @@ export default function Scanner() {
       const res = await getScannerSignals(page, statusFilter || undefined, dateFrom || undefined, dateTo || undefined)
       setSignals(res.data.filter((s: ScannerSignal) => s.strategy !== 'entry_analysis'))
       setTotalPages(res.totalPages)
-    } catch {}
+    } catch (err) { console.error('[Scanner] Failed to load signals:', err) }
   }
 
   async function handleDelete(id: number) {
     try {
       await deleteSignal(id)
       setSignals(prev => prev.filter(s => s.id !== id))
-    } catch {}
+    } catch (err) { console.error('[Scanner] Failed to delete signal:', err) }
   }
 
   async function handleScanTake(id: number, amount: number, modelType?: string, leverage?: number, orderType?: 'market' | 'limit') {
@@ -331,7 +331,7 @@ export default function Scanner() {
         signals: prev.signals.map(s => s.savedId === id ? { ...s, _skipped: true } as any : s),
       } : prev)
       loadSignals()
-    } catch {}
+    } catch (err: any) { alert(err?.message || 'Failed to skip signal') }
   }
 
   async function handleScanDelete(id: number) {
@@ -342,7 +342,7 @@ export default function Scanner() {
         signals: prev.signals.filter(s => s.savedId !== id),
         total: prev.total - 1,
       } : prev)
-    } catch {}
+    } catch (err) { console.error('[Scanner] Failed to delete scan signal:', err) }
   }
 
   const sortedSignals = [...signals].sort((a, b) => {
@@ -688,7 +688,7 @@ export default function Scanner() {
                 {confirmDeleteUnused ? (
                   <>
                     <span className="text-xs text-text-secondary">Удалить невзятые?</span>
-                    <button disabled={bulkLoading} onClick={async () => { setBulkLoading(true); try { await deleteUnusedSignals(); loadSignals() } catch {} finally { setBulkLoading(false); setConfirmDeleteUnused(false) } }}
+                    <button disabled={bulkLoading} onClick={async () => { setBulkLoading(true); try { await deleteUnusedSignals(); loadSignals() } catch (err: any) { alert(err?.message || 'Failed to delete unused signals') } finally { setBulkLoading(false); setConfirmDeleteUnused(false) } }}
                       className="px-2 py-0.5 bg-accent text-black rounded text-xs font-medium disabled:opacity-50">{bulkLoading ? '...' : 'Да'}</button>
                     <button onClick={() => setConfirmDeleteUnused(false)} className="px-2 py-0.5 bg-input text-text-secondary rounded text-xs">Нет</button>
                   </>
@@ -701,7 +701,7 @@ export default function Scanner() {
                 {confirmDeleteAll ? (
                   <>
                     <span className="text-xs text-short">Удалить ВСЕ?</span>
-                    <button disabled={bulkLoading} onClick={async () => { setBulkLoading(true); try { await deleteAllSignals(); loadSignals() } catch {} finally { setBulkLoading(false); setConfirmDeleteAll(false) } }}
+                    <button disabled={bulkLoading} onClick={async () => { setBulkLoading(true); try { await deleteAllSignals(); loadSignals() } catch (err: any) { alert(err?.message || 'Failed to delete all signals') } finally { setBulkLoading(false); setConfirmDeleteAll(false) } }}
                       className="px-2 py-0.5 bg-short text-white rounded text-xs font-medium disabled:opacity-50">{bulkLoading ? '...' : 'Да'}</button>
                     <button onClick={() => setConfirmDeleteAll(false)} className="px-2 py-0.5 bg-input text-text-secondary rounded text-xs">Нет</button>
                   </>
@@ -929,7 +929,7 @@ export default function Scanner() {
                         try {
                           await deleteEntrySignal(id)
                           setSavedEntries(prev => prev.filter(x => x.id !== id))
-                        } catch {}
+                        } catch (err) { console.error('[Scanner] Failed to delete entry signal:', err) }
                       }}
                       onTaken={loadSavedEntries}
                     />
