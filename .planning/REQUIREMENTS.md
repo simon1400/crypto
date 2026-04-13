@@ -17,7 +17,7 @@ Requirements for Smart Entry milestone. Each maps to roadmap phases.
 ### Multi-Candidate Display
 
 - [x] **CAND-01**: Each limit signal stores 3 ranked candidates (preferred, secondary, deep)
-- [ ] **CAND-02**: Scanner UI shows all 3 candidates per signal with scores and fill categories
+- [x] **CAND-02**: Scanner UI shows all 3 candidates per signal with scores and fill categories
 - [x] **CAND-03**: Only preferred candidate auto-executes as limit order
 
 ### Integrity Monitoring
@@ -63,7 +63,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SCORE-03 | Phase 6 | Complete |
 | SCORE-04 | Phase 6 | Complete |
 | CAND-01 | Phase 7 | Complete |
-| CAND-02 | Phase 7 | Pending |
+| CAND-02 | Phase 7 | Complete |
 | CAND-03 | Phase 7 | Complete |
 | INTEG-01 | Phase 8 | Pending |
 | INTEG-02 | Phase 8 | Pending |
