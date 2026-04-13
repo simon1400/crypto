@@ -126,7 +126,7 @@ Plans:
   3. Автоматическое исполнение происходит только для preferred кандидата — secondary и deep видны но не исполняются
 **Plans**: 2 plans
 Plans:
-- [ ] 07-01-PLAN.md — Backend: EntryCandidateSet type + generateLimitPlan returns 3 candidates + DB storage
+- [x] 07-01-PLAN.md — Backend: EntryCandidateSet type + generateLimitPlan returns 3 candidates + DB storage
 - [ ] 07-02-PLAN.md — Frontend: candidate types + UnifiedSignalCard displays 3 candidates + visual checkpoint
 **Key files**: backend/src/scanner/scoring/types.ts, backend/src/scanner/scoring/executionType.ts, frontend/src/components/scanner/UnifiedSignalCard.tsx
 **UI hint**: yes
@@ -166,6 +166,6 @@ Plans:
 | 4. Indicator Overlay | v1.0 | 0/1 | Planning complete | - |
 | 5. Virtual Trading | v1.0 | 0/2 | Planned | - |
 | 6. Candidate Scoring Engine | v2.0 | 2/2 | Complete | - |
-| 7. Multi-Candidate Storage & UI | v2.0 | 0/2 | Planned | - |
+| 7. Multi-Candidate Storage & UI | v2.0 | 1/2 | In Progress|  |
 | 8. Integrity Monitoring | v2.0 | 0/? | Not started | - |
 | 9. Execution Reclassification | v2.0 | 0/? | Not started | - |

@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Smart Entry
-status: Phase complete — ready for verification
-stopped_at: Completed 06-02-PLAN.md
-last_updated: "2026-04-13T09:20:29.386Z"
+status: Ready to execute
+stopped_at: Completed 07-01-PLAN.md
+last_updated: "2026-04-13T09:38:18.884Z"
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 4
+  completed_plans: 3
 ---
 
 ## Current Position
 
-Phase: 06 (candidate-scoring-engine) — EXECUTING
+Phase: 07 (multi-candidate-storage-ui) — EXECUTING
 Plan: 2 of 2
 
 ## Project Reference
@@ -22,7 +22,7 @@ Plan: 2 of 2
 See: .planning/PROJECT.md (updated 2026-04-13)
 
 **Core value:** Лимитные ордера на оптимальный structural level, а не на ближайший к цене
-**Current focus:** Phase 06 — candidate-scoring-engine
+**Current focus:** Phase 07 — multi-candidate-storage-ui
 
 ## Performance Metrics
 
@@ -41,6 +41,7 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 *Updated after each plan completion*
 | Phase 06 P01 | 129s | 2 tasks | 2 files |
 | Phase 06 P02 | 300s | 2 tasks | 2 files |
+| Phase 07 P01 | 120s | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -54,6 +55,7 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 - [Phase 06-01]: 4D scoring: hard filter → weighted sum (3,3,2,2) → penalty multipliers (NOT multiplicative). Confluence avoids x0.9 penalty.
 - [Phase 06-01]: scoreGeometryBonus computes R:R improvement vs market entry (limitRR - marketRR)
 - [Phase 06]: generateLimitPlan returns LimitEntryPlan | null — null when no candidate passes hard filter, causing WAIT_CONFIRMATION downgrade
+- [Phase 07]: generateLimitPlan returns EntryCandidateSet (preferred/secondary/deep); candidates stored in limit_entry_plan JSON, entry price remains preferred_limit_price only (CAND-03)
 
 ### Blockers/Concerns
 
@@ -65,6 +67,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-13T09:20:29.382Z
-Stopped at: Completed 06-02-PLAN.md
+Last session: 2026-04-13T09:38:18.878Z
+Stopped at: Completed 07-01-PLAN.md
 Resume file: None

@@ -351,6 +351,34 @@ export interface ScannerSignal {
   mae: number | null
 }
 
+export interface CandidateScoreInfo {
+  structural_strength: number
+  geometry_bonus: number
+  fill_realism: number
+  setup_integrity: number
+  final_score: number
+}
+
+export interface CandidateInfo {
+  price: number
+  zone_low: number
+  zone_high: number
+  source: string
+  sources_in_cluster: string[]
+  confluence_count: number
+  distance_atr: number
+  candidate_score: CandidateScoreInfo
+  fill_category: 'likely' | 'possible' | 'unlikely'
+  integrity_estimate: 'strong' | 'moderate' | 'weak'
+  rr_improvement: number
+}
+
+export interface CandidateSetInfo {
+  preferred: CandidateInfo
+  secondary: CandidateInfo | null
+  deep: CandidateInfo | null
+}
+
 export interface EntryModel {
   type: 'aggressive' | 'confirmation' | 'pullback'
   entry: number
@@ -438,7 +466,9 @@ export interface ScanSignal {
     zone_source: string
     invalidation_price: number
     explanation: string
+    candidates?: CandidateSetInfo
   } | null
+  candidates?: CandidateSetInfo | null
   market_entry_plan?: {
     market_entry_price: number
     max_chase_price: number

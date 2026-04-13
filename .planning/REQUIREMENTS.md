@@ -10,15 +10,15 @@ Requirements for Smart Entry milestone. Each maps to roadmap phases.
 ### Candidate Scoring
 
 - [x] **SCORE-01**: System scores each candidate level by 4 dimensions (structural strength, geometry bonus, fill realism, setup integrity) using weighted sum with hard filters
-- [ ] **SCORE-02**: Candidate pool includes deep levels (EMA50 1H, Fib 0.618/0.5, EMA20/50 4H, BB 4H, Pivots 4H) collected via levelClusterer
+- [x] **SCORE-02**: Candidate pool includes deep levels (EMA50 1H, Fib 0.618/0.5, EMA20/50 4H, BB 4H, Pivots 4H) collected via levelClusterer
 - [x] **SCORE-03**: Candidates filtered by distance: min 0.3 ATR, max 2.0 ATR from current price
 - [x] **SCORE-04**: Confluence (multiple levels in cluster) boosts candidate score
 
 ### Multi-Candidate Display
 
-- [ ] **CAND-01**: Each limit signal stores 3 ranked candidates (preferred, secondary, deep)
+- [x] **CAND-01**: Each limit signal stores 3 ranked candidates (preferred, secondary, deep)
 - [ ] **CAND-02**: Scanner UI shows all 3 candidates per signal with scores and fill categories
-- [ ] **CAND-03**: Only preferred candidate auto-executes as limit order
+- [x] **CAND-03**: Only preferred candidate auto-executes as limit order
 
 ### Integrity Monitoring
 
@@ -59,12 +59,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | SCORE-01 | Phase 6 | Complete |
-| SCORE-02 | Phase 6 | Pending |
+| SCORE-02 | Phase 6 | Complete |
 | SCORE-03 | Phase 6 | Complete |
 | SCORE-04 | Phase 6 | Complete |
-| CAND-01 | Phase 7 | Pending |
+| CAND-01 | Phase 7 | Complete |
 | CAND-02 | Phase 7 | Pending |
-| CAND-03 | Phase 7 | Pending |
+| CAND-03 | Phase 7 | Complete |
 | INTEG-01 | Phase 8 | Pending |
 | INTEG-02 | Phase 8 | Pending |
 | INTEG-03 | Phase 8 | Pending |
