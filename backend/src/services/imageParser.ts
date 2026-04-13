@@ -1,4 +1,5 @@
 import OpenAI from 'openai'
+import { safeParse } from '../utils/safeParse'
 
 let _openai: OpenAI | null = null
 function getOpenAI() {
@@ -68,7 +69,11 @@ export async function parseSignalImage(imageBuffer: Buffer): Promise<ImageSignal
     }
 
     const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
-    const data = JSON.parse(cleaned)
+    const data = safeParse<any>(cleaned, null, 'ImageParser')
+    if (!data) {
+      console.warn('[ImageParser] Failed to parse GPT response')
+      return null
+    }
 
     if (data.error) {
       console.warn('[ImageParser] GPT could not parse image:', data.error)

@@ -1,4 +1,5 @@
 import OpenAI from 'openai'
+import { safeParse } from '../../utils/safeParse'
 import { CoinIndicators } from '../../services/indicators'
 import { FundingData } from '../../services/fundingRate'
 import { OIData } from '../../services/openInterest'
@@ -49,7 +50,9 @@ export async function callGptJson(
   if (!text) throw new Error('Empty GPT response')
 
   const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
-  return JSON.parse(cleaned)
+  const parsed = safeParse<any>(cleaned, null, 'GPT')
+  if (parsed === null) throw new Error('Failed to parse GPT JSON response')
+  return parsed
 }
 
 /**

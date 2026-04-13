@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { safeParse } from '../utils/safeParse'
 import { createChart, IChartApi, CandlestickSeries, HistogramSeries, LineSeries } from 'lightweight-charts'
 import { DrawingManager, getToolRegistry, SerializedDrawing } from 'lightweight-charts-drawing'
 import { getKlines, KlineData } from '../api/client'
@@ -31,7 +32,8 @@ function loadDrawings(manager: DrawingManager, sym: string): void {
   try {
     const raw = localStorage.getItem(getStorageKey(sym))
     if (!raw) return
-    const data: SerializedDrawing[] = JSON.parse(raw)
+    const data: SerializedDrawing[] = safeParse<SerializedDrawing[]>(raw, [], 'Backtester:drawings')
+    if (data.length === 0) return
     const registry = getToolRegistry()
     manager.importDrawings(data, (type, d) => {
       return registry.createDrawing(type, d.id, d.anchors, d.style, d.options)
@@ -80,7 +82,7 @@ export default function Backtester() {
   const [activeTool, setActiveTool] = useState<string | null>(null)
   const [fibLevels, setFibLevels] = useState<number[]>(() => {
     const saved = localStorage.getItem('fib_levels')
-    return saved ? JSON.parse(saved) : [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618, 2.618]
+    return saved ? safeParse<number[]>(saved, [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618, 2.618], 'Backtester:fib') : [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618, 2.618]
   })
   const pendingAnchorsRef = useRef<{ time: any; price: number }[]>([])
 
@@ -849,7 +851,8 @@ export default function Backtester() {
     const raw = localStorage.getItem(SESSION_KEY)
     if (!raw) return
     try {
-      const session = JSON.parse(raw)
+      const session = safeParse<any>(raw, null, 'Backtester:session')
+      if (!session) return
 
       // If symbol/tf differ, load the new symbol first, then session will be applied via currentIndex
       if (session.symbol !== symbol || session.tf !== tf) {
