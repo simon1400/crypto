@@ -10,14 +10,14 @@
 ## Data Integrity
 
 - [x] **DATA-01**: Multi-step DB операции (deleteMany+create, position update+TP placement) обёрнуты в prisma.$transaction
-- [ ] **DATA-02**: Graceful shutdown — prisma.$disconnect(), очистка setInterval таймеров, корректное завершение WS соединений при SIGTERM/SIGINT
-- [ ] **DATA-03**: DB индексы добавлены на Trade.status, Trade.coin, GeneratedSignal.status, GeneratedSignal.coin, Position.entryOrderId, Position.signalId
+- [x] **DATA-02**: Graceful shutdown — prisma.$disconnect(), очистка setInterval таймеров, корректное завершение WS соединений при SIGTERM/SIGINT
+- [x] **DATA-03**: DB индексы добавлены на Trade.status, Trade.coin, GeneratedSignal.status, GeneratedSignal.coin, Position.entryOrderId, Position.signalId
 - [x] **DATA-04**: N+1 запрос в scannerTracker заменён на batch update — не выполнять prisma.trade.update в цикле
 
 ## Frontend Resilience
 
-- [ ] **FE-01**: Пустые catch {} блоки заменены на console.error с контекстом ошибки, критичные операции показывают ошибку пользователю
-- [ ] **FE-02**: Polling запросы используют AbortController для отмены при unmount/re-render, API client имеет consistent error handling
+- [x] **FE-01**: Пустые catch {} блоки заменены на console.error с контекстом ошибки, критичные операции показывают ошибку пользователю
+- [x] **FE-02**: Polling запросы используют AbortController для отмены при unmount/re-render, API client имеет consistent error handling
 - [x] **FE-03**: Ключевые any типы заменены на typed interfaces (indicators, marketContext, closes, where-объекты)
 - [x] **FE-04**: Дублирование polling баланса устранено — Navbar и страницы используют shared state через React Context
 
@@ -30,11 +30,11 @@
 | SEC-03 | Phase 10 | Complete |
 | SEC-04 | Phase 10 | Complete |
 | DATA-01 | Phase 11 | Complete |
-| DATA-02 | Phase 11 | Pending |
-| DATA-03 | Phase 11 | Pending |
+| DATA-02 | Phase 11 | Complete |
+| DATA-03 | Phase 11 | Complete |
 | DATA-04 | Phase 11 | Complete |
-| FE-01 | Phase 12 | Pending |
-| FE-02 | Phase 12 | Pending |
+| FE-01 | Phase 12 | Complete |
+| FE-02 | Phase 12 | Complete |
 | FE-03 | Phase 12 | Complete |
 | FE-04 | Phase 12 | Complete |
 
