@@ -57,7 +57,7 @@ Plans:
   4. The balance figure shown in Navbar and in any page component is always identical and fetched exactly once per polling interval — not once per component
 **Plans**: 2 plans
 Plans:
-- [ ] 12-01-PLAN.md — Type safety (ScannerIndicators, MarketContext, OrderLogDetails) + shared BalanceContext
+- [x] 12-01-PLAN.md — Type safety (ScannerIndicators, MarketContext, OrderLogDetails) + shared BalanceContext
 - [ ] 12-02-PLAN.md — Error handling (empty catch blocks) + AbortController for polling
 **UI hint**: yes
 
@@ -69,4 +69,4 @@ Plans:
 |-------|----------------|--------|-----------|
 | 10. Security | 2/2 | Complete    | 2026-04-13 |
 | 11. Data Integrity | 2/2 | Complete    | 2026-04-13 |
-| 12. Frontend Resilience | 0/2 | Not started | - |
+| 12. Frontend Resilience | 1/2 | In Progress|  |

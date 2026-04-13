@@ -18,8 +18,8 @@
 
 - [ ] **FE-01**: Пустые catch {} блоки заменены на console.error с контекстом ошибки, критичные операции показывают ошибку пользователю
 - [ ] **FE-02**: Polling запросы используют AbortController для отмены при unmount/re-render, API client имеет consistent error handling
-- [ ] **FE-03**: Ключевые any типы заменены на typed interfaces (indicators, marketContext, closes, where-объекты)
-- [ ] **FE-04**: Дублирование polling баланса устранено — Navbar и страницы используют shared state через React Context
+- [x] **FE-03**: Ключевые any типы заменены на typed interfaces (indicators, marketContext, closes, where-объекты)
+- [x] **FE-04**: Дублирование polling баланса устранено — Navbar и страницы используют shared state через React Context
 
 ## Traceability
 
@@ -35,8 +35,8 @@
 | DATA-04 | Phase 11 | Complete |
 | FE-01 | Phase 12 | Pending |
 | FE-02 | Phase 12 | Pending |
-| FE-03 | Phase 12 | Pending |
-| FE-04 | Phase 12 | Pending |
+| FE-03 | Phase 12 | Complete |
+| FE-04 | Phase 12 | Complete |
 
 ## Future Requirements
 

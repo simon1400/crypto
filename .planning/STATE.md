@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Phase complete — ready for verification
-stopped_at: Completed 11-02-PLAN.md
-last_updated: "2026-04-13T14:12:32.697Z"
+status: Ready to execute
+stopped_at: Completed 12-01-PLAN.md
+last_updated: "2026-04-13T14:28:57.784Z"
 progress:
   total_phases: 3
   completed_phases: 2
-  total_plans: 4
-  completed_plans: 4
+  total_plans: 6
+  completed_plans: 5
 ---
 
 ## Current Position
 
-Phase: 11 (data-integrity) — EXECUTING
+Phase: 12 (frontend-resilience) — EXECUTING
 Plan: 2 of 2
 
 ## Project Reference
@@ -22,7 +22,7 @@ Plan: 2 of 2
 See: .planning/PROJECT.md (updated 2026-04-13)
 
 **Core value:** Устранить критичные проблемы безопасности, data integrity и производительности без изменения функционала
-**Current focus:** Phase 11 — data-integrity
+**Current focus:** Phase 12 — frontend-resilience
 
 ## Performance Metrics
 
@@ -42,6 +42,7 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 | Phase 10 P01 | 5 | 2 tasks | 4 files |
 | Phase 11-data-integrity P01 | 12 | 2 tasks | 3 files |
 | Phase 11-data-integrity P02 | 10 | 2 tasks | 5 files |
+| Phase 12-frontend-resilience P01 | 15 | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -62,6 +63,8 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 - [Phase 11-data-integrity]: logOrderAction inlined as tx.orderLog.create in positionManager  — avoids refactoring helper, keeps ORDER_FILLED atomic
 - [Phase 11-data-integrity]: MFE/MAE batch uses array-form prisma.$transaction (independent updates) for O(n)→O(1) DB round-trips per tracker tick
 - [Phase 11-data-integrity]: Migration for DB indexes created manually — DB not available locally; applied on deploy via prisma migrate deploy
+- [Phase 12-frontend-resilience]: Scanner.tsx CSV export: cast mc to any narrowly — exploratory dynamic access of optional nested fields is legitimately unsafe at that level
+- [Phase 12-frontend-resilience]: BalanceContext: single 15s polling via React Context replaces duplicate getBudget/getBalance calls in Navbar and Positions
 
 ### Blockers/Concerns
 
@@ -73,6 +76,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-13T14:12:32.695Z
-Stopped at: Completed 11-02-PLAN.md
+Last session: 2026-04-13T14:28:57.781Z
+Stopped at: Completed 12-01-PLAN.md
 Resume file: None
