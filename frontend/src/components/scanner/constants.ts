@@ -24,8 +24,8 @@ export const EXECUTION_TYPE_STYLES: Record<string, { bg: string; text: string; l
   ENTER_NOW_SHORT: { bg: 'bg-short/20', text: 'text-short', label: 'Вход SHORT' },
   LIMIT_LONG: { bg: 'bg-accent/15', text: 'text-accent', label: 'Лимит LONG' },
   LIMIT_SHORT: { bg: 'bg-accent/15', text: 'text-accent', label: 'Лимит SHORT' },
-  WAIT_FOR_PULLBACK_LONG: { bg: 'bg-orange-500/15', text: 'text-orange-400', label: 'Откат LONG' },
-  WAIT_FOR_PULLBACK_SHORT: { bg: 'bg-orange-500/15', text: 'text-orange-400', label: 'Откат SHORT' },
+  WAIT_FOR_PULLBACK_LONG: { bg: 'bg-purple-500/15', text: 'text-purple-400', label: 'Откат LONG' },
+  WAIT_FOR_PULLBACK_SHORT: { bg: 'bg-purple-500/15', text: 'text-purple-400', label: 'Откат SHORT' },
   WAIT_CONFIRMATION: { bg: 'bg-blue-500/15', text: 'text-blue-400', label: 'Ждать' },
   IGNORE: { bg: 'bg-neutral/10', text: 'text-neutral', label: 'Игнор' },
 }
