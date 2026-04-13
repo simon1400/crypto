@@ -3,6 +3,7 @@ import {
   getTrades, getTradeStats, getTradeLivePrices, closeAllTrades, deleteAllTrades, cancelTrade,
   Trade, TradeStats, TradeLive,
 } from '../api/client'
+import { sanitizeCsvField } from '../utils/sanitizeCsv'
 import { formatDate, pnlColor, fmt2, fmt2Signed } from '../lib/formatters'
 import { TradeStatusBadge } from '../components/StatusBadge'
 import NewTradeForm from '../components/trades/NewTradeForm'
@@ -127,7 +128,7 @@ export default function Trades() {
         p++
       }
 
-      const esc = (v: string) => `"${v.replace(/"/g, '""')}"`
+      const esc = (v: string) => `"${sanitizeCsvField(v).replace(/"/g, '""')}"`
       const header = [
         'ID', 'Монета', 'Тип', 'Плечо', 'Источник', 'Модель входа',
         'Цена входа', 'Тип ордера', 'Stop Loss',

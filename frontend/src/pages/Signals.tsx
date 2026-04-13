@@ -1,12 +1,17 @@
 import { useState, useEffect } from 'react'
 import { Signal, SignalsResponse, getSignals, syncSignals, clearSignals, getSignalPrices, getSettings, saveSettings, executeSignal } from '../api/client'
+import { sanitizeCsvField } from '../utils/sanitizeCsv'
 import SignalTable from '../components/SignalTable'
 import SignalBadge from '../components/SignalBadge'
 import SignalChart from '../components/SignalChart'
 import { formatPrice } from '../lib/formatters'
 
 function exportCSV(signals: Signal[], prices: Record<string, number | null>, channel: string) {
-  const header = 'Дата,Тип,Монета,Цена,Плечо,Вход мин,Вход макс,SL,TP1,TP2,TP3,TP4,TP5,TP6,Статус,P&L %'
+  const esc = (v: string | number) => {
+    const s = String(v)
+    return `"${sanitizeCsvField(s).replace(/"/g, '""')}"`
+  }
+  const header = ['Дата', 'Тип', 'Монета', 'Цена', 'Плечо', 'Вход мин', 'Вход макс', 'SL', 'TP1', 'TP2', 'TP3', 'TP4', 'TP5', 'TP6', 'Статус', 'P&L %'].map(h => esc(h)).join(',')
   const rows = signals.map(s => {
     const entry = (s.entryMin + s.entryMax) / 2
     let pnl = ''
@@ -25,10 +30,9 @@ function exportCSV(signals: Signal[], prices: Record<string, number | null>, cha
         pnl = '+' + (diff * s.leverage).toFixed(2)
       }
     }
-    const tps = Array.from({ length: 6 }, (_, i) => s.takeProfits[i] ?? '').join(',')
-    const price = prices[s.coin] != null ? prices[s.coin] : ''
+    const price: string | number = prices[s.coin] != null ? prices[s.coin]! : ''
     const date = new Date(s.publishedAt).toLocaleString('ru-RU')
-    return `${date},${s.type},${s.coin},${price},${s.leverage}x,${s.entryMin},${s.entryMax},${s.stopLoss},${tps},${s.status},${pnl}`
+    return [date, s.type, s.coin, price, s.leverage + 'x', s.entryMin, s.entryMax, s.stopLoss, ...Array.from({ length: 6 }, (_, i) => s.takeProfits[i] ?? ''), s.status, pnl].map(v => esc(v)).join(',')
   })
 
   const csv = '\uFEFF' + header + '\n' + rows.join('\n')

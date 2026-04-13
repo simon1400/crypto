@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { sanitizeCsvField } from '../utils/sanitizeCsv'
 import {
   getScannerSignals, triggerScan, takeSignalAsTrade, skipSignal, deleteSignal,
   deleteAllSignals, deleteUnusedSignals, getScannerCoins, getBudget,
@@ -101,7 +102,7 @@ export default function Scanner() {
       }
       const taken = allSignals.filter(s => s.takenAt)
 
-      const esc = (v: string) => `"${v.replace(/"/g, '""')}"`
+      const esc = (v: string) => `"${sanitizeCsvField(v).replace(/"/g, '""')}"`
 
       const header = [
         'Signal ID', 'Монета', 'Тип', 'Стратегия', 'Score', 'Setup Score', 'Setup Category', 'Execution Type', 'Entry Model', 'Плечо',
