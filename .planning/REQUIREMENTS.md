@@ -46,9 +46,9 @@
 
 ### Trades Decomposition
 
-- [ ] **TRD-01**: Вынести фильтры и controls в отдельный компонент
-- [ ] **TRD-02**: Вынести таблицу trades в отдельный компонент
-- [ ] **TRD-03**: Упростить modal management (shared pattern)
+- [x] **TRD-01**: Вынести фильтры и controls в отдельный компонент
+- [x] **TRD-02**: Вынести таблицу trades в отдельный компонент
+- [x] **TRD-03**: Упростить modal management (shared pattern)
 
 ### Component Decomposition
 
@@ -104,9 +104,9 @@
 | SET-04 | Phase 17 | Complete |
 | SET-05 | Phase 17 | Complete |
 | SET-06 | Phase 17 | Complete |
-| TRD-01 | Phase 17 | Pending |
-| TRD-02 | Phase 17 | Pending |
-| TRD-03 | Phase 17 | Pending |
+| TRD-01 | Phase 17 | Complete |
+| TRD-02 | Phase 17 | Complete |
+| TRD-03 | Phase 17 | Complete |
 | COMP-01 | Phase 18 | Pending |
 | COMP-02 | Phase 18 | Pending |
 
