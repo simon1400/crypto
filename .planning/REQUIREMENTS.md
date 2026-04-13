@@ -20,8 +20,8 @@
 - [ ] **SCAN-02**: Вынести таб Scan (run scan, results) в отдельный компонент
 - [ ] **SCAN-03**: Вынести таб Entry Analyzer в отдельный компонент
 - [ ] **SCAN-04**: Вынести таб Risk Calculator в отдельный компонент
-- [ ] **SCAN-05**: Вынести таб Coin List Manager в отдельный компонент
-- [ ] **SCAN-06**: Вынести таб Analytics в отдельный компонент
+- [x] **SCAN-05**: Вынести таб Coin List Manager в отдельный компонент
+- [x] **SCAN-06**: Вынести таб Analytics в отдельный компонент
 
 ### Signals Decomposition
 
@@ -90,8 +90,8 @@
 | SCAN-02 | Phase 15 | Pending |
 | SCAN-03 | Phase 15 | Pending |
 | SCAN-04 | Phase 15 | Pending |
-| SCAN-05 | Phase 15 | Pending |
-| SCAN-06 | Phase 15 | Pending |
+| SCAN-05 | Phase 15 | Complete |
+| SCAN-06 | Phase 15 | Complete |
 | SIG-01 | Phase 16 | Pending |
 | SIG-02 | Phase 16 | Pending |
 | SIG-03 | Phase 16 | Pending |
