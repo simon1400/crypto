@@ -125,7 +125,15 @@ export function runScoringPipeline(
   // === Entry Plans ===
   const isLimit = executionType === 'LIMIT_LONG' || executionType === 'LIMIT_SHORT'
   const isMarket = executionType === 'ENTER_NOW_LONG' || executionType === 'ENTER_NOW_SHORT'
-  const limitPlan = isLimit ? generateLimitPlan(raw.type, raw.indicators, stopLoss, takeProfits) : null
+  let limitPlan = isLimit ? generateLimitPlan(raw.type, raw.indicators, stopLoss, takeProfits) : null
+
+  // Fallback: if limit was requested but no candidate passed scoring → downgrade to WAIT_CONFIRMATION
+  let finalExecutionType = executionType
+  if (isLimit && !limitPlan) {
+    console.log(`[Scoring] ${raw.type} ${(raw as any).coin || ''}: no limit candidates passed 4D scoring, downgrading to WAIT_CONFIRMATION`)
+    finalExecutionType = 'WAIT_CONFIRMATION'
+  }
+
   const marketPlan = isMarket ? generateMarketPlan(raw.type, raw.indicators, stopLoss, takeProfits) : null
 
   // === Entry price ===
@@ -140,7 +148,7 @@ export function runScoringPipeline(
   // === Explanation ===
   const explanation = buildSignalExplanation(
     hardFilter, setupBreakdown, entryTrigger,
-    finalCategory, executionType, entryModel, riskProfile,
+    finalCategory, finalExecutionType, entryModel, riskProfile,
     limitPlan, marketPlan,
   )
 
@@ -162,7 +170,7 @@ export function runScoringPipeline(
     setup_breakdown: setupBreakdown,
     entry_trigger: entryTrigger,
     category: finalCategory,
-    execution_type: executionType,
+    execution_type: finalExecutionType,
     // Entry/exit
     entry,
     initial_stop: stopLoss,
