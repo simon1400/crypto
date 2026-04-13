@@ -3,18 +3,18 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Frontend Refactoring
 status: Phase complete — ready for verification
-stopped_at: Completed 17-02-PLAN.md
-last_updated: "2026-04-13T19:19:14.845Z"
+stopped_at: Completed 18-02-PLAN.md
+last_updated: "2026-04-13T20:05:28.690Z"
 progress:
   total_phases: 6
-  completed_phases: 5
-  total_plans: 10
-  completed_plans: 10
+  completed_phases: 6
+  total_plans: 12
+  completed_plans: 12
 ---
 
 ## Current Position
 
-Phase: 17 (settings-trades-decomposition) — EXECUTING
+Phase: 18 (component-decomposition) — EXECUTING
 Plan: 2 of 2
 
 ## Project Reference
@@ -22,7 +22,7 @@ Plan: 2 of 2
 See: .planning/PROJECT.md (updated 2026-04-13)
 
 **Core value:** Сигнал из сканера превращается в ордер на Bybit с оптимальным entry level
-**Current focus:** Phase 17 — settings-trades-decomposition
+**Current focus:** Phase 18 — component-decomposition
 
 ## Performance Metrics
 
@@ -52,6 +52,9 @@ See: .planning/PROJECT.md (updated 2026-04-13)
 - [Phase 17]: TickerMappingsSection is fully self-contained — only showToast from parent
 - [Phase 17]: saveSettings body cast as any — backend accepts apiKey/apiSecret but TS interface uses bybitApiKey/bybitApiSecret
 - [Phase 17]: Pagination component added to worktree — existed in Phase 13 on main, Rule 3 auto-fix
+- [Phase 18-component-decomposition]: CandidateRow kept as internal component inside SignalCardContext since it is only used there
+- [Phase 18-component-decomposition]: SavedProps and ScanProps re-exported from UnifiedSignalCard.tsx for backward compatibility
+- [Phase 18-component-decomposition]: PositionChartPosition interface moved to hook file; modal re-exports for backward compatibility
 
 ### Blockers/Concerns
 
@@ -63,6 +66,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-13T19:19:14.842Z
-Stopped at: Completed 17-02-PLAN.md
+Last session: 2026-04-13T20:05:28.686Z
+Stopped at: Completed 18-02-PLAN.md
 Resume file: None

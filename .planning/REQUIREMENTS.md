@@ -52,8 +52,8 @@
 
 ### Component Decomposition
 
-- [ ] **COMP-01**: Разбить UnifiedSignalCard на sub-компоненты (header, scores, models, context, actions)
-- [ ] **COMP-02**: Вынести data fetching из PositionChartModal в хук, chart config в shared utility
+- [x] **COMP-01**: Разбить UnifiedSignalCard на sub-компоненты (header, scores, models, context, actions)
+- [x] **COMP-02**: Вынести data fetching из PositionChartModal в хук, chart config в shared utility
 
 ### API Client Decomposition
 
@@ -107,8 +107,8 @@
 | TRD-01 | Phase 17 | Complete |
 | TRD-02 | Phase 17 | Complete |
 | TRD-03 | Phase 17 | Complete |
-| COMP-01 | Phase 18 | Pending |
-| COMP-02 | Phase 18 | Pending |
+| COMP-01 | Phase 18 | Complete |
+| COMP-02 | Phase 18 | Complete |
 
 **Coverage:**
 - v4.0 requirements: 31 total (note: spec header said 30, actual count is 31)

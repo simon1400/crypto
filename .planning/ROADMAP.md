@@ -20,7 +20,7 @@
 - [x] **Phase 15: Scanner Decomposition** - Extract all 6 Scanner.tsx tabs into separate components (completed 2026-04-13)
 - [x] **Phase 16: Signals + Backtester Decomposition** - Extract SignalModal, DepositSimulator, StrategyAnalysis, chart setup, drawing persistence, and replay logic (completed 2026-04-13)
 - [x] **Phase 17: Settings + Trades Decomposition** - Extract 6 Settings sections and Trades filters, table, and modal management (completed 2026-04-13)
-- [ ] **Phase 18: Component Decomposition** - Decompose UnifiedSignalCard and PositionChartModal into sub-components
+- [x] **Phase 18: Component Decomposition** - Decompose UnifiedSignalCard and PositionChartModal into sub-components (completed 2026-04-13)
 
 ## Phase Details
 
@@ -109,8 +109,8 @@ Plans:
   4. Position chart modal opens, fetches candles, and renders chart with drawings without errors
 **Plans**: 2 plans
 Plans:
-- [ ] 18-01-PLAN.md — Decompose UnifiedSignalCard into sub-components
-- [ ] 18-02-PLAN.md — Extract usePositionChart hook + shared chartConfig
+- [x] 18-01-PLAN.md — Decompose UnifiedSignalCard into sub-components
+- [x] 18-02-PLAN.md — Extract usePositionChart hook + shared chartConfig
 **UI hint**: yes
 
 ## Progress
@@ -122,4 +122,4 @@ Plans:
 | 15. Scanner Decomposition | v4.0 | 3/3 | Complete    | 2026-04-13 |
 | 16. Signals + Backtester Decomposition | v4.0 | 2/2 | Complete    | 2026-04-13 |
 | 17. Settings + Trades Decomposition | v4.0 | 2/2 | Complete    | 2026-04-13 |
-| 18. Component Decomposition | v4.0 | 0/2 | Not started | - |
+| 18. Component Decomposition | v4.0 | 2/2 | Complete   | 2026-04-13 |
