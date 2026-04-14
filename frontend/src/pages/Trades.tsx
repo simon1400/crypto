@@ -57,6 +57,7 @@ export default function Trades() {
   const [chartTrade, setChartTrade] = useState<Trade | null>(null)
   const [cancelling, setCancelling] = useState<Trade | null>(null)
   const [exporting, setExporting] = useState(false)
+  const [showCoinPnl, setShowCoinPnl] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -148,7 +149,7 @@ export default function Trades() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-text-primary">Журнал сделок</h1>
         <div className="flex gap-2">
           {confirmCloseAll ? (
@@ -188,18 +189,29 @@ export default function Trades() {
 
       <StatsPanel stats={stats} livePrices={livePrices} />
 
-      {/* Монеты P&L */}
+      {/* Монеты P&L — collapsible */}
       {stats && Object.keys(stats.byCoin).length > 0 && (
-        <div className="flex gap-2 flex-wrap">
-          {Object.entries(stats.byCoin)
-            .sort((a, b) => b[1].pnl - a[1].pnl)
-            .map(([coin, d]) => (
-              <div key={coin} className="bg-card rounded-lg px-3 py-2 text-sm">
-                <span className="font-mono font-medium text-text-primary">{coin}</span>
-                <span className={`ml-2 font-mono ${pnlColor(d.pnl)}`}>{fmt2Signed(d.pnl)}$</span>
-                <span className="ml-1 text-text-secondary text-xs">({d.wins}/{d.trades})</span>
-              </div>
-            ))}
+        <div>
+          <button
+            onClick={() => setShowCoinPnl(v => !v)}
+            className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
+          >
+            <span className={`transition-transform ${showCoinPnl ? 'rotate-90' : ''}`}>▶</span>
+            Монеты P&L ({Object.keys(stats.byCoin).length})
+          </button>
+          {showCoinPnl && (
+            <div className="flex gap-1.5 flex-wrap mt-2">
+              {Object.entries(stats.byCoin)
+                .sort((a, b) => b[1].pnl - a[1].pnl)
+                .map(([coin, d]) => (
+                  <span key={coin} className="inline-flex items-center gap-1 bg-card rounded px-2 py-1 text-xs">
+                    <span className="font-mono font-medium text-text-primary">{coin}</span>
+                    <span className={`font-mono ${pnlColor(d.pnl)}`}>{fmt2Signed(d.pnl)}$</span>
+                    <span className="text-text-secondary">({d.wins}/{d.trades})</span>
+                  </span>
+                ))}
+            </div>
+          )}
         </div>
       )}
 

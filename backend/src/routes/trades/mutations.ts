@@ -160,6 +160,25 @@ router.delete('/all', asyncHandler(async (_req, res) => {
 router.delete('/:id', asyncHandler(async (req, res) => {
   const id = parseIdParam(req, res)
   if (id == null) return
+
+  const trade = await prisma.trade.findUnique({ where: { id } })
+  if (!trade) {
+    res.status(404).json({ error: 'Trade not found' })
+    return
+  }
+
+  // Refund entry fee for trades that haven't been closed yet
+  // (entry fee was deducted on creation but never returned through close P&L)
+  if (['OPEN', 'PENDING_ENTRY', 'PARTIALLY_CLOSED'].includes(trade.status)) {
+    // Estimate entry fee from stored fees minus exit fees from closes
+    const closes = Array.isArray(trade.closes) ? (trade.closes as any[]) : []
+    const exitFeesSum = closes.reduce((sum: number, c: any) => sum + (c.fee || 0), 0)
+    const entryFee = trade.fees - exitFeesSum
+    if (entryFee > 0) {
+      await adjustVirtualBalance(entryFee, `refund entry fee on delete #${trade.id} ${trade.coin}`)
+    }
+  }
+
   await prisma.trade.delete({ where: { id } })
   res.json({ ok: true })
 }, 'Trades'))

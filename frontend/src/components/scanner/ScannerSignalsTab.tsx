@@ -17,6 +17,7 @@ export default function ScannerSignalsTab({ balance, riskPct, refreshKey, onShow
   const [signals, setSignals] = useState<ScannerSignal[]>([])
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -36,6 +37,7 @@ export default function ScannerSignalsTab({ balance, riskPct, refreshKey, onShow
       const res = await getScannerSignals(page, statusFilter || undefined, dateFrom || undefined, dateTo || undefined)
       setSignals(res.data.filter((s: ScannerSignal) => s.strategy !== 'entry_analysis'))
       setTotalPages(res.totalPages)
+      setTotalCount(res.total)
     } catch (err) { console.error('[ScannerSignalsTab] Failed to load signals:', err) }
   }
 
@@ -184,92 +186,107 @@ export default function ScannerSignalsTab({ balance, riskPct, refreshKey, onShow
 
   return (
     <>
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex gap-1">
-          {['', 'NEW'].map(s => (
+      {/* Filters row */}
+      <div className="overflow-x-auto scrollbar-hide -mx-4 px-4">
+        <div className="flex gap-1 min-w-max">
+          {[
+            { value: '', label: 'Все' },
+            { value: 'NEW', label: 'Новые' },
+            { value: 'PENDING', label: 'Ожидание' },
+            { value: 'ACTIVE', label: 'Открытые' },
+            { value: 'FINISHED', label: 'Завершённые' },
+            { value: 'CANCELLED', label: 'Отменённые' },
+          ].map(f => (
             <button
-              key={s}
-              onClick={() => { setStatusFilter(s); setPage(1); setShowAll(false) }}
-              className={`px-3 py-1 text-xs rounded-lg transition-colors ${statusFilter === s ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text-primary'}`}
+              key={f.value}
+              onClick={() => { setStatusFilter(f.value); setPage(1); setShowAll(false) }}
+              className={`px-3 py-1 text-xs rounded-lg whitespace-nowrap transition-colors ${statusFilter === f.value ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text-primary'}`}
             >
-              {s || 'Все'}
+              {f.label}
             </button>
           ))}
         </div>
-
-        <div className="flex items-center gap-1.5 ml-auto">
-          <input
-            type="date"
-            value={dateFrom}
-            onChange={e => { setDateFrom(e.target.value); setPage(1); setShowAll(false) }}
-            className="bg-input text-text-primary text-xs rounded px-2 py-1 border border-transparent focus:border-accent/40 focus:outline-none"
-          />
-          <span className="text-text-secondary text-xs">—</span>
-          <input
-            type="date"
-            value={dateTo}
-            onChange={e => { setDateTo(e.target.value); setPage(1); setShowAll(false) }}
-            className="bg-input text-text-primary text-xs rounded px-2 py-1 border border-transparent focus:border-accent/40 focus:outline-none"
-          />
-          {(dateFrom || dateTo) && (
-            <button
-              onClick={() => { setDateFrom(''); setDateTo(''); setPage(1) }}
-              className="text-xs text-text-secondary hover:text-short transition-colors px-1"
-              title="Сбросить даты"
-            >
-              ✕
-            </button>
-          )}
-        </div>
       </div>
 
+      {/* Date range + sort + actions */}
       {signals.length > 0 && (
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-text-secondary">Сортировка:</span>
-          <button
-            onClick={() => setSortBy('score')}
-            className={`px-2 py-0.5 text-xs rounded ${sortBy === 'score' ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text-primary'}`}
-          >
-            По скору ↓
-          </button>
-          <button
-            onClick={() => setSortBy('date')}
-            className={`px-2 py-0.5 text-xs rounded ${sortBy === 'date' ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text-primary'}`}
-          >
-            По дате
-          </button>
-          <span className="text-xs text-text-secondary ml-auto">{signals.length} сигналов</span>
-
-          <button onClick={exportTakenCSV} disabled={csvExporting}
-            className="px-2.5 py-1 bg-card text-text-secondary rounded-lg text-xs font-medium hover:text-text-primary hover:bg-input transition disabled:opacity-50 flex items-center gap-1.5 ml-2">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            {csvExporting ? '...' : 'CSV взятых'}
-          </button>
-
+        <div className="space-y-3">
+          {/* Date range */}
           <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={e => { setDateFrom(e.target.value); setPage(1); setShowAll(false) }}
+              className="bg-input text-text-primary text-xs rounded px-2 py-2 border border-transparent focus:border-accent/40 focus:outline-none"
+            />
+            <span className="text-text-secondary text-xs">—</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={e => { setDateTo(e.target.value); setPage(1); setShowAll(false) }}
+              className="bg-input text-text-primary text-xs rounded px-2 py-2 border border-transparent focus:border-accent/40 focus:outline-none"
+            />
+            {(dateFrom || dateTo) && (
+              <button
+                onClick={() => { setDateFrom(''); setDateTo(''); setPage(1) }}
+                className="text-xs text-text-secondary hover:text-short transition-colors p-1.5"
+                title="Сбросить даты"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          {/* Sort + count */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-text-secondary">Сортировка:</span>
+            <button
+              onClick={() => setSortBy('score')}
+              className={`px-3 py-1.5 text-xs rounded ${sortBy === 'score' ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text-primary'}`}
+            >
+              По скору ↓
+            </button>
+            <button
+              onClick={() => setSortBy('date')}
+              className={`px-3 py-1.5 text-xs rounded ${sortBy === 'date' ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text-primary'}`}
+            >
+              По дате
+            </button>
+            <span className="text-xs text-text-secondary ml-auto">{signals.length} сигналов</span>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-2">
+            <button onClick={exportTakenCSV} disabled={csvExporting}
+              className="px-3 py-1.5 bg-card text-text-secondary rounded-lg text-xs font-medium hover:text-text-primary hover:bg-input transition disabled:opacity-50 flex items-center gap-1.5">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              {csvExporting ? '...' : 'CSV'}
+            </button>
+
             {confirmDeleteUnused ? (
-              <>
-                <span className="text-xs text-text-secondary">Удалить невзятые?</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-text-secondary">Невзятые?</span>
                 <button disabled={bulkLoading} onClick={async () => { setBulkLoading(true); try { await deleteUnusedSignals(); loadSignals() } catch (err: any) { alert(err?.message || 'Failed to delete unused signals') } finally { setBulkLoading(false); setConfirmDeleteUnused(false) } }}
-                  className="px-2 py-0.5 bg-accent text-black rounded text-xs font-medium disabled:opacity-50">{bulkLoading ? '...' : 'Да'}</button>
-                <button onClick={() => setConfirmDeleteUnused(false)} className="px-2 py-0.5 bg-input text-text-secondary rounded text-xs">Нет</button>
-              </>
+                  className="px-3 py-1.5 bg-accent text-black rounded text-xs font-medium disabled:opacity-50">{bulkLoading ? '...' : 'Да'}</button>
+                <button onClick={() => setConfirmDeleteUnused(false)} className="px-3 py-1.5 bg-input text-text-secondary rounded text-xs">Нет</button>
+              </div>
             ) : (
               <button onClick={() => setConfirmDeleteUnused(true)}
-                className="px-2.5 py-1 bg-accent/10 text-accent rounded-lg text-xs font-medium hover:bg-accent/20 transition">
+                className="px-3 py-1.5 bg-accent/10 text-accent rounded-lg text-xs font-medium hover:bg-accent/20 transition whitespace-nowrap">
                 Удалить невзятые
               </button>
             )}
+
             {confirmDeleteAll ? (
-              <>
-                <span className="text-xs text-short">Удалить ВСЕ?</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-short">ВСЕ?</span>
                 <button disabled={bulkLoading} onClick={async () => { setBulkLoading(true); try { await deleteAllSignals(); loadSignals() } catch (err: any) { alert(err?.message || 'Failed to delete all signals') } finally { setBulkLoading(false); setConfirmDeleteAll(false) } }}
-                  className="px-2 py-0.5 bg-short text-white rounded text-xs font-medium disabled:opacity-50">{bulkLoading ? '...' : 'Да'}</button>
-                <button onClick={() => setConfirmDeleteAll(false)} className="px-2 py-0.5 bg-input text-text-secondary rounded text-xs">Нет</button>
-              </>
+                  className="px-3 py-1.5 bg-short text-white rounded text-xs font-medium disabled:opacity-50">{bulkLoading ? '...' : 'Да'}</button>
+                <button onClick={() => setConfirmDeleteAll(false)} className="px-3 py-1.5 bg-input text-text-secondary rounded text-xs">Нет</button>
+              </div>
             ) : (
               <button onClick={() => setConfirmDeleteAll(true)}
-                className="px-2.5 py-1 bg-short/10 text-short rounded-lg text-xs font-medium hover:bg-short/20 transition">
+                className="px-3 py-1.5 bg-short/10 text-short rounded-lg text-xs font-medium hover:bg-short/20 transition whitespace-nowrap">
                 Очистить всё
               </button>
             )}
@@ -312,21 +329,55 @@ export default function ScannerSignalsTab({ balance, riskPct, refreshKey, onShow
       )}
 
       {totalPages > 1 && (
-        <div className="flex justify-center gap-2">
+        <div className="flex items-center justify-center gap-2">
+          <span className="text-xs text-text-secondary mr-2">
+            {(page - 1) * 20 + 1}–{Math.min(page * 20, totalCount)} из {totalCount}
+          </span>
+          <button
+            onClick={() => setPage(1)}
+            disabled={page === 1}
+            className="px-2 py-1 rounded bg-card text-text-secondary disabled:opacity-30 hover:text-text-primary text-sm"
+          >
+            «
+          </button>
           <button
             onClick={() => setPage(p => Math.max(1, p - 1))}
             disabled={page === 1}
-            className="px-3 py-1 rounded bg-card text-text-secondary disabled:opacity-30 hover:text-text-primary"
+            className="px-2 py-1 rounded bg-card text-text-secondary disabled:opacity-30 hover:text-text-primary text-sm"
           >
-            ←
+            ‹
           </button>
-          <span className="px-3 py-1 text-sm text-text-secondary">{page} / {totalPages}</span>
+          {(() => {
+            const pages: number[] = []
+            let start = Math.max(1, page - 2)
+            let end = Math.min(totalPages, start + 4)
+            if (end - start < 4) start = Math.max(1, end - 4)
+            for (let i = start; i <= end; i++) pages.push(i)
+            return pages.map(p => (
+              <button
+                key={p}
+                onClick={() => { setPage(p); setShowAll(false) }}
+                className={`px-2.5 py-1 rounded text-sm transition-colors ${
+                  p === page ? 'bg-accent/20 text-accent font-bold' : 'bg-card text-text-secondary hover:text-text-primary'
+                }`}
+              >
+                {p}
+              </button>
+            ))
+          })()}
           <button
             onClick={() => setPage(p => Math.min(totalPages, p + 1))}
             disabled={page === totalPages}
-            className="px-3 py-1 rounded bg-card text-text-secondary disabled:opacity-30 hover:text-text-primary"
+            className="px-2 py-1 rounded bg-card text-text-secondary disabled:opacity-30 hover:text-text-primary text-sm"
           >
-            →
+            ›
+          </button>
+          <button
+            onClick={() => setPage(totalPages)}
+            disabled={page === totalPages}
+            className="px-2 py-1 rounded bg-card text-text-secondary disabled:opacity-30 hover:text-text-primary text-sm"
+          >
+            »
           </button>
         </div>
       )}

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Trade, TradeLive } from '../../api/client'
 import { formatDate, pnlColor, fmt2, fmt2Signed } from '../../lib/formatters'
 import { TradeStatusBadge } from '../StatusBadge'
+import TradeCard from './TradeCard'
 
 function formatDuration(openedAt: string, closedAt: string | null): string {
   if (!closedAt) return '—'
@@ -44,23 +45,67 @@ export default function TradesTable({
   if (loading) return <div className="text-center py-12 text-text-secondary">Загрузка...</div>
   if (trades.length === 0) return <div className="text-center py-12 text-text-secondary">Нет сделок</div>
 
+  const sortedTrades = [...trades].sort((a, b) => {
+    const d = sortDir === 'desc' ? -1 : 1
+    const getScore = (t: Trade) => Number(t.notes?.match(/Score:\s*(\d+)/)?.[1] || 0)
+    const getPnl = (t: Trade) => {
+      const live = livePrices[t.id]
+      if ((t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && live) return live.unrealizedPnl
+      return t.realizedPnl - (t.fees || 0)
+    }
+    const getRemaining = (t: Trade) => t.amount * ((100 - t.closedPct) / 100)
+    let va = 0, vb = 0
+    switch (sortCol) {
+      case 'date': va = new Date(a.openedAt || a.createdAt).getTime(); vb = new Date(b.openedAt || b.createdAt).getTime(); break
+      case 'coin': return d * (a.coin.localeCompare(b.coin) || getScore(b) - getScore(a))
+      case 'entry': va = a.entryPrice; vb = b.entryPrice; break
+      case 'price': va = livePrices[a.id]?.currentPrice || 0; vb = livePrices[b.id]?.currentPrice || 0; break
+      case 'size': va = getRemaining(a); vb = getRemaining(b); break
+      case 'sl': {
+        const slA = Math.abs((a.stopLoss - a.entryPrice) / a.entryPrice) * 100 * a.leverage
+        const slB = Math.abs((b.stopLoss - b.entryPrice) / b.entryPrice) * 100 * b.leverage
+        va = slA; vb = slB; break
+      }
+      case 'tp': {
+        const tpsA = (a.takeProfits as any[]) || []; const tpsB = (b.takeProfits as any[]) || []
+        const maxA = tpsA.length ? Math.abs((tpsA[tpsA.length - 1].price - a.entryPrice) / a.entryPrice) * 100 * a.leverage : 0
+        const maxB = tpsB.length ? Math.abs((tpsB[tpsB.length - 1].price - b.entryPrice) / b.entryPrice) * 100 * b.leverage : 0
+        va = maxA; vb = maxB; break
+      }
+      case 'closed': va = a.closedPct; vb = b.closedPct; break
+      case 'realized': va = a.realizedPnl - (a.fees || 0); vb = b.realizedPnl - (b.fees || 0); break
+      case 'pnl': va = getPnl(a); vb = getPnl(b); break
+      default: va = new Date(a.openedAt || a.createdAt).getTime(); vb = new Date(b.openedAt || b.createdAt).getTime()
+    }
+    return d * (va - vb)
+  })
+
   return (
-    <div className="overflow-x-auto">
+    <>
+    {/* Mobile cards */}
+    <div className="md:hidden space-y-2">
+      {(isFinished
+        ? [...trades].sort((a, b) => new Date(b.closedAt || 0).getTime() - new Date(a.closedAt || 0).getTime())
+        : sortedTrades
+      ).map(t => (
+        <TradeCard
+          key={t.id}
+          trade={t}
+          live={livePrices[t.id]}
+          statusFilter={statusFilter}
+          onSelect={() => onSelectTrade(t)}
+          onClose={() => onCloseTrade(t)}
+          onCancel={() => onCancelTrade(t)}
+          onChart={() => onChartTrade(t)}
+        />
+      ))}
+    </div>
+
+    {/* Desktop table */}
+    <div className="hidden md:block overflow-x-auto">
       {isFinished ? (
         /* === Таблица для завершённых сделок === */
-        <table className="w-full text-sm table-fixed">
-          <colgroup>
-            <col className="w-[85px]" />
-            <col className="w-[130px]" />
-            <col className="w-[85px]" />
-            <col className="w-[85px]" />
-            <col className="w-[55px]" />
-            <col className="w-[60px]" />
-            <col className="w-[60px]" />
-            <col className="w-[60px]" />
-            <col className="w-[100px]" />
-            <col className="w-[75px]" />
-          </colgroup>
+        <table className="w-full text-sm min-w-[850px]">
           <thead>
             <tr className="text-text-secondary text-xs border-b border-input">
               <th className="text-left py-3 px-2">Открыта</th>
@@ -85,7 +130,7 @@ export default function TradesTable({
                   onClick={() => onSelectTrade(t)}>
                   <td className="py-3 px-2 text-text-secondary text-xs">{formatDate(t.openedAt)}</td>
                   <td className="py-3 px-2 font-mono font-medium text-text-primary">
-                    <span className="flex items-center gap-1">
+                    <span className="flex items-center gap-2">
                       {(() => {
                         const scoreMatch = t.notes?.match(/Score:\s*(\d+)/)
                         return scoreMatch ? (
@@ -104,7 +149,7 @@ export default function TradesTable({
                         className="text-text-secondary hover:text-accent transition-colors"
                         title="График позиции"
                       >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
                       </button>
                     </span>
                   </td>
@@ -144,21 +189,7 @@ export default function TradesTable({
         </table>
       ) : (
         /* === Таблица для остальных табов === */
-        <table className="w-full text-sm table-fixed">
-          <colgroup>
-            <col className="w-[85px]" />
-            <col className="w-[130px]" />
-            <col className="w-[60px]" />
-            <col className="w-[60px]" />
-            <col className="w-[60px]" />
-            <col className="w-[70px]" />
-            <col className="w-[70px]" />
-            {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <col className="w-[55px]" />}
-            {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <col className="w-[55px]" />}
-            <col className="w-[100px]" />
-            <col className="w-[100px]" />
-            <col className="w-[30px]" />
-          </colgroup>
+        <table className="w-full text-sm min-w-[900px]">
           <thead>
             <tr className="text-text-secondary text-xs border-b border-input">
               {([
@@ -195,45 +226,12 @@ export default function TradesTable({
             </tr>
           </thead>
           <tbody>
-            {[...trades].sort((a, b) => {
-              const dir = sortDir === 'desc' ? -1 : 1
-              const getScore = (t: Trade) => Number(t.notes?.match(/Score:\s*(\d+)/)?.[1] || 0)
-              const getPnl = (t: Trade) => {
-                const live = livePrices[t.id]
-                if ((t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && live) return live.unrealizedPnl
-                return t.realizedPnl - (t.fees || 0)
-              }
-              const getRemaining = (t: Trade) => t.amount * ((100 - t.closedPct) / 100)
-              let va = 0, vb = 0
-              switch (sortCol) {
-                case 'date': va = new Date(a.openedAt || a.createdAt).getTime(); vb = new Date(b.openedAt || b.createdAt).getTime(); break
-                case 'coin': return dir * (a.coin.localeCompare(b.coin) || getScore(b) - getScore(a))
-                case 'entry': va = a.entryPrice; vb = b.entryPrice; break
-                case 'price': va = livePrices[a.id]?.currentPrice || 0; vb = livePrices[b.id]?.currentPrice || 0; break
-                case 'size': va = getRemaining(a); vb = getRemaining(b); break
-                case 'sl': {
-                  const slA = Math.abs((a.stopLoss - a.entryPrice) / a.entryPrice) * 100 * a.leverage
-                  const slB = Math.abs((b.stopLoss - b.entryPrice) / b.entryPrice) * 100 * b.leverage
-                  va = slA; vb = slB; break
-                }
-                case 'tp': {
-                  const tpsA = (a.takeProfits as any[]) || []; const tpsB = (b.takeProfits as any[]) || []
-                  const maxA = tpsA.length ? Math.abs((tpsA[tpsA.length - 1].price - a.entryPrice) / a.entryPrice) * 100 * a.leverage : 0
-                  const maxB = tpsB.length ? Math.abs((tpsB[tpsB.length - 1].price - b.entryPrice) / b.entryPrice) * 100 * b.leverage : 0
-                  va = maxA; vb = maxB; break
-                }
-                case 'closed': va = a.closedPct; vb = b.closedPct; break
-                case 'realized': va = a.realizedPnl - (a.fees || 0); vb = b.realizedPnl - (b.fees || 0); break
-                case 'pnl': va = getPnl(a); vb = getPnl(b); break
-                default: va = new Date(a.openedAt || a.createdAt).getTime(); vb = new Date(b.openedAt || b.createdAt).getTime()
-              }
-              return dir * (va - vb)
-            }).map(t => (
+            {sortedTrades.map(t => (
               <tr key={t.id} className="border-b border-input/50 hover:bg-card/50 cursor-pointer"
                 onClick={() => onSelectTrade(t)}>
                 <td className="py-3 px-2 text-text-secondary text-xs">{formatDate(t.openedAt)}</td>
                 <td className="py-3 px-2 font-mono font-medium text-text-primary">
-                  <span className="flex items-center gap-1">
+                  <span className="flex items-center gap-2">
                     {(() => {
                       const scoreMatch = t.notes?.match(/Score:\s*(\d+)/)
                       return scoreMatch ? (
@@ -253,7 +251,7 @@ export default function TradesTable({
                       className="text-text-secondary hover:text-accent transition-colors"
                       title="График позиции"
                     >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
                     </button>
                   </span>
                 </td>
@@ -373,5 +371,6 @@ export default function TradesTable({
         </table>
       )}
     </div>
+    </>
   )
 }

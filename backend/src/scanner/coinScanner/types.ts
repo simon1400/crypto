@@ -55,6 +55,7 @@ export interface ScanResult {
   entryQuality: EntryQuality
   triggerState: TriggerState | null // non-null for WAIT_CONFIRMATION
   coinRegime?: CoinRegimeContext
+  exchange?: string // bybit | bingx | binance | mexc
   // === New 3-layer scoring fields ===
   enriched?: EnrichedSignal
   setup_category?: SetupCategory

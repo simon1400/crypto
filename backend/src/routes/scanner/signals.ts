@@ -4,9 +4,18 @@ import { assertBudget } from '../../services/budget'
 import { adjustVirtualBalance } from '../../services/virtualBalance'
 import { OrderType } from '../../services/fees'
 import { computePortionPnlFromEntry } from '../../services/tradeClose'
+import { fetchCurrentPrice } from '../../services/market'
 import { asyncHandler, handleBudgetError, parseIdParam, parsePagination } from '../_helpers'
 
 const router = Router()
+
+// Virtual trade-based status filters for scanner signals
+const TRADE_STATUS_FILTERS: Record<string, string[]> = {
+  PENDING: ['PENDING_ENTRY'],
+  ACTIVE: ['OPEN', 'PARTIALLY_CLOSED'],
+  FINISHED: ['CLOSED', 'SL_HIT'],
+  CANCELLED: ['CANCELLED'],
+}
 
 // GET /api/scanner/signals — get saved signals with pagination
 router.get('/signals', asyncHandler(async (req, res) => {
@@ -17,8 +26,21 @@ router.get('/signals', asyncHandler(async (req, res) => {
   const dateFrom = req.query.dateFrom as string | undefined
   const dateTo = req.query.dateTo as string | undefined
 
+  // Check if this is a trade-based virtual filter
+  const tradeFilter = status ? TRADE_STATUS_FILTERS[status] : undefined
+
   const where: any = {}
-  if (status) where.status = status
+  if (status && !tradeFilter) {
+    if (status.includes(',')) {
+      where.status = { in: status.split(',') }
+    } else {
+      where.status = status
+    }
+  }
+  // Trade-based filters only apply to TAKEN signals
+  if (tradeFilter) {
+    where.status = { in: ['TAKEN', 'PARTIALLY_CLOSED', 'CLOSED', 'SL_HIT'] }
+  }
   if (coin) where.coin = { contains: coin.toUpperCase() }
   if (dateFrom || dateTo) {
     where.createdAt = {}
@@ -34,23 +56,57 @@ router.get('/signals', asyncHandler(async (req, res) => {
     prisma.generatedSignal.findMany({
       where,
       orderBy: { createdAt: 'desc' },
-      skip,
-      take: limit,
+      skip: tradeFilter ? undefined : skip,
+      take: tradeFilter ? undefined : limit,
     }),
-    prisma.generatedSignal.count({ where }),
+    tradeFilter ? Promise.resolve(0) : prisma.generatedSignal.count({ where }),
   ])
 
-  // Post-filter by category if requested (category стоит внутри marketContext JSON)
-  let filtered = data
-  if (category) {
-    filtered = data.filter((s: any) => (s.marketContext as any)?.category === category)
+  // Enrich TAKEN signals with linked Trade status
+  const takenIds = data.filter(s => s.takenAt).map(s => s.id)
+  const linkedTradesMap = new Map<number, { id: number; status: string; realizedPnl: number; closedPct: number; fees: number; fundingPaid: number }>()
+  if (takenIds.length > 0) {
+    const trades = await prisma.trade.findMany({
+      where: {
+        source: 'SCANNER',
+        OR: takenIds.map(id => ({ notes: { startsWith: `Scanner signal #${id} ` } })),
+      },
+      select: { id: true, status: true, notes: true, realizedPnl: true, closedPct: true, fees: true, fundingPaid: true },
+    })
+    for (const t of trades) {
+      const match = t.notes?.match(/Scanner signal #(\d+)/)
+      if (match) linkedTradesMap.set(parseInt(match[1]), t)
+    }
   }
 
+  const enriched = data.map(s => ({
+    ...s,
+    linkedTrade: linkedTradesMap.get(s.id) || null,
+  }))
+
+  // Apply trade-based filter post-enrichment
+  let filtered = enriched
+  if (tradeFilter) {
+    filtered = enriched.filter(s => {
+      if (!s.linkedTrade) return false
+      return tradeFilter.includes(s.linkedTrade.status)
+    })
+  }
+
+  // Post-filter by category if requested (category стоит внутри marketContext JSON)
+  if (category) {
+    filtered = filtered.filter((s: any) => (s.marketContext as any)?.category === category)
+  }
+
+  const isPostFiltered = !!tradeFilter || !!category
+  const paginatedData = isPostFiltered ? filtered.slice(skip, skip + limit) : filtered
+  const finalTotal = isPostFiltered ? filtered.length : total
+
   res.json({
-    data: filtered,
-    total: category ? filtered.length : total,
+    data: paginatedData,
+    total: finalTotal,
     page,
-    totalPages: Math.ceil(total / limit),
+    totalPages: Math.ceil(finalTotal / limit),
   })
 }, 'Scanner'))
 
@@ -144,12 +200,21 @@ router.post('/signals/:id/take-trade', asyncHandler(async (req, res) => {
   await adjustVirtualBalance(-entryFee, `entry fee ${signal.coin} scanner ${orderTypeNorm}`)
 
   const isMarket = orderTypeNorm === 'market'
+
+  // For market orders, use current price instead of limit entry
+  let actualEntry = entry
+  if (isMarket) {
+    const coinSymbol = signal.coin.toUpperCase().replace('USDT', '') + 'USDT'
+    const currentPrice = await fetchCurrentPrice(coinSymbol)
+    if (currentPrice) actualEntry = currentPrice
+  }
+
   const trade = await prisma.trade.create({
     data: {
       coin: signal.coin.toUpperCase().replace('USDT', '') + 'USDT',
       type: signal.type,
       leverage,
-      entryPrice: entry,
+      entryPrice: actualEntry,
       amount,
       stopLoss,
       initialStop: isMarket ? stopLoss : undefined,
@@ -169,7 +234,7 @@ router.post('/signals/:id/take-trade', asyncHandler(async (req, res) => {
     data: { status: 'TAKEN', amount, takenAt: new Date() },
   })
 
-  console.log(`[Scanner] Signal #${id} taken as Trade #${trade.id} (${trade.coin} ${trade.type} $${entry}, ${leverage}x, $${amount})`)
+  console.log(`[Scanner] Signal #${id} taken as Trade #${trade.id} (${trade.coin} ${trade.type} $${actualEntry}${isMarket && actualEntry !== entry ? ` market, limit was $${entry}` : ''}, ${leverage}x, $${amount})`)
   res.json({ trade, signal: { id, status: 'TAKEN' } })
 }, 'Scanner'))
 

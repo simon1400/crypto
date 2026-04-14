@@ -26,46 +26,77 @@ const MEXC_INTERVAL_MAP: Record<string, string> = {
  * Это гарантирует что индикаторы и скоринг считаются на тех же свечах
  * что и реальные позиции на бирже исполнения.
  */
-export async function fetchOHLCV(
+export type ExchangeSource = 'bybit' | 'binance' | 'mexc' | 'bingx'
+
+export interface OHLCVWithExchange {
+  candles: OHLCV[]
+  exchange: ExchangeSource
+}
+
+/**
+ * Fetch OHLCV with exchange source tracking.
+ * Priority: Bybit → BingX → Binance → MEXC.
+ * Bybit first (user trades there). BingX second for coins not on Bybit.
+ */
+export async function fetchOHLCVWithExchange(
   symbol: string,
   interval = '4h',
   limit = 60
-): Promise<OHLCV[]> {
-  // 1) Bybit linear (primary)
+): Promise<OHLCVWithExchange> {
+  // 1) Bybit linear (primary — user trades here)
   try {
     const { fetchBybitKlines } = await import('./bybitMarket')
     const candles = await fetchBybitKlines(symbol, interval, limit)
-    if (candles.length > 0) return candles
+    if (candles.length > 0) return { candles, exchange: 'bybit' }
   } catch {}
 
-  // 2) Binance / 3) MEXC fallback
+  // 2) BingX linear swap (secondary)
+  try {
+    const { fetchBingxKlines } = await import('./bingxMarket')
+    const candles = await fetchBingxKlines(symbol, interval, limit)
+    if (candles.length > 0) return { candles, exchange: 'bingx' }
+  } catch {}
+
+  // 3) Binance / 4) MEXC fallback
   const mexcInterval = MEXC_INTERVAL_MAP[interval] || interval
-  const exchanges = [
-    `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
-    `https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=${mexcInterval}&limit=${limit}`,
+  const fallbacks: { url: string; exchange: ExchangeSource }[] = [
+    { url: `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, exchange: 'binance' },
+    { url: `https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=${mexcInterval}&limit=${limit}`, exchange: 'mexc' },
   ]
 
-  for (const url of exchanges) {
+  for (const { url, exchange } of fallbacks) {
     try {
       const res = await fetch(url)
       if (!res.ok) continue
       const data = (await res.json()) as any[][]
       if (!Array.isArray(data) || data.length === 0) continue
 
-      return data.map((k) => ({
-        time: k[0] as number,
-        open: parseFloat(k[1] as string),
-        high: parseFloat(k[2] as string),
-        low: parseFloat(k[3] as string),
-        close: parseFloat(k[4] as string),
-        volume: parseFloat(k[5] as string),
-      }))
+      return {
+        candles: data.map((k) => ({
+          time: k[0] as number,
+          open: parseFloat(k[1] as string),
+          high: parseFloat(k[2] as string),
+          low: parseFloat(k[3] as string),
+          close: parseFloat(k[4] as string),
+          volume: parseFloat(k[5] as string),
+        })),
+        exchange,
+      }
     } catch {
       continue
     }
   }
 
   throw new Error(`Symbol ${symbol} not found on any exchange`)
+}
+
+export async function fetchOHLCV(
+  symbol: string,
+  interval = '4h',
+  limit = 60
+): Promise<OHLCV[]> {
+  const result = await fetchOHLCVWithExchange(symbol, interval, limit)
+  return result.candles
 }
 
 export async function fetchOHLCV_MEXC(
@@ -90,6 +121,7 @@ export async function fetchOHLCV_MEXC(
 }
 
 export async function fetchCurrentPrice(symbol: string): Promise<number | null> {
+  // 1) Bybit
   try {
     const res = await fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${symbol}`)
     if (res.ok) {
@@ -97,6 +129,12 @@ export async function fetchCurrentPrice(symbol: string): Promise<number | null> 
       const price = data.result?.list?.[0]?.lastPrice
       if (price) return parseFloat(price)
     }
+  } catch {}
+  // 2) BingX fallback
+  try {
+    const { fetchBingxTicker } = await import('./bingxMarket')
+    const ticker = await fetchBingxTicker(symbol)
+    if (ticker && ticker.lastPrice > 0) return ticker.lastPrice
   } catch {}
   return null
 }

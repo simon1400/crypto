@@ -115,6 +115,7 @@ export interface ScannerSignal {
   setupCategory: string | null
   executionType: string | null
   entryModel: string | null
+  exchange: string | null           // bybit | bingx | binance | mexc
   stopMovedToBe: boolean
   stopMoveReason: string | null
   trailingActivated: boolean
@@ -125,6 +126,14 @@ export interface ScannerSignal {
   timeInTradeMin: number | null
   mfe: number | null
   mae: number | null
+  linkedTrade: {
+    id: number
+    status: string
+    realizedPnl: number
+    closedPct: number
+    fees: number
+    fundingPaid: number
+  } | null
 }
 
 export interface CandidateScoreInfo {
@@ -257,6 +266,7 @@ export interface ScanSignal {
     entry_model: string
     position_size_multiplier: number
   }
+  exchange?: string               // bybit | bingx | binance | mexc
 }
 
 export interface ScanFunnel {

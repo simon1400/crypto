@@ -1,4 +1,4 @@
-import { fetchOHLCV, fetchMarketOverview } from '../../services/market'
+import { fetchOHLCV, fetchOHLCVWithExchange, fetchMarketOverview, ExchangeSource } from '../../services/market'
 import { computeIndicators, MultiTFIndicators } from '../../services/indicators'
 import { fetchFundingRates } from '../../services/fundingRate'
 import { fetchOpenInterests } from '../../services/openInterest'
@@ -156,6 +156,7 @@ export async function runScan(
 
     const coinIndicators: Record<string, MultiTFIndicators> = {}
     const coinCandles: Record<string, { candles5m: import('../../services/market').OHLCV[]; candles15m: import('../../services/market').OHLCV[] }> = {}
+    const coinExchanges: Record<string, ExchangeSource> = {}
     const fetchErrors: string[] = []
 
     scannerProgress.setPhase('fetching', 'Загружаю свечи 5m/15m/1h/4h...', 0, coins.length)
@@ -165,20 +166,22 @@ export async function runScan(
         batch.map(async (coin) => {
           try {
             const symbol = `${coin}USDT`
-            const [candles5m, candles15m, candles1h, candles4h] = await Promise.all([
+            // Use 4h fetch to determine exchange source (most important TF)
+            const result4h = await fetchOHLCVWithExchange(symbol, '4h', 200)
+            const [candles5m, candles15m, candles1h] = await Promise.all([
               fetchOHLCV(symbol, '5m', 30),
               fetchOHLCV(symbol, '15m', 60),
               fetchOHLCV(symbol, '1h', 60),
-              fetchOHLCV(symbol, '4h', 200),
             ])
             return {
               coin,
+              exchange: result4h.exchange,
               candles5m,
               candles15m,
               indicators: {
                 tf15m: computeIndicators(candles15m),
                 tf1h: computeIndicators(candles1h),
-                tf4h: computeIndicators(candles4h),
+                tf4h: computeIndicators(result4h.candles),
               } as MultiTFIndicators,
             }
           } catch {
@@ -192,6 +195,7 @@ export async function runScan(
         if (r) {
           coinIndicators[r.coin] = r.indicators
           coinCandles[r.coin] = { candles5m: r.candles5m, candles15m: r.candles15m }
+          coinExchanges[r.coin] = r.exchange
         }
       }
 
@@ -276,8 +280,14 @@ export async function runScan(
         continue
       }
 
+      if (enriched.setup_score < minScore) {
+        console.log(`[Scanner] ${coin}: setup_score ${enriched.setup_score} < minScore ${minScore} → SKIP`)
+        continue
+      }
+
       funnel.passedScoring++
-      console.log(`[Scanner] ${coin}: ${rawSignal.strategy} ${rawSignal.type} setup=${enriched.setup_score} ${enriched.category}/${enriched.execution_type} vol=${indicators.tf1h.volRatio}x ${coinRegime.ownMomentum ? '[OWN_MOMENTUM]' : ''}`)
+      const exch = coinExchanges[coin] || 'bybit'
+      console.log(`[Scanner] ${coin}: ${rawSignal.strategy} ${rawSignal.type} setup=${enriched.setup_score} ${enriched.category}/${enriched.execution_type} vol=${indicators.tf1h.volRatio}x ${exch !== 'bybit' ? `[${exch.toUpperCase()}]` : ''} ${coinRegime.ownMomentum ? '[OWN_MOMENTUM]' : ''}`)
       enrichedSignals.push(enriched)
     }
 
@@ -339,6 +349,7 @@ export async function runScan(
         entryQuality,
         triggerState: null,
         coinRegime,
+        exchange: coinExchanges[enriched.coin] || 'bybit',
         // New 3-layer scoring
         enriched,
         setup_category: enriched.category,
@@ -368,6 +379,7 @@ export async function runScan(
       try {
         const enriched = r.enriched!
         const liqStats = getLiquidationStats(r.signal.coin, 15)
+        const exchange = coinExchanges[enriched.coin] || 'bybit'
         const saved = await prisma.generatedSignal.create({
           data: {
             coin: enriched.coin,
@@ -379,6 +391,7 @@ export async function runScan(
             takeProfits: enriched.take_profits as any,
             leverage: enriched.leverage,
             positionPct: enriched.position_pct,
+            exchange,
             indicators: JSON.parse(JSON.stringify(enriched.indicators)),
             marketContext: JSON.parse(JSON.stringify({
               regime: regime.regime,

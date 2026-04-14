@@ -293,43 +293,25 @@ export default function Scanner() {
 
       {/* Tabs */}
       {!loading && !entryLoading && (
-        <div className="flex gap-1 border-b border-card">
-          <button
-            onClick={() => setTab('saved')}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${tab === 'saved' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary hover:text-text-primary'}`}
-          >
-            Сохранённые сигналы
-          </button>
-          <button
-            onClick={() => setTab('scan')}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${tab === 'scan' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary hover:text-text-primary'}`}
-          >
-            Результаты скана {scanResults ? `(${scanResults.total})` : ''}
-          </button>
-          <button
-            onClick={() => setTab('entry')}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${tab === 'entry' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary hover:text-text-primary'}`}
-          >
-            Анализ входа
-          </button>
-          <button
-            onClick={() => setTab('calc')}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${tab === 'calc' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary hover:text-text-primary'}`}
-          >
-            Калькулятор
-          </button>
-          <button
-            onClick={() => setTab('coins')}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${tab === 'coins' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary hover:text-text-primary'}`}
-          >
-            Монеты {coinCount > 0 ? `(${coinCount})` : ''}
-          </button>
-          <button
-            onClick={() => setTab('analytics')}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${tab === 'analytics' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary hover:text-text-primary'}`}
-          >
-            Аналитика
-          </button>
+        <div className="overflow-x-auto -mx-4 px-4 scrollbar-hide">
+          <div className="flex gap-1 border-b border-card min-w-max">
+            {([
+              { key: 'saved', label: 'Сигналы' },
+              { key: 'scan', label: `Скан${scanResults ? ` (${scanResults.total})` : ''}` },
+              { key: 'entry', label: 'Анализ входа' },
+              { key: 'calc', label: 'Калькулятор' },
+              { key: 'coins', label: `Монеты${coinCount > 0 ? ` (${coinCount})` : ''}` },
+              { key: 'analytics', label: 'Аналитика' },
+            ] as const).map(t => (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className={`px-3 sm:px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${tab === t.key ? 'text-accent border-b-2 border-accent' : 'text-text-secondary hover:text-text-primary'}`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 

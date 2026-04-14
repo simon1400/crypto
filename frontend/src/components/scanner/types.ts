@@ -110,6 +110,19 @@ export interface CardData {
   createdAt: string | null
   takenAt: string | null
 
+  // linked trade (from backend enrichment)
+  linkedTrade: {
+    id: number
+    status: string
+    realizedPnl: number
+    closedPct: number
+    fees: number
+    fundingPaid: number
+  } | null
+
+  // exchange source
+  exchange: string | null  // bybit | bingx | binance | mexc
+
   // scan result specifics
   _taken: boolean
   _skipped: boolean
@@ -166,6 +179,8 @@ export function normalizeFromSaved(s: ScannerSignal): CardData {
     closes: (s.closes as SignalClose[]) || [],
     createdAt: s.createdAt,
     takenAt: s.takenAt,
+    exchange: s.exchange || null,
+    linkedTrade: s.linkedTrade || null,
     _taken: false,
     _skipped: false,
   }
@@ -219,6 +234,8 @@ export function normalizeFromScan(s: ScanSignal): CardData {
     closes: [],
     createdAt: null,
     takenAt: null,
+    exchange: s.exchange || null,
+    linkedTrade: null,
     _taken: !!(s as any)._taken,
     _skipped: !!(s as any)._skipped,
   }

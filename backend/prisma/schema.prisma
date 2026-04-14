@@ -115,6 +115,7 @@ model GeneratedSignal {
   setupCategory     String?                      // A_PLUS_READY / READY / WATCHLIST / IGNORE
   executionType     String?                      // ENTER_NOW_LONG / LIMIT_LONG / WAIT_CONFIRMATION / IGNORE
   entryModel        String?                      // aggressive / confirmation
+  exchange          String   @default("bybit")   // bybit | bingx | binance | mexc
   // === Trade lifecycle tracking ===
   stopMovedToBe     Boolean  @default(false)     // was stop moved to breakeven?
   stopMoveReason    String?                      // reason for stop move
