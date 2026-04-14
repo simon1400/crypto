@@ -311,6 +311,10 @@ export async function triggerScan(coins?: string[], minScore?: number, useGPT?: 
   return res.json()
 }
 
+export async function cancelScan(): Promise<void> {
+  await fetch(`${BASE}/api/scanner/cancel`, { method: 'POST', headers: getHeaders() })
+}
+
 // === Scanner progress (Server-Sent Events) ===
 export type ScanPhase =
   | 'idle' | 'starting' | 'market_data' | 'fetching' | 'regime'
@@ -499,7 +503,7 @@ export async function getScannerCoins(): Promise<string[]> {
   return data.coins
 }
 
-export async function getScannerCoinList(): Promise<{ available: string[]; selected: string[] }> {
+export async function getScannerCoinList(): Promise<{ available: string[]; selected: string[]; bingxOnly?: string[] }> {
   const res = await fetch(`${BASE}/api/scanner/coin-list`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch coin list')
   return res.json()

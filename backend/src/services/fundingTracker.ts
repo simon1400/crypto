@@ -78,7 +78,7 @@ export async function processFunding(): Promise<void> {
   for (const trade of trades) {
     try {
       // Дата от которой считаем funding boundaries
-      const since = trade.lastFundingAt ?? trade.openedAt
+      const since = trade.lastFundingAt ?? trade.openedAt ?? trade.createdAt
       const boundaries = fundingBoundariesBetween(since, now)
 
       if (boundaries.length === 0) continue

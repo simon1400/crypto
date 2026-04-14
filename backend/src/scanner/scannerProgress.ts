@@ -48,11 +48,31 @@ class ScannerProgress extends EventEmitter {
     updatedAt: 0,
   }
 
+  private _aborted = false
+
+  get aborted(): boolean {
+    return this._aborted
+  }
+
+  /** Request scan cancellation — checked by runScan loops */
+  abort(): void {
+    this._aborted = true
+    this.state = {
+      ...this.state,
+      phase: 'error',
+      message: 'Сканирование остановлено',
+      error: 'Остановлено пользователем',
+      updatedAt: Date.now(),
+    }
+    this.emit('update', this.getState())
+  }
+
   getState(): ScanProgress {
     return { ...this.state }
   }
 
   start(totalCoins: number): void {
+    this._aborted = false
     this.state = {
       phase: 'starting',
       message: `Запуск сканирования ${totalCoins} монет...`,
@@ -121,6 +141,7 @@ class ScannerProgress extends EventEmitter {
   }
 
   reset(): void {
+    this._aborted = false
     this.state = {
       phase: 'idle',
       message: 'Ожидание',

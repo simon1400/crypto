@@ -7,6 +7,7 @@ interface ScannerCoinListTabProps {
 
 export default function ScannerCoinListTab({ onCoinCountChange }: ScannerCoinListTabProps) {
   const [allCoins, setAllCoins] = useState<string[]>([])
+  const [bingxOnlySet, setBingxOnlySet] = useState<Set<string>>(new Set())
   const [selectedCoins, setSelectedCoins] = useState<string[]>([])
   const [coinSearch, setCoinSearch] = useState('')
   const [coinListLoading, setCoinListLoading] = useState(false)
@@ -18,6 +19,7 @@ export default function ScannerCoinListTab({ onCoinCountChange }: ScannerCoinLis
       try {
         const data = await getScannerCoinList()
         setAllCoins(data.available)
+        setBingxOnlySet(new Set(data.bingxOnly || []))
         setSelectedCoins(data.selected)
         onCoinCountChange(data.selected.length)
       } catch (err) { console.error('[Scanner] Failed to load coin list:', err) } finally {
@@ -60,7 +62,7 @@ export default function ScannerCoinListTab({ onCoinCountChange }: ScannerCoinLis
   return (
     <div className="space-y-4">
       {coinListLoading ? (
-        <p className="text-text-secondary text-sm">Загрузка списка монет с Bybit...</p>
+        <p className="text-text-secondary text-sm">Загрузка списка монет с Bybit + BingX...</p>
       ) : (
         <>
           {/* Controls */}
@@ -74,6 +76,11 @@ export default function ScannerCoinListTab({ onCoinCountChange }: ScannerCoinLis
             />
             <span className="text-text-secondary text-sm">
               Выбрано: <span className="text-accent font-mono">{selectedCoins.length}</span> из {allCoins.length}
+              {bingxOnlySet.size > 0 && (
+                <span className="ml-1">
+                  (<span className="text-amber-400 font-mono">{bingxOnlySet.size}</span> только BingX)
+                </span>
+              )}
             </span>
             <button
               onClick={() => {
@@ -106,17 +113,22 @@ export default function ScannerCoinListTab({ onCoinCountChange }: ScannerCoinLis
           <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12 xl:grid-cols-14 gap-1.5">
             {filteredCoins.map(coin => {
               const isSelected = selectedCoins.includes(coin)
+              const isBingx = bingxOnlySet.has(coin)
               return (
                 <button
                   key={coin}
                   onClick={() => toggleCoin(coin)}
-                  className={`px-2 py-1.5 rounded text-xs font-mono transition-all ${
+                  className={`px-2 py-1.5 rounded text-xs font-mono transition-all relative ${
                     isSelected
-                      ? 'bg-accent/15 text-accent border border-accent/50'
+                      ? isBingx
+                        ? 'bg-amber-500/15 text-amber-400 border border-amber-500/50'
+                        : 'bg-accent/15 text-accent border border-accent/50'
                       : 'bg-card text-text-secondary border border-transparent hover:border-card hover:text-text-primary'
                   }`}
+                  title={isBingx ? 'Только BingX' : 'Bybit'}
                 >
                   {coin}
+                  {isBingx && <span className="absolute -top-1 -right-1 w-1.5 h-1.5 bg-amber-400 rounded-full" />}
                 </button>
               )
             })}

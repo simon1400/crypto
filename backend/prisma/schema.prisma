@@ -152,7 +152,7 @@ model Trade {
   fundingPaid   Float    @default(0)             // суммарно уплачено funding (положительное = платил, отрицательное = получал)
   lastFundingAt DateTime?                        // последний снапшот funding (чтобы не начислять дважды)
   notes         String?                          // заметки
-  openedAt      DateTime @default(now())
+  openedAt      DateTime?
   closedAt      DateTime?
   createdAt     DateTime @default(now())
   // === New trade lifecycle tracking ===

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import {
-  triggerScan, takeSignalAsTrade, skipSignal, deleteSignal,
+  triggerScan, cancelScan, takeSignalAsTrade, skipSignal, deleteSignal,
   getScannerCoins, getBudget,
   subscribeScanProgress, ScanProgress,
   ScannerSignal, ScanResponse,
@@ -175,13 +175,21 @@ export default function Scanner() {
             />
             GPT-5.4 фильтр
           </label>
-          <button
-            onClick={handleScan}
-            disabled={loading}
-            className="px-4 py-2 rounded-lg font-medium text-sm disabled:opacity-50 transition-colors bg-accent text-[#0b0e11] hover:bg-accent/90"
-          >
-            {loading ? 'Сканирую...' : 'Сканировать'}
-          </button>
+          {loading ? (
+            <button
+              onClick={() => cancelScan().catch(() => {})}
+              className="px-4 py-2 rounded-lg font-medium text-sm transition-colors bg-short text-white hover:bg-short/80"
+            >
+              Остановить
+            </button>
+          ) : (
+            <button
+              onClick={handleScan}
+              className="px-4 py-2 rounded-lg font-medium text-sm transition-colors bg-accent text-[#0b0e11] hover:bg-accent/90"
+            >
+              Сканировать
+            </button>
+          )}
         </div>
       </div>
 

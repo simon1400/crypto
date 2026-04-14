@@ -39,6 +39,8 @@ router.post('/', asyncHandler(async (req, res) => {
 
   await adjustVirtualBalance(-entryFee, `entry fee ${coin} ${orderTypeNorm}`)
 
+  const isMarket = orderTypeNorm === 'market'
+
   const trade = await prisma.trade.create({
     data: {
       coin: coin.toUpperCase().replace('USDT', '') + 'USDT',
@@ -52,6 +54,8 @@ router.post('/', asyncHandler(async (req, res) => {
       notes: notes || null,
       source: tradeSource,
       entryOrderType: orderTypeNorm,
+      status: isMarket ? 'OPEN' : 'PENDING_ENTRY',
+      openedAt: isMarket ? new Date() : undefined,
     },
   })
 

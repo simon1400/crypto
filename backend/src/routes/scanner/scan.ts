@@ -127,6 +127,16 @@ router.get('/progress-stream', (req, res) => {
   })
 })
 
+// POST /api/scanner/cancel — stop running scan
+router.post('/cancel', (_req, res) => {
+  if (!isScannerRunning()) {
+    res.status(400).json({ error: 'Scanner is not running' })
+    return
+  }
+  scannerProgress.abort()
+  res.json({ ok: true })
+})
+
 // POST /api/scanner/expire — manually expire old signals
 router.post('/expire', asyncHandler(async (_req, res) => {
   const count = await expireOldSignals()

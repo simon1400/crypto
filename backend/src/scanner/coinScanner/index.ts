@@ -161,6 +161,7 @@ export async function runScan(
 
     scannerProgress.setPhase('fetching', 'Загружаю свечи 5m/15m/1h/4h...', 0, coins.length)
     for (let i = 0; i < coins.length; i += 5) {
+      if (scannerProgress.aborted) throw new Error('Scan aborted by user')
       const batch = coins.slice(i, i + 5)
       const results = await Promise.all(
         batch.map(async (coin) => {
@@ -238,6 +239,7 @@ export async function runScan(
     let scoredCount = 0
 
     for (const [coin, indicators] of Object.entries(coinIndicators)) {
+      if (scannerProgress.aborted) throw new Error('Scan aborted by user')
       scoredCount++
       if (scoredCount % 5 === 0 || scoredCount === totalToScore) {
         scannerProgress.tick(scoredCount, totalToScore, `Скоринг: ${scoredCount}/${totalToScore}`)
@@ -307,6 +309,7 @@ export async function runScan(
     let gptDone = 0
 
     for (const enriched of topSignals) {
+      if (scannerProgress.aborted) throw new Error('Scan aborted by user')
       // Build SignalWithRisk bridge for GPT annotator
       const signalWithRisk = enrichedToSignalWithRisk(enriched)
 
