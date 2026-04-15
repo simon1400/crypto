@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Trade, TradeLive } from '../../api/client'
 import { formatDate, pnlColor, fmt2, fmt2Signed } from '../../lib/formatters'
 import { TradeStatusBadge } from '../StatusBadge'
@@ -14,6 +14,26 @@ function formatDuration(openedAt: string, closedAt: string | null): string {
   if (days > 0) return `${days}д ${hours % 24}ч`
   if (hours > 0) return `${hours}ч ${mins % 60}м`
   return `${mins}м`
+}
+
+function formatElapsed(openedAt: string): string {
+  const ms = Date.now() - new Date(openedAt).getTime()
+  if (ms < 0) return '0м'
+  const mins = Math.floor(ms / 60000)
+  const hours = Math.floor(mins / 60)
+  const days = Math.floor(hours / 24)
+  if (days > 0) return `${days}д ${hours % 24}ч`
+  if (hours > 0) return `${hours}ч ${mins % 60}м`
+  return `${mins}м`
+}
+
+function LiveTimer({ openedAt }: { openedAt: string }) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 60000)
+    return () => clearInterval(id)
+  }, [])
+  return <>{formatElapsed(openedAt)}</>
 }
 
 function getClosePrice(t: Trade): number | null {
@@ -57,6 +77,7 @@ export default function TradesTable({
     let va = 0, vb = 0
     switch (sortCol) {
       case 'date': va = new Date(a.openedAt || a.createdAt).getTime(); vb = new Date(b.openedAt || b.createdAt).getTime(); break
+      case 'elapsed': va = new Date(a.openedAt || a.createdAt).getTime(); vb = new Date(b.openedAt || b.createdAt).getTime(); break
       case 'coin': return d * (a.coin.localeCompare(b.coin) || getScore(b) - getScore(a))
       case 'entry': va = a.entryPrice; vb = b.entryPrice; break
       case 'price': va = livePrices[a.id]?.currentPrice || 0; vb = livePrices[b.id]?.currentPrice || 0; break
@@ -194,6 +215,7 @@ export default function TradesTable({
             <tr className="text-text-secondary text-xs border-b border-input">
               {([
                 { key: 'date', label: 'Дата', align: 'text-left' },
+                { key: 'elapsed', label: '⏱', align: 'text-left' },
                 { key: 'coin', label: 'Монета', align: 'text-left' },
                 { key: 'entry', label: 'Вход', align: 'text-right' },
                 { key: 'price', label: 'Цена', align: 'text-right' },
@@ -230,6 +252,13 @@ export default function TradesTable({
               <tr key={t.id} className="border-b border-input/50 hover:bg-card/50 cursor-pointer"
                 onClick={() => onSelectTrade(t)}>
                 <td className="py-3 px-2 text-text-secondary text-xs">{formatDate(t.openedAt)}</td>
+                <td className="py-3 px-2 font-mono text-xs text-accent">
+                  {(t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') ? (
+                    <LiveTimer openedAt={t.openedAt} />
+                  ) : (
+                    <span className="text-text-secondary">{formatElapsed(t.openedAt)}</span>
+                  )}
+                </td>
                 <td className="py-3 px-2 font-mono font-medium text-text-primary">
                   <span className="flex items-center gap-2">
                     {(() => {

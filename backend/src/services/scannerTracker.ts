@@ -90,7 +90,9 @@ export async function trackScannerTrades() {
       const tpsSortedByPrice = [...tps].sort((a, b) => isLong ? a.price - b.price : b.price - a.price)
       let tpsHitCount = 0
       for (const tp of tpsSortedByPrice) {
-        const alreadyClosed = closes.some(c => Math.abs(c.price - tp.price) < 0.0001 && !c.isSL)
+        // Use relative threshold (0.5% of price) instead of absolute — safe for low-price coins
+        const threshold = tp.price * 0.005
+        const alreadyClosed = closes.some(c => Math.abs(c.price - tp.price) < threshold && !c.isSL)
         if (alreadyClosed) tpsHitCount++
         else break
       }
@@ -129,13 +131,14 @@ export async function trackScannerTrades() {
         continue
       }
 
-      // --- TP check (from highest to lowest) ---
-      const sortedTps = [...tps].sort((a, b) => isLong ? b.price - a.price : a.price - b.price)
+      // --- TP check (from lowest to highest — TP1 first so trailing SL activates correctly) ---
+      const sortedTps = [...tps].sort((a, b) => isLong ? a.price - b.price : b.price - a.price)
 
       for (const tp of sortedTps) {
         const tpHit = isLong ? price >= tp.price : price <= tp.price
         if (tpHit) {
-          const alreadyClosed = closes.some(c => Math.abs(c.price - tp.price) < 0.0001 && !c.isSL)
+          const threshold = tp.price * 0.005
+          const alreadyClosed = closes.some(c => Math.abs(c.price - tp.price) < threshold && !c.isSL)
           if (alreadyClosed) continue
 
           const pctToClose = Math.min(tp.percent, 100 - trade.closedPct)

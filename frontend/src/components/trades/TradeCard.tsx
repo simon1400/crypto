@@ -1,6 +1,27 @@
+import { useState, useEffect } from 'react'
 import { Trade, TradeLive } from '../../api/client'
 import { formatDate, pnlColor, fmt2, fmt2Signed } from '../../lib/formatters'
 import { TradeStatusBadge } from '../StatusBadge'
+
+function formatElapsed(openedAt: string): string {
+  const ms = Date.now() - new Date(openedAt).getTime()
+  if (ms < 0) return '0м'
+  const mins = Math.floor(ms / 60000)
+  const hours = Math.floor(mins / 60)
+  const days = Math.floor(hours / 24)
+  if (days > 0) return `${days}д ${hours % 24}ч`
+  if (hours > 0) return `${hours}ч ${mins % 60}м`
+  return `${mins}м`
+}
+
+function LiveTimer({ openedAt }: { openedAt: string }) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 60000)
+    return () => clearInterval(id)
+  }, [])
+  return <>{formatElapsed(openedAt)}</>
+}
 
 const CANCEL_REASONS: Record<string, string> = {
   PRICE_PASSED: 'Цена прошла мимо',
@@ -65,7 +86,10 @@ export default function TradeCard({ trade: t, live, statusFilter, onSelect, onCl
         {t.notes?.includes('Model: aggressive') && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-long/15 text-long">A</span>}
         {t.notes?.includes('Model: confirmation') && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent">C</span>}
         {t.notes?.includes('Model: pullback') && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-blue-500/15 text-blue-400">P</span>}
-        <span className="text-[10px] text-text-secondary ml-auto">{formatDate(t.openedAt)}</span>
+        <span className="text-[10px] text-text-secondary ml-auto flex items-center gap-1.5">
+          {isActive && <span className="text-accent font-mono"><LiveTimer openedAt={t.openedAt} /></span>}
+          {formatDate(t.openedAt)}
+        </span>
       </div>
 
       {/* Body: price grid */}
