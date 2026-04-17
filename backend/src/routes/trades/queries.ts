@@ -97,6 +97,7 @@ router.get('/live', asyncHandler(async (_req, res) => {
     return {
       id: t.id,
       status: t.status,
+      closedPct: t.closedPct,
       currentPrice: price,
       unrealizedPnl: Math.round(pnlUsdt * 100) / 100,
       unrealizedPnlPct: Math.round(pnlPercent * 100) / 100,

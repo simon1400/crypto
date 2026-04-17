@@ -76,6 +76,7 @@ export interface TradeStats {
 export interface TradeLive {
   id: number
   status: string
+  closedPct?: number
   currentPrice: number | null
   unrealizedPnl: number
   unrealizedPnlPct: number

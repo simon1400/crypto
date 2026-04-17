@@ -75,6 +75,7 @@ export default function Trades() {
   useEffect(() => { load() }, [load])
 
   // Poll live prices for open trades every 3 seconds
+  // Auto-reload full trade data when status or closedPct changes (e.g. TP hit)
   useEffect(() => {
     const controller = new AbortController()
     async function fetchLive() {
@@ -83,6 +84,15 @@ export default function Trades() {
         const map: Record<number, TradeLive> = {}
         data.forEach(d => { map[d.id] = d })
         setLivePrices(map)
+
+        // Detect if any trade changed status/closedPct or disappeared from live (fully closed)
+        const openStatuses = ['PENDING_ENTRY', 'OPEN', 'PARTIALLY_CLOSED']
+        const changed = trades.some(t => {
+          const live = map[t.id]
+          if (!live) return openStatuses.includes(t.status) // was open but gone from live = closed
+          return live.status !== t.status || (live.closedPct != null && live.closedPct !== t.closedPct)
+        })
+        if (changed) load()
       } catch (err: any) {
         if (err?.name === 'AbortError') return
         console.error('[Trades] Failed to fetch live prices:', err)
@@ -91,7 +101,7 @@ export default function Trades() {
     fetchLive()
     const interval = setInterval(fetchLive, 3000)
     return () => { controller.abort(); clearInterval(interval) }
-  }, [trades])
+  }, [trades, load])
 
   async function exportCSV() {
     setExporting(true)
