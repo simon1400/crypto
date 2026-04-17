@@ -5,7 +5,7 @@ import { encrypt, maskKey } from '../services/encryption'
 import { createBybitClient, validateBybitKeys } from '../services/bybit'
 import { startAutoListener, stopAutoListener } from '../trading/autoListener'
 import { getInstrumentInfo } from '../trading/instrumentCache'
-import { sendTestNotification } from '../services/notifier'
+import { sendTestNotification, sendNotification } from '../services/notifier'
 import { getVirtualBalanceInfo, setVirtualBalance } from '../services/virtualBalance'
 import { asyncHandler, parseIdParam } from './_helpers'
 
@@ -157,6 +157,46 @@ router.post('/test-notification', asyncHandler(async (req, res) => {
 
   const success = await sendTestNotification(botToken, chatId)
   res.json({ success, ...(success ? {} : { error: 'Failed to send test message' }) })
+}, 'Settings'))
+
+// POST /api/settings/test-trade-notifications — test all trade notification formats
+router.post('/test-trade-notifications', asyncHandler(async (_req, res) => {
+  const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+  await sendNotification('ORDER_FILLED', {
+    symbol: 'BTCUSDT', type: 'LONG', leverage: 10,
+    entryPrice: 84500, stopLoss: 83200, margin: 100,
+    takeProfits: [
+      { price: 85800, percent: 40 },
+      { price: 87000, percent: 30 },
+      { price: 89000, percent: 30 },
+    ],
+  })
+  await delay(500)
+
+  await sendNotification('TP1_HIT', {
+    symbol: 'BTCUSDT', type: 'LONG', leverage: 10,
+    price: 85800, closedPct: 40, pnlPct: 15.38,
+    pnl: 6.15, fee: 0.0346, totalRealizedPnl: 6.15,
+    remainingPct: 60, newStopLoss: 84500,
+  })
+  await delay(500)
+
+  await sendNotification('SL_TRIGGERED', {
+    symbol: 'ETHUSDT', type: 'SHORT', leverage: 5,
+    price: 3250, pnl: -12.50, pnlPct: -6.25,
+    totalRealizedPnl: -12.50, totalFees: 0.08,
+    exitReason: 'INITIAL_STOP', timeInTrade: '3ч 45м',
+  })
+  await delay(500)
+
+  await sendNotification('POSITION_CLOSED', {
+    symbol: 'BTCUSDT', type: 'LONG', leverage: 10,
+    totalRealizedPnl: 28.50, totalFees: 0.12,
+    netPnl: 28.38, timeInTrade: '6ч 12м',
+  })
+
+  res.json({ success: true, message: 'Sent 4 test notifications: entry, TP, SL, close' })
 }, 'Settings'))
 
 // GET /api/settings/virtual-balance — текущий виртуальный депозит + ROI

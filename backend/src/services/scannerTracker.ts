@@ -1,6 +1,7 @@
 import { prisma } from '../db/prisma'
 import { fetchPricesBatch } from './market'
-import { closeTradePortion } from './tradeClose'
+import { closeTradePortion, computePortionPnl } from './tradeClose'
+import { sendNotification } from './notifier'
 
 // Tracks SCANNER trades every 2 seconds:
 // 1. PENDING_ENTRY — waits for price to reach or cross entry, then activates
@@ -9,6 +10,21 @@ import { closeTradePortion } from './tradeClose'
 // 3. ENTRY_ANALYZER pairs — auto-merges when both entries fill
 
 const lastPrices: Record<string, number> = {}
+
+function formatDuration(minutes: number): string {
+  if (minutes < 60) return `${minutes}м`
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  if (h < 24) return m > 0 ? `${h}ч ${m}м` : `${h}ч`
+  const d = Math.floor(h / 24)
+  const rh = h % 24
+  return rh > 0 ? `${d}д ${rh}ч` : `${d}д`
+}
+
+function computeSlPnl(trade: any, slPrice: number) {
+  const remaining = 100 - trade.closedPct
+  return computePortionPnl(trade, slPrice, remaining)
+}
 
 // Time-stop disabled — trades close only via SL, TP, or manual action
 
@@ -57,6 +73,17 @@ export async function trackScannerTrades() {
             },
           })
           console.log(`[ScannerTracker] ${trade.coin} entry filled at $${price} (target $${trade.entryPrice})`)
+
+          const tps = trade.takeProfits as { price: number; percent: number }[]
+          sendNotification('ORDER_FILLED', {
+            symbol: trade.coin,
+            type: trade.type,
+            leverage: trade.leverage,
+            entryPrice: trade.entryPrice,
+            stopLoss: trade.stopLoss,
+            margin: trade.amount,
+            takeProfits: tps,
+          }).catch(() => {})
 
           if (trade.source === 'ENTRY_ANALYZER' && trade.notes) {
             await tryMergeEntryPair(trade.id, trade.notes)
@@ -127,6 +154,28 @@ export async function trackScannerTrades() {
         })
         const label = tpsHitCount > 0 ? `trailing SL (after TP${tpsHitCount})` : 'SL'
         console.log(`[ScannerTracker] ${trade.coin} ${label} hit at $${effectiveSL} (price: $${price})`)
+
+        const slExitReason = tpsHitCount > 0
+          ? (trade.trailingActivated ? 'TRAILING_STOP' : 'BE_STOP')
+          : 'INITIAL_STOP'
+        const slUpdated = await prisma.trade.findUnique({ where: { id: trade.id } })
+        if (slUpdated) {
+          const slPnl = computeSlPnl(trade, effectiveSL)
+          const timeMin = slUpdated.timeInTradeMin ?? 0
+          sendNotification('SL_TRIGGERED', {
+            symbol: trade.coin,
+            type: trade.type,
+            leverage: trade.leverage,
+            price: effectiveSL,
+            pnl: slUpdated.realizedPnl,
+            pnlPct: trade.amount > 0 ? (slUpdated.realizedPnl / trade.amount) * 100 : 0,
+            totalRealizedPnl: slUpdated.realizedPnl,
+            totalFees: slUpdated.fees,
+            exitReason: slExitReason,
+            timeInTrade: formatDuration(timeMin),
+          }).catch(() => {})
+        }
+
         lastPrices[trade.coin] = price
         continue
       }
@@ -159,6 +208,39 @@ export async function trackScannerTrades() {
           const updated = await prisma.trade.findUnique({ where: { id: trade.id } })
           if (updated) Object.assign(trade, updated)
           console.log(`[ScannerTracker] ${trade.coin} TP${tpNum} hit at $${tp.price} (${pctToClose}%) → SL=$${updated?.stopLoss}`)
+
+          if (updated) {
+            const isFull = updated.closedPct >= 100
+            const tpAction = `TP${tpNum}_HIT` as any
+            const lastClose = (updated.closes as any[])?.slice(-1)[0]
+            sendNotification(tpAction, {
+              symbol: trade.coin,
+              type: trade.type,
+              leverage: trade.leverage,
+              price: tp.price,
+              closedPct: pctToClose,
+              pnlPct: lastClose?.pnlPercent ?? 0,
+              pnl: lastClose?.pnl ?? 0,
+              fee: lastClose?.fee ?? 0,
+              totalRealizedPnl: updated.realizedPnl,
+              remainingPct: Math.round(100 - updated.closedPct),
+              newStopLoss: updated.stopLoss,
+            }).catch(() => {})
+
+            if (isFull) {
+              const timeMin = updated.timeInTradeMin ?? 0
+              const netPnl = updated.realizedPnl - updated.fees - (updated.fundingPaid || 0)
+              sendNotification('POSITION_CLOSED', {
+                symbol: trade.coin,
+                type: trade.type,
+                leverage: trade.leverage,
+                totalRealizedPnl: updated.realizedPnl,
+                totalFees: updated.fees,
+                netPnl,
+                timeInTrade: formatDuration(timeMin),
+              }).catch(() => {})
+            }
+          }
 
           break
         }
