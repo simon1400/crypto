@@ -124,7 +124,8 @@ export async function closeTradePortion(
 ): Promise<CloseResult> {
   const { price: closePrice, percent, isSL = false, forceFullClose = false } = opts
 
-  const actualPct = forceFullClose ? (100 - trade.closedPct) : percent
+  const remaining = 100 - trade.closedPct
+  const actualPct = forceFullClose ? remaining : Math.min(percent, remaining)
 
   const { pnlPercent, portionAmount, pnlUsdt } = computePortionPnl(trade, closePrice, actualPct)
   const exitFee = await calcExitFee(portionAmount, trade.leverage)
