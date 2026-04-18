@@ -422,6 +422,14 @@ export async function takeSignalAsTrade(id: number, amount: number, modelType?: 
   return res.json()
 }
 
+export interface RealPlacedTp {
+  price: string
+  qty: string
+  orderId: string | null
+  percent: number
+  error?: string
+}
+
 export interface RealOrderInfo {
   positionId: number
   symbol: string
@@ -429,7 +437,7 @@ export interface RealOrderInfo {
   orderType: 'Market' | 'Limit'
   entryPrice: string | null
   stopLoss: string
-  takeProfit: string
+  takeProfits: RealPlacedTp[]
 }
 
 export interface TakeRealResponse {

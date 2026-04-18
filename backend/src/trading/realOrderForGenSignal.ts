@@ -7,6 +7,11 @@ import { logOrderAction } from './orderLogger'
 import { resolveBybitSymbol } from './tickerMapper'
 import { alignToTickSize } from './positionSizer'
 
+interface TpLevel {
+  price: number
+  percent: number  // 0-100, qty share for this TP
+}
+
 interface ExecuteRealParams {
   generatedSignalId: number
   marginUsdt: number
@@ -14,7 +19,15 @@ interface ExecuteRealParams {
   orderType: 'market' | 'limit'
   entryPrice: number
   stopLoss: number
-  lastTakeProfit: number
+  takeProfits: TpLevel[]
+}
+
+export interface PlacedTp {
+  price: string       // aligned tick-size
+  qty: string         // filled qty for this level
+  orderId: string | null
+  percent: number
+  error?: string
 }
 
 export interface RealOrderResult {
@@ -25,27 +38,28 @@ export interface RealOrderResult {
   bybitOrderType: 'Market' | 'Limit'
   alignedEntryPrice?: string
   alignedStopLoss: string
-  alignedTakeProfit: string
+  takeProfits: PlacedTp[]
 }
 
 /**
  * Place a real Bybit order for a scanner-generated signal.
  *
- * Differs from executeSignalOrder() (which works on Telegram-sourced Signal):
- * - Uses GeneratedSignal as source
  * - User-provided margin/leverage (not config.positionSizePct)
- * - Only places the LAST (furthest) TP — user adds intermediate TPs manually
+ * - Places ALL TP levels as independent reduceOnly limits with qty-percent distribution
  * - Always uses the user-chosen orderType (market/limit), no auto-detection
- *
- * Creates a Position record so trailing/reconcile machinery still tracks it.
+ * - Creates a Position record so trailing/reconcile machinery still tracks it
  */
 export async function executeRealOrderForGenSignal(
   params: ExecuteRealParams
 ): Promise<RealOrderResult> {
   const {
     generatedSignalId, marginUsdt, leverage, orderType,
-    entryPrice, stopLoss, lastTakeProfit,
+    entryPrice, stopLoss, takeProfits: inputTps,
   } = params
+
+  if (!inputTps || inputTps.length === 0) {
+    throw new Error('Не передано ни одного take profit')
+  }
 
   const signal = await prisma.generatedSignal.findUnique({
     where: { id: generatedSignalId },
@@ -77,7 +91,20 @@ export async function executeRealOrderForGenSignal(
     // Apply price multiplier if needed
     const adjEntry = mult === 1 ? entryPrice : new Decimal(entryPrice).times(mult).toNumber()
     const adjStopLoss = mult === 1 ? stopLoss : new Decimal(stopLoss).times(mult).toNumber()
-    const adjLastTp = mult === 1 ? lastTakeProfit : new Decimal(lastTakeProfit).times(mult).toNumber()
+
+    // Default percent distribution by TP count
+    const defaultPercents: Record<number, number[]> = {
+      1: [100],
+      2: [50, 50],
+      3: [40, 30, 30],
+      4: [30, 25, 25, 20],
+    }
+    const tpCount = inputTps.length
+    const fallbackPcts = defaultPercents[tpCount] || Array(tpCount).fill(Math.floor(100 / tpCount))
+    const adjTps = inputTps.map((tp, i) => ({
+      price: mult === 1 ? tp.price : new Decimal(tp.price).times(mult).toNumber(),
+      percent: tp.percent > 0 ? tp.percent : fallbackPcts[i],
+    }))
 
     const instrument = await getInstrumentInfo(client, symbol)
 
@@ -148,37 +175,90 @@ export async function executeRealOrderForGenSignal(
     const entryOrderId = entryResp.result.orderId
     const entryOrderLinkId = entryResp.result.orderLinkId
 
-    // Place last TP as reduceOnly limit
+    // Place all TP levels as independent reduceOnly limits with qty distribution
     const closeSide: 'Buy' | 'Sell' = isLong ? 'Sell' : 'Buy'
     const tpDir: 'floor' | 'ceil' = closeSide === 'Sell' ? 'ceil' : 'floor'
-    const alignedTp = alignToTickSize(adjLastTp, instrument.tickSize, tpDir)
 
-    let tpOrderId: string | null = null
-    try {
-      const tpResp = await client.submitOrder({
-        category: 'linear',
-        symbol,
-        side: closeSide,
-        orderType: 'Limit',
-        qty,
-        price: alignedTp,
-        timeInForce: 'GTC',
-        positionIdx: 0,
-        reduceOnly: true,
-        orderLinkId: `${orderLinkPrefix}-tp-last`,
-      })
-      if (tpResp.retCode !== 0) {
-        console.warn(`[RealOrderGen] TP order failed: ${tpResp.retMsg}`)
-      } else {
-        tpOrderId = tpResp.result.orderId
+    const qtyStep = new Decimal(instrument.qtyStep)
+    const totalQty = qtyDecimal
+    const placedTps: PlacedTp[] = []
+
+    // Compute qty per TP, floor to qtyStep; remainder goes to the LAST TP so total matches
+    const tpQtys: Decimal[] = adjTps.map((tp, i) => {
+      if (i === adjTps.length - 1) return new Decimal(0) // placeholder — filled below
+      const share = totalQty.times(tp.percent).div(100)
+      return share.div(qtyStep).floor().times(qtyStep)
+    })
+    const sumBeforeLast = tpQtys.slice(0, -1).reduce((acc, v) => acc.plus(v), new Decimal(0))
+    tpQtys[tpQtys.length - 1] = totalQty.minus(sumBeforeLast)
+
+    const minQty = new Decimal(instrument.minOrderQty)
+
+    for (let i = 0; i < adjTps.length; i++) {
+      const tp = adjTps[i]
+      const levelQty = tpQtys[i]
+      const alignedTpPrice = alignToTickSize(tp.price, instrument.tickSize, tpDir)
+
+      if (levelQty.lt(minQty)) {
+        placedTps.push({
+          price: alignedTpPrice,
+          qty: levelQty.toString(),
+          orderId: null,
+          percent: tp.percent,
+          error: `qty ${levelQty.toString()} < min ${instrument.minOrderQty}`,
+        })
+        console.warn(`[RealOrderGen] TP${i + 1} skipped: qty below min`)
+        continue
       }
-    } catch (err: any) {
-      console.warn(`[RealOrderGen] TP order exception: ${err.message}`)
+
+      try {
+        const tpResp = await client.submitOrder({
+          category: 'linear',
+          symbol,
+          side: closeSide,
+          orderType: 'Limit',
+          qty: levelQty.toString(),
+          price: alignedTpPrice,
+          timeInForce: 'GTC',
+          positionIdx: 0,
+          reduceOnly: true,
+          orderLinkId: `${orderLinkPrefix}-tp${i + 1}`,
+        })
+        if (tpResp.retCode !== 0) {
+          placedTps.push({
+            price: alignedTpPrice,
+            qty: levelQty.toString(),
+            orderId: null,
+            percent: tp.percent,
+            error: tpResp.retMsg,
+          })
+          console.warn(`[RealOrderGen] TP${i + 1} failed: ${tpResp.retMsg}`)
+        } else {
+          placedTps.push({
+            price: alignedTpPrice,
+            qty: levelQty.toString(),
+            orderId: tpResp.result.orderId,
+            percent: tp.percent,
+          })
+        }
+      } catch (err: any) {
+        placedTps.push({
+          price: alignedTpPrice,
+          qty: levelQty.toString(),
+          orderId: null,
+          percent: tp.percent,
+          error: err?.message || 'exception',
+        })
+        console.warn(`[RealOrderGen] TP${i + 1} exception: ${err.message}`)
+      }
     }
 
     // Calculate margin actually used
     const fillPrice = bybitOrderType === 'Market' ? currentPrice : adjEntry
     const actualMargin = (parseFloat(qty) * fillPrice) / leverage
+
+    const tpOrderIds = placedTps.map(t => t.orderId).filter((x): x is string => !!x)
+    const tpPricesForDb = placedTps.map(t => parseFloat(t.price))
 
     const position = await prisma.position.create({
       data: {
@@ -190,12 +270,11 @@ export async function executeRealOrderForGenSignal(
         entryOrderId,
         entryOrderLinkId,
         stopLoss: parseFloat(alignedSl),
-        takeProfits: [parseFloat(alignedTp)],
-        tpOrderIds: tpOrderId ? [tpOrderId] : [],
+        takeProfits: tpPricesForDb,
+        tpOrderIds,
         status: bybitOrderType === 'Market' ? 'OPEN' : 'PENDING_ENTRY',
         entryPrice: bybitOrderType === 'Market' ? fillPrice : null,
         filledAt: bybitOrderType === 'Market' ? new Date() : null,
-        // signalId stays null — this Position is linked to GeneratedSignal, not Signal
       },
     })
 
@@ -210,11 +289,10 @@ export async function executeRealOrderForGenSignal(
         qty,
         price: alignedEntry || 'market',
         stopLoss: alignedSl,
-        takeProfit: alignedTp,
+        takeProfits: placedTps.map(t => ({ price: t.price, qty: t.qty, percent: t.percent, ok: !!t.orderId })),
         leverage,
         margin: actualMargin,
         entryOrderId,
-        tpOrderId,
       },
     })
 
@@ -226,7 +304,7 @@ export async function executeRealOrderForGenSignal(
       bybitOrderType,
       alignedEntryPrice: alignedEntry,
       alignedStopLoss: alignedSl,
-      alignedTakeProfit: alignedTp,
+      takeProfits: placedTps,
     }
   })
 }

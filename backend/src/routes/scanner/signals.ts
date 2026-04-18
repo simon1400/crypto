@@ -305,8 +305,7 @@ router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
   let realResult: Awaited<ReturnType<typeof executeRealOrderForGenSignal>> | null = null
   let realError: string | null = null
 
-  const lastTp = tps[tps.length - 1]?.price
-  if (!lastTp) {
+  if (!takeProfits.length) {
     realError = 'У сигнала нет take profit уровней'
   } else {
     try {
@@ -317,7 +316,7 @@ router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
         orderType: orderTypeNorm,
         entryPrice: entry,
         stopLoss,
-        lastTakeProfit: lastTp,
+        takeProfits,  // same array as demo: [{ price, percent }] with 40/30/30 etc.
       })
     } catch (err: any) {
       realError = err?.message || 'Не удалось разместить ордер на Bybit'
@@ -376,7 +375,7 @@ router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
       orderType: realResult.bybitOrderType,
       entryPrice: realResult.alignedEntryPrice || null,
       stopLoss: realResult.alignedStopLoss,
-      takeProfit: realResult.alignedTakeProfit,
+      takeProfits: realResult.takeProfits,
     } : null,
     realError,
   })

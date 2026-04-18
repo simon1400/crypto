@@ -255,10 +255,21 @@ function RealOrderModal({
                 <div><span className="text-text-secondary">Лимит-цена: </span><span className="text-text-primary">${modal.info.entryPrice}</span></div>
               )}
               <div><span className="text-text-secondary">Stop Loss: </span><span className="text-short">${modal.info.stopLoss}</span></div>
-              <div><span className="text-text-secondary">Take Profit (последний): </span><span className="text-long">${modal.info.takeProfit}</span></div>
-            </div>
-            <div className="text-xs text-text-secondary mt-3">
-              Промежуточные TP не выставлены — добавьте их вручную на бирже.
+              <div className="pt-1">
+                <span className="text-text-secondary">Take Profits:</span>
+                <div className="mt-1 space-y-0.5 pl-2">
+                  {modal.info.takeProfits.map((tp, i) => (
+                    <div key={i} className="text-xs">
+                      <span className="text-text-secondary">TP{i + 1} ({tp.percent}%): </span>
+                      <span className={tp.orderId ? 'text-long' : 'text-short'}>${tp.price}</span>
+                      <span className="text-text-secondary"> · {tp.qty}</span>
+                      {!tp.orderId && tp.error && (
+                        <span className="text-short ml-1">✕ {tp.error}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </>
         )}
