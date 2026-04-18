@@ -23,6 +23,8 @@ export function selectExecutionType(
   category: SetupCategory,
   entryTrigger: EntryTriggerResult,
   indicators: MultiTFIndicators,
+  strategy?: string,
+  setupScore?: number,
 ): ExecutionType {
   const isLong = type === 'LONG'
   const { tf15m, tf1h } = indicators
@@ -33,6 +35,17 @@ export function selectExecutionType(
   // Step 1 — IGNORE / WAIT_CONFIRMATION for weak setups
   if (category === 'IGNORE') return 'IGNORE'
   if (category === 'WATCHLIST' && !entryTrigger.passed) return 'WAIT_CONFIRMATION'
+
+  // Strategy-aware LIMIT veto (Week 1 audit, 2026-04-18):
+  //   limit-entry net -33 USDT across 16 trades, all losses concentrated in
+  //   mean_revert (-78) and breakout with low Score. Veto these combinations
+  //   and force the user to take them at market or skip.
+  //   Reason: limit on mean_revert lets price reach extreme then continues
+  //   the trend (setup invalidation on fill). Breakout retest below Score 72
+  //   catches false breakouts that don't bounce back.
+  const limitVetoed =
+    (strategy === 'mean_revert') ||
+    (strategy === 'breakout' && (setupScore ?? 0) < 72)
 
   // Step 2 — Compute helpers
   const impulseExt = calculateImpulseExtension(price, tf1h.ema20, atr1h)
@@ -83,15 +96,22 @@ export function selectExecutionType(
 
   const setupValid = category === 'READY' || category === 'A_PLUS_READY'
 
+  // Helper: route would-be LIMIT to WAIT_CONFIRMATION when strategy/Score makes
+  // limit entry historically lossy (mean_revert, low-Score breakout).
+  const limit = (): ExecutionType => {
+    if (limitVetoed) return 'WAIT_CONFIRMATION'
+    return isLong ? 'LIMIT_LONG' : 'LIMIT_SHORT'
+  }
+
   // Extended price / impulse → LIMIT (was ENTER_NOW candidate, just too extended)
   if (setupValid && entryTrigger.passed && (distFromTrigger > 0.35 || impulseExt > 0.6)) {
-    return isLong ? 'LIMIT_LONG' : 'LIMIT_SHORT'
+    return limit()
   }
 
   // D-02: READY + trigger < 4/4 → no longer ENTER_NOW
   if (setupValid && entryTrigger.passed && entryTrigger.score < 4) {
     if (distFromTrigger <= 1.0 && impulseExt <= 1.0) {
-      return isLong ? 'LIMIT_LONG' : 'LIMIT_SHORT'
+      return limit()
     }
     return isLong ? 'WAIT_FOR_PULLBACK_LONG' : 'WAIT_FOR_PULLBACK_SHORT'
   }
@@ -103,7 +123,7 @@ export function selectExecutionType(
 
   // WATCHLIST with trigger → limit
   if (category === 'WATCHLIST' && entryTrigger.passed) {
-    return isLong ? 'LIMIT_LONG' : 'LIMIT_SHORT'
+    return limit()
   }
 
   return 'WAIT_CONFIRMATION'

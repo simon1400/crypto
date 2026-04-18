@@ -120,7 +120,7 @@ export function runScoringPipeline(
   const leverage = calculateLeverage(atrPct, setupScore, entryModel)
 
   // === Execution Type ===
-  const executionType = selectExecutionType(raw.type, finalCategory, entryTrigger, raw.indicators)
+  const executionType = selectExecutionType(raw.type, finalCategory, entryTrigger, raw.indicators, raw.strategy, setupScore)
 
   // === Entry Plans ===
   const isLimit = executionType === 'LIMIT_LONG' || executionType === 'LIMIT_SHORT'

@@ -706,3 +706,39 @@ describe('ENTER_NOW downgrade to LIMIT', () => {
     expect(execType).toBe('ENTER_NOW_LONG')
   })
 })
+
+describe('LIMIT veto for lossy strategy/Score combinations (Week 1 audit)', () => {
+  // Setup: extended price → would normally route to LIMIT_*
+  const extendedIndicators = makeIndicators(
+    { price: 108, ema20: 99, vwap: 99, support: 95, atr: 2 },
+    { price: 108, ema200: 90, ema50: 97 },
+    { price: 108, ema9: 107, atr: 0.5 },
+  )
+  const trigger = { passed: true, score: 4, conditions: { pullback_zone: true, candle_reclaim: true, reversal_volume: true, distance_from_trigger: true }, details: [] }
+
+  it('should veto LIMIT for mean_revert and route to WAIT_CONFIRMATION', () => {
+    const execType = selectExecutionType('LONG', 'READY', trigger, extendedIndicators, 'mean_revert', 65)
+    expect(execType).toBe('WAIT_CONFIRMATION')
+  })
+
+  it('should veto LIMIT for breakout with Score < 72', () => {
+    const execType = selectExecutionType('LONG', 'READY', trigger, extendedIndicators, 'breakout', 65)
+    expect(execType).toBe('WAIT_CONFIRMATION')
+  })
+
+  it('should allow LIMIT for breakout with Score >= 72', () => {
+    const execType = selectExecutionType('LONG', 'READY', trigger, extendedIndicators, 'breakout', 75)
+    expect(execType).toBe('LIMIT_LONG')
+  })
+
+  it('should allow LIMIT for trend_follow regardless of Score', () => {
+    const execType = selectExecutionType('LONG', 'READY', trigger, extendedIndicators, 'trend_follow', 60)
+    expect(execType).toBe('LIMIT_LONG')
+  })
+
+  it('should fall back to LIMIT (no veto) when strategy is not provided', () => {
+    // Backward compat: old callers don't pass strategy → no veto
+    const execType = selectExecutionType('LONG', 'READY', trigger, extendedIndicators)
+    expect(execType).toBe('LIMIT_LONG')
+  })
+})
