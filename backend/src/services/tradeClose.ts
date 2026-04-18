@@ -58,7 +58,7 @@ export function computePortionPnlFromEntry(
  * Trailing SL: после TP1 → SL = entry, после TPn → SL = TP(n-1).
  * Returns: { newStopLoss, stopMovedToBe, trailingActivated, stopMoveReason }
  */
-function computeTrailingSl(trade: Trade, closePrice: number, newClosedPct: number): {
+function computeTrailingSl(trade: Trade, tpNumber: number | undefined, newClosedPct: number): {
   newStopLoss: number
   stopMovedToBe: boolean
   trailingActivated: boolean
@@ -67,8 +67,10 @@ function computeTrailingSl(trade: Trade, closePrice: number, newClosedPct: numbe
   const tps = (trade.takeProfits as any[]).map((tp: any) => tp.price).sort(
     (a: number, b: number) => (trade.type === 'LONG' ? a - b : b - a),
   )
-  let tpHitIndex = tps.findIndex((tp: number) => Math.abs(closePrice - tp) / tp < 0.005)
-  if (tpHitIndex === -1) {
+  // Prefer explicit tpNumber from caller; fall back to inferring from closedPct
+  // (avoids price-proximity matching that breaks on low-price coins with tight TP spacing).
+  let tpHitIndex = tpNumber != null ? tpNumber - 1 : -1
+  if (tpHitIndex < 0 || tpHitIndex >= tps.length) {
     tpHitIndex = Math.round(newClosedPct / (100 / tps.length)) - 1
   }
 
@@ -165,7 +167,7 @@ export async function closeTradePortion(
   // Only compute trailing SL for actual TP closes, not time-stop or manual exits
   const isTPClose = !isFull && !isSL && opts.tpNumber != null
   if (isTPClose) {
-    const trailing = computeTrailingSl(trade, closePrice, newClosedPct)
+    const trailing = computeTrailingSl(trade, opts.tpNumber, newClosedPct)
     trailingData = {
       stopLoss: trailing.newStopLoss,
       currentStop: trailing.newStopLoss,

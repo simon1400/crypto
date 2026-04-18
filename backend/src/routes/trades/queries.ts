@@ -50,6 +50,7 @@ router.get('/', asyncHandler(async (req, res) => {
   const where: any = {}
   if (status === 'ACTIVE') where.status = { in: ['OPEN', 'PARTIALLY_CLOSED'] }
   else if (status === 'FINISHED') where.status = { in: ['CLOSED', 'SL_HIT'] }
+  else if (status === 'FINAL') where.status = { in: ['CLOSED', 'SL_HIT', 'CANCELLED'] }
   else if (status && status !== 'ALL') where.status = status
   if (coin) where.coin = { contains: String(coin).toUpperCase() }
   if (source) where.source = String(source)

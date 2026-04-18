@@ -114,13 +114,15 @@ export async function trackScannerTrades() {
       }
 
       // --- Determine trailing SL ---
+      // Count hit TPs by cumulative percent, not price proximity — otherwise closely-spaced
+      // TPs on low-price coins can be double-counted (TP1 close falsely matches TP2's threshold).
       const tpsSortedByPrice = [...tps].sort((a, b) => isLong ? a.price - b.price : b.price - a.price)
+      const realizedPct = closes.filter(c => !c.isSL).reduce((s, c) => s + (c.percent || 0), 0)
       let tpsHitCount = 0
+      let cumPct = 0
       for (const tp of tpsSortedByPrice) {
-        // Use relative threshold (0.5% of price) instead of absolute — safe for low-price coins
-        const threshold = tp.price * 0.005
-        const alreadyClosed = closes.some(c => Math.abs(c.price - tp.price) < threshold && !c.isSL)
-        if (alreadyClosed) tpsHitCount++
+        cumPct += tp.percent
+        if (realizedPct + 0.01 >= cumPct) tpsHitCount++
         else break
       }
 
