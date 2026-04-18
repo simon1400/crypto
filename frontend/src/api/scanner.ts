@@ -478,20 +478,25 @@ export async function deleteUnusedSignals(): Promise<{ deleted: number }> {
 }
 
 // === Scanner Analytics ===
-export async function getPostTp1Analytics(days = 30): Promise<any> {
-  const res = await fetch(`${BASE}/api/scanner/analytics/post-tp1?days=${days}`, { headers: getHeaders() })
+function analyticsQuery(days: number, minScore: number): string {
+  const q = new URLSearchParams({ days: String(days), minScore: String(minScore) })
+  return q.toString()
+}
+
+export async function getPostTp1Analytics(days = 30, minScore = 70): Promise<any> {
+  const res = await fetch(`${BASE}/api/scanner/analytics/post-tp1?${analyticsQuery(days, minScore)}`, { headers: getHeaders() })
   if (!res.ok) return null
   return res.json()
 }
 
-export async function getSetupPerformance(days = 30): Promise<any[]> {
-  const res = await fetch(`${BASE}/api/scanner/analytics/setup-performance?days=${days}`, { headers: getHeaders() })
+export async function getSetupPerformance(days = 30, minScore = 70): Promise<any[]> {
+  const res = await fetch(`${BASE}/api/scanner/analytics/setup-performance?${analyticsQuery(days, minScore)}`, { headers: getHeaders() })
   if (!res.ok) return []
   return res.json()
 }
 
-export async function getEntryModelComparison(days = 30): Promise<any[]> {
-  const res = await fetch(`${BASE}/api/scanner/analytics/entry-models?days=${days}`, { headers: getHeaders() })
+export async function getEntryModelComparison(days = 30, minScore = 70): Promise<any[]> {
+  const res = await fetch(`${BASE}/api/scanner/analytics/entry-models?${analyticsQuery(days, minScore)}`, { headers: getHeaders() })
   if (!res.ok) return []
   return res.json()
 }

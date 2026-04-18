@@ -51,10 +51,21 @@ export interface EntryModelComparison {
   avgMae: number
 }
 
-// Fetch post-TP1 analytics for closed trades
+// Extract Score from "Scanner signal #N | strategy | Score: NN" notes
+function extractScore(notes: string | null | undefined): number | null {
+  if (!notes) return null
+  const m = notes.match(/Score:\s*(\d+)/)
+  return m ? Number(m[1]) : null
+}
+
+// Fetch post-TP1 analytics for closed trades.
+// minScore filters scanner trades by the Score embedded in notes.
+// Manual trades (no Score) are EXCLUDED when minScore > 0 — analytics is about
+// scanner setup quality, not user discretion.
 export async function getPostTp1Analytics(
   daysBack = 30,
   source?: string,
+  minScore = 0,
 ): Promise<PostTp1Stats> {
   const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000)
   const where: any = {
@@ -63,7 +74,14 @@ export async function getPostTp1Analytics(
   }
   if (source) where.source = source
 
-  const trades = await prisma.trade.findMany({ where })
+  let trades = await prisma.trade.findMany({ where })
+
+  if (minScore > 0) {
+    trades = trades.filter(t => {
+      const s = extractScore(t.notes)
+      return s != null && s >= minScore
+    })
+  }
 
   const totalTrades = trades.length
   if (totalTrades === 0) return emptyStats()
@@ -126,17 +144,19 @@ export async function getPostTp1Analytics(
   }
 }
 
-// Performance breakdown by setup category
-export async function getSetupPerformance(daysBack = 30): Promise<SetupPerformance[]> {
+// Performance breakdown by setup category.
+// minScore filters by GeneratedSignal.setupScore.
+export async function getSetupPerformance(daysBack = 30, minScore = 0): Promise<SetupPerformance[]> {
   const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000)
 
-  const signals = await prisma.generatedSignal.findMany({
-    where: {
-      status: { in: ['CLOSED', 'SL_HIT'] },
-      closedAt: { gte: since },
-      setupCategory: { not: null },
-    },
-  })
+  const where: any = {
+    status: { in: ['CLOSED', 'SL_HIT'] },
+    closedAt: { gte: since },
+    setupCategory: { not: null },
+  }
+  if (minScore > 0) where.setupScore = { gte: minScore }
+
+  const signals = await prisma.generatedSignal.findMany({ where })
 
   const byCategory = groupBy(signals, s => s.setupCategory || 'UNKNOWN')
   const results: SetupPerformance[] = []
@@ -163,17 +183,19 @@ export async function getSetupPerformance(daysBack = 30): Promise<SetupPerforman
   return results.sort((a, b) => b.count - a.count)
 }
 
-// Compare entry model performance
-export async function getEntryModelComparison(daysBack = 30): Promise<EntryModelComparison[]> {
+// Compare entry model performance.
+// minScore filters by GeneratedSignal.setupScore.
+export async function getEntryModelComparison(daysBack = 30, minScore = 0): Promise<EntryModelComparison[]> {
   const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000)
 
-  const signals = await prisma.generatedSignal.findMany({
-    where: {
-      status: { in: ['CLOSED', 'SL_HIT'] },
-      closedAt: { gte: since },
-      entryModel: { not: null },
-    },
-  })
+  const where: any = {
+    status: { in: ['CLOSED', 'SL_HIT'] },
+    closedAt: { gte: since },
+    entryModel: { not: null },
+  }
+  if (minScore > 0) where.setupScore = { gte: minScore }
+
+  const signals = await prisma.generatedSignal.findMany({ where })
 
   const byModel = groupBy(signals, s => s.entryModel || 'unknown')
   const results: EntryModelComparison[] = []

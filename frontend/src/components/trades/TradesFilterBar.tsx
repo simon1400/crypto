@@ -6,14 +6,22 @@ const statusLabels: Record<string, string> = {
 interface TradesFilterBarProps {
   statusFilter: string
   onStatusChange: (s: string) => void
+  minScore: number
+  onMinScoreChange: (n: number) => void
   isFinished: boolean
   exporting: boolean
   onExport: () => void
 }
 
-export default function TradesFilterBar({ statusFilter, onStatusChange, isFinished, exporting, onExport }: TradesFilterBarProps) {
+const SCORE_OPTIONS = [0, 60, 70, 80]
+
+export default function TradesFilterBar({
+  statusFilter, onStatusChange,
+  minScore, onMinScoreChange,
+  isFinished, exporting, onExport,
+}: TradesFilterBarProps) {
   return (
-    <div className="flex gap-2 items-center">
+    <div className="flex gap-2 items-center flex-wrap">
       {statuses.map(s => (
         <button key={s} onClick={() => onStatusChange(s)}
           className={`px-3 py-1.5 rounded-lg text-sm transition ${
@@ -22,6 +30,19 @@ export default function TradesFilterBar({ statusFilter, onStatusChange, isFinish
           {statusLabels[s]}
         </button>
       ))}
+      <div className="flex items-center gap-1 ml-2 pl-2 border-l border-input">
+        <span className="text-xs text-text-secondary mr-1">Score≥</span>
+        {SCORE_OPTIONS.map(n => (
+          <button key={n} onClick={() => onMinScoreChange(n)}
+            className={`px-2 py-1 rounded text-xs transition ${
+              minScore === n ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text-primary'
+            }`}
+            title={n === 0 ? 'Без фильтра по Score' : `Только Score ≥ ${n} (ручные сделки без Score показываются всегда)`}
+          >
+            {n === 0 ? 'все' : n}
+          </button>
+        ))}
+      </div>
       {isFinished && (
         <button onClick={onExport} disabled={exporting}
           className="ml-auto px-3 py-1.5 bg-card text-text-secondary rounded-lg text-xs font-medium hover:text-text-primary hover:bg-input transition disabled:opacity-50 flex items-center gap-1.5">

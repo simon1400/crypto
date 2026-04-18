@@ -1,19 +1,23 @@
 import { useState, useEffect } from 'react'
 import { getPostTp1Analytics, getSetupPerformance, getEntryModelComparison } from '../../api/scanner'
 
+const SCORE_OPTIONS = [0, 60, 70, 80]
+
 export default function ScannerAnalyticsTab() {
   const [analyticsData, setAnalyticsData] = useState<any>(null)
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
   const [analyticsDays, setAnalyticsDays] = useState(30)
+  const [minScore, setMinScore] = useState(70)
 
-  async function loadAnalytics(days?: number) {
+  async function loadAnalytics(days?: number, score?: number) {
     setAnalyticsLoading(true)
     try {
       const d = days ?? analyticsDays
+      const s = score ?? minScore
       const [postTp1, setupPerf, entryModels] = await Promise.all([
-        getPostTp1Analytics(d),
-        getSetupPerformance(d),
-        getEntryModelComparison(d),
+        getPostTp1Analytics(d, s),
+        getSetupPerformance(d, s),
+        getEntryModelComparison(d, s),
       ])
       setAnalyticsData({ postTp1, setupPerf, entryModels })
     } catch (err) { console.error('[Scanner] Failed to load analytics:', err) } finally {
@@ -23,16 +27,26 @@ export default function ScannerAnalyticsTab() {
 
   useEffect(() => {
     loadAnalytics()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
         <span className="text-sm text-text-secondary">Период:</span>
         {[7, 14, 30, 90].map(d => (
-          <button key={d} onClick={() => { setAnalyticsDays(d); loadAnalytics(d) }}
+          <button key={d} onClick={() => { setAnalyticsDays(d); loadAnalytics(d, minScore) }}
             className={`px-3 py-1 text-xs rounded ${analyticsDays === d ? 'bg-accent/15 text-accent' : 'bg-card text-text-secondary hover:text-text-primary'}`}>
             {d}д
+          </button>
+        ))}
+        <span className="text-sm text-text-secondary ml-2 pl-2 border-l border-input">Score≥</span>
+        {SCORE_OPTIONS.map(s => (
+          <button key={s} onClick={() => { setMinScore(s); loadAnalytics(analyticsDays, s) }}
+            className={`px-3 py-1 text-xs rounded ${minScore === s ? 'bg-accent/15 text-accent' : 'bg-card text-text-secondary hover:text-text-primary'}`}
+            title={s === 0 ? 'Без фильтра по Score' : `Только сделки с Setup Score ≥ ${s}`}
+          >
+            {s === 0 ? 'все' : s}
           </button>
         ))}
       </div>
