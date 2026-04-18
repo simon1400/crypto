@@ -168,6 +168,107 @@ describe('Hard Filters', () => {
     const result = calculateHardFilters(input)
     expect(result.market_regime_ok).toBe(false)
   })
+
+  // === Directional regime gate (Week 1 audit) ===
+  // Block SHORT in bullish regimes (RISK_ON_UP_ONLY / STRONG_TRENDING_UP)
+  // Block LONG in bearish regimes (RISK_OFF / STRONG_TRENDING_DOWN)
+  // Applies across ALL strategies (trend_follow, mean_revert, breakout)
+
+  it('should block SHORT trend_follow when BTC is RISK_ON_UP_ONLY', () => {
+    const regime = makeRegime({ regime: 'TRENDING_UP', btcTrend: 'BULLISH', confidence: 75 })
+    const input = makeScoringInput({
+      raw: makeRawSignal({ type: 'SHORT', strategy: 'trend_follow' }),
+      regime,
+      extendedRegime: detectExtendedRegime(regime),
+      btcRegime: detectBtcRegime(regime),
+    })
+    const result = calculateHardFilters(input)
+    expect(result.market_regime_ok).toBe(false)
+    expect(result.btc_regime_ok).toBe(false)
+    expect(result.failures.some(f => f.includes('Bullish regime'))).toBe(true)
+  })
+
+  it('should block SHORT mean_revert when STRONG_TRENDING_UP', () => {
+    const regime = makeRegime({ regime: 'TRENDING_UP', btcTrend: 'BULLISH', confidence: 90 })
+    const input = makeScoringInput({
+      raw: makeRawSignal({ type: 'SHORT', strategy: 'mean_revert' }),
+      regime,
+      extendedRegime: detectExtendedRegime(regime),
+      btcRegime: detectBtcRegime(regime),
+    })
+    const result = calculateHardFilters(input)
+    expect(result.market_regime_ok).toBe(false)
+    expect(result.failures.some(f => f.includes('Bullish regime'))).toBe(true)
+  })
+
+  it('should block SHORT breakout when STRONG_TRENDING_UP', () => {
+    const regime = makeRegime({ regime: 'TRENDING_UP', btcTrend: 'BULLISH', confidence: 90 })
+    const input = makeScoringInput({
+      raw: makeRawSignal({ type: 'SHORT', strategy: 'breakout' }),
+      regime,
+      extendedRegime: detectExtendedRegime(regime),
+      btcRegime: detectBtcRegime(regime),
+    })
+    const result = calculateHardFilters(input)
+    expect(result.market_regime_ok).toBe(false)
+  })
+
+  it('should block LONG when BTC is RISK_OFF', () => {
+    const regime = makeRegime({ regime: 'TRENDING_DOWN', btcTrend: 'BEARISH', confidence: 75 })
+    const input = makeScoringInput({
+      raw: makeRawSignal({ type: 'LONG', strategy: 'trend_follow' }),
+      regime,
+      extendedRegime: detectExtendedRegime(regime),
+      btcRegime: detectBtcRegime(regime),
+    })
+    const result = calculateHardFilters(input)
+    expect(result.market_regime_ok).toBe(false)
+    expect(result.btc_regime_ok).toBe(false)
+    expect(result.failures.some(f => f.includes('Bearish regime'))).toBe(true)
+  })
+
+  it('should block LONG mean_revert in STRONG_TRENDING_DOWN', () => {
+    const regime = makeRegime({ regime: 'TRENDING_DOWN', btcTrend: 'BEARISH', confidence: 90 })
+    const input = makeScoringInput({
+      raw: makeRawSignal({ type: 'LONG', strategy: 'mean_revert' }),
+      regime,
+      extendedRegime: detectExtendedRegime(regime),
+      btcRegime: detectBtcRegime(regime),
+    })
+    const result = calculateHardFilters(input)
+    expect(result.market_regime_ok).toBe(false)
+    expect(result.failures.some(f => f.includes('Bearish regime'))).toBe(true)
+  })
+
+  it('should NOT block SHORT in NEUTRAL regime (TRENDING_DOWN, not strong)', () => {
+    // SHORT trend_follow in TRENDING_DOWN with confidence < 80 → universal gate passes,
+    // strategy-specific filter passes (TRENDING_DOWN allowed for SHORT trend_follow)
+    const regime = makeRegime({ regime: 'TRENDING_DOWN', btcTrend: 'BEARISH', confidence: 70 })
+    const input = makeScoringInput({
+      raw: makeRawSignal({
+        type: 'SHORT',
+        strategy: 'trend_follow',
+        indicators: makeIndicators(
+          { price: 88, ema20: 90, ema50: 95, ema200: 100, trend: 'BEARISH', trendDetail: 'BEARISH', marketStructure: 'LH_LL' },
+          { price: 88, ema20: 90, ema50: 95, ema200: 100, trendDetail: 'BEARISH' },
+        ),
+      }),
+      regime,
+      extendedRegime: detectExtendedRegime(regime),
+      btcRegime: detectBtcRegime(regime),
+    })
+    const result = calculateHardFilters(input)
+    // Universal gate doesn't block (not RISK_OFF, not STRONG_TRENDING_DOWN)
+    // Strategy filter passes (regime is TRENDING_DOWN which is allowed for SHORT trend_follow)
+    expect(result.market_regime_ok).toBe(true)
+  })
+
+  it('should NOT block LONG in NEUTRAL TRENDING_UP (non-strong)', () => {
+    // Default makeRegime is TRENDING_UP confidence 75 (not strong) — LONG should pass
+    const input = makeScoringInput()
+    const result = calculateHardFilters(input)
+    expect(result.market_regime_ok).toBe(true)
+  })
 })
 
 describe('Setup Score', () => {
