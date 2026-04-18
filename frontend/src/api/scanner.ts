@@ -422,6 +422,42 @@ export async function takeSignalAsTrade(id: number, amount: number, modelType?: 
   return res.json()
 }
 
+export interface RealOrderInfo {
+  positionId: number
+  symbol: string
+  qty: string
+  orderType: 'Market' | 'Limit'
+  entryPrice: string | null
+  stopLoss: string
+  takeProfit: string
+}
+
+export interface TakeRealResponse {
+  trade: Trade
+  signal: { id: number; status: string }
+  real: RealOrderInfo | null
+  realError: string | null
+}
+
+export async function takeSignalAsRealTrade(
+  id: number,
+  amount: number,
+  modelType?: string,
+  leverage?: number,
+  orderType: 'market' | 'limit' = 'market',
+): Promise<TakeRealResponse> {
+  const res = await fetch(`${BASE}/api/scanner/signals/${id}/take-trade-real`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ amount, modelType, leverage, orderType }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function closeSignal(id: number, price: number, percent: number): Promise<ScannerSignal> {
   const res = await fetch(`${BASE}/api/scanner/signals/${id}/close`, {
     method: 'POST',

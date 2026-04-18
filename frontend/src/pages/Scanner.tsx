@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   triggerScan, cancelScan, takeSignalAsTrade, skipSignal, deleteSignal,
-  getScannerCoins, getBudget,
+  getScannerCoins, getBudget, getBalance,
   subscribeScanProgress, ScanProgress,
   ScannerSignal, ScanResponse,
 } from '../api/client'
@@ -47,6 +47,8 @@ export default function Scanner() {
   const [balance, setBalance] = useState(0)
   const [manualBalance, setManualBalance] = useState('')
   const [riskPct, setRiskPct] = useState(2)
+  const [realBalance, setRealBalance] = useState<number | null>(null)
+  const [realBalanceError, setRealBalanceError] = useState<string | null>(null)
   const [signalsRefreshKey, setSignalsRefreshKey] = useState(0)
   const refreshSignals = () => setSignalsRefreshKey(k => k + 1)
 
@@ -57,7 +59,24 @@ export default function Scanner() {
   useEffect(() => {
     getScannerCoins().then(c => setCoinCount(c.length)).catch(() => {})
     getBudget().then(r => { if (r.balance) setBalance(r.balance) }).catch(() => {})
+    loadRealBalance()
   }, [])
+
+  async function loadRealBalance() {
+    try {
+      const r = await getBalance()
+      if (r.balance != null) {
+        setRealBalance(Number(r.balance))
+        setRealBalanceError(null)
+      } else {
+        setRealBalance(null)
+        setRealBalanceError(r.error || 'нет данных')
+      }
+    } catch (err: any) {
+      setRealBalance(null)
+      setRealBalanceError(err?.message || 'ошибка')
+    }
+  }
 
   async function handleScanTake(id: number, amount: number, modelType?: string, leverage?: number, orderType?: 'market' | 'limit') {
     try {
@@ -152,6 +171,21 @@ export default function Scanner() {
               className="w-14 bg-card text-text-primary rounded px-2 py-0.5 text-sm font-mono border border-card focus:border-accent/40 focus:outline-none"
             />
             <span className="text-xs text-text-secondary">%</span>
+          </div>
+
+          {/* Real Bybit balance */}
+          <div className="flex items-center gap-2 bg-input rounded-lg px-3 py-1.5" title={realBalanceError || 'Реальный баланс Bybit (UNIFIED USDT)'}>
+            <span className="text-xs text-text-secondary">Bybit:</span>
+            {realBalance != null ? (
+              <span className="text-sm font-mono text-accent">${realBalance.toFixed(2)}</span>
+            ) : (
+              <span className="text-xs text-short">{realBalanceError || '—'}</span>
+            )}
+            <button
+              onClick={loadRealBalance}
+              className="text-xs text-text-secondary hover:text-accent"
+              title="Обновить"
+            >↻</button>
           </div>
 
           {/* Settings */}
@@ -328,6 +362,7 @@ export default function Scanner() {
         <ScannerSignalsTab
           balance={balance}
           riskPct={riskPct}
+          realBalance={realBalance}
           refreshKey={signalsRefreshKey}
           onShowChart={setChartSignal}
         />
@@ -339,6 +374,7 @@ export default function Scanner() {
           scanResults={scanResults}
           balance={balance}
           riskPct={riskPct}
+          realBalance={realBalance}
           onTake={handleScanTake}
           onSkip={handleScanSkip}
           onDelete={handleScanDelete}

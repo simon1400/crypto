@@ -5,6 +5,7 @@ import { adjustVirtualBalance } from '../../services/virtualBalance'
 import { OrderType } from '../../services/fees'
 import { computePortionPnlFromEntry } from '../../services/tradeClose'
 import { fetchCurrentPrice } from '../../services/market'
+import { executeRealOrderForGenSignal } from '../../trading/realOrderForGenSignal'
 import { asyncHandler, handleBudgetError, parseIdParam, parsePagination } from '../_helpers'
 
 const router = Router()
@@ -236,6 +237,149 @@ router.post('/signals/:id/take-trade', asyncHandler(async (req, res) => {
 
   console.log(`[Scanner] Signal #${id} taken as Trade #${trade.id} (${trade.coin} ${trade.type} $${actualEntry}${isMarket && actualEntry !== entry ? ` market, limit was $${entry}` : ''}, ${leverage}x, $${amount})`)
   res.json({ trade, signal: { id, status: 'TAKEN' } })
+}, 'Scanner'))
+
+// POST /api/scanner/signals/:id/take-trade-real — take signal as both demo Trade AND real Bybit order
+router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
+  const id = parseIdParam(req, res)
+  if (id == null) return
+
+  const { amount, modelType, leverage: customLeverage, orderType } = req.body as {
+    amount: number
+    modelType?: string
+    leverage?: number
+    orderType?: OrderType
+  }
+
+  if (!amount || amount <= 0) {
+    res.status(400).json({ error: 'amount required (USDT)' })
+    return
+  }
+
+  const signal = await prisma.generatedSignal.findUnique({ where: { id } })
+  if (!signal) {
+    res.status(404).json({ error: 'Signal not found' })
+    return
+  }
+  if (signal.status !== 'NEW') {
+    res.status(400).json({ error: 'Signal already taken or closed' })
+    return
+  }
+
+  const orderTypeNorm: OrderType = orderType === 'limit' ? 'limit' : 'market'
+
+  let entryFee = 0
+  try {
+    const lev = Number(customLeverage) || signal.leverage
+    const result = await assertBudget(Number(amount), lev, orderTypeNorm)
+    entryFee = result.entryFee
+  } catch (err) {
+    if (handleBudgetError(err, res)) return
+    throw err
+  }
+
+  const mc = signal.marketContext as any
+  const models = (mc?.entryModels as any[]) || []
+  const model = modelType
+    ? models.find((m: any) => m.type === modelType && m.viable) || models[0]
+    : models[0]
+
+  const entry = model?.entry ?? signal.entry
+  const stopLoss = model?.stopLoss ?? signal.stopLoss
+  const leverage = customLeverage || model?.leverage || signal.leverage
+  const tps = model?.takeProfits ?? signal.takeProfits as any[]
+
+  const tpCount = tps.length
+  const tpPercents = tpCount <= 1 ? [100]
+    : tpCount === 2 ? [50, 50]
+    : tpCount === 3 ? [40, 30, 30]
+    : [30, 25, 25, 20]
+  const takeProfits = tps.map((tp: any, i: number) => ({
+    price: tp.price,
+    percent: tpPercents[i] || Math.floor(100 / tpCount),
+  }))
+
+  // === Step 1: place real order on Bybit (so demo doesn't get created if mainnet not configured) ===
+  // We try real order FIRST, but a failure does NOT block demo creation.
+  // The user wants: demo always created, real shown in modal if failed.
+  let realResult: Awaited<ReturnType<typeof executeRealOrderForGenSignal>> | null = null
+  let realError: string | null = null
+
+  const lastTp = tps[tps.length - 1]?.price
+  if (!lastTp) {
+    realError = 'У сигнала нет take profit уровней'
+  } else {
+    try {
+      realResult = await executeRealOrderForGenSignal({
+        generatedSignalId: signal.id,
+        marginUsdt: Number(amount),
+        leverage,
+        orderType: orderTypeNorm,
+        entryPrice: entry,
+        stopLoss,
+        lastTakeProfit: lastTp,
+      })
+    } catch (err: any) {
+      realError = err?.message || 'Не удалось разместить ордер на Bybit'
+      console.warn(`[Scanner] Real order failed for signal #${id}: ${realError}`)
+    }
+  }
+
+  // === Step 2: create demo Trade (always) ===
+  await adjustVirtualBalance(-entryFee, `entry fee ${signal.coin} scanner ${orderTypeNorm}`)
+
+  const isMarket = orderTypeNorm === 'market'
+
+  let actualEntry = entry
+  if (isMarket) {
+    const coinSymbol = signal.coin.toUpperCase().replace('USDT', '') + 'USDT'
+    const currentPrice = await fetchCurrentPrice(coinSymbol)
+    if (currentPrice) actualEntry = currentPrice
+  }
+
+  const trade = await prisma.trade.create({
+    data: {
+      coin: signal.coin.toUpperCase().replace('USDT', '') + 'USDT',
+      type: signal.type,
+      leverage,
+      entryPrice: actualEntry,
+      amount,
+      stopLoss,
+      initialStop: isMarket ? stopLoss : undefined,
+      currentStop: isMarket ? stopLoss : undefined,
+      takeProfits,
+      status: isMarket ? 'OPEN' : 'PENDING_ENTRY',
+      openedAt: isMarket ? new Date() : undefined,
+      source: 'SCANNER',
+      entryOrderType: orderTypeNorm,
+      fees: entryFee,
+      notes: `Scanner signal #${signal.id} | ${signal.strategy} | Score: ${signal.score}${model ? ` | Model: ${model.type}` : ''}${realResult ? ` | Real: pos #${realResult.positionId}` : ''}`,
+    },
+  })
+
+  await prisma.generatedSignal.update({
+    where: { id },
+    data: { status: 'TAKEN', amount, takenAt: new Date() },
+  })
+
+  console.log(
+    `[Scanner] Signal #${id} taken as Trade #${trade.id} + ${realResult ? `Real Position #${realResult.positionId}` : `REAL FAILED: ${realError}`}`
+  )
+
+  res.json({
+    trade,
+    signal: { id, status: 'TAKEN' },
+    real: realResult ? {
+      positionId: realResult.positionId,
+      symbol: realResult.symbol,
+      qty: realResult.qty,
+      orderType: realResult.bybitOrderType,
+      entryPrice: realResult.alignedEntryPrice || null,
+      stopLoss: realResult.alignedStopLoss,
+      takeProfit: realResult.alignedTakeProfit,
+    } : null,
+    realError,
+  })
 }, 'Scanner'))
 
 // POST /api/scanner/signals/:id/close — partial/full close at price

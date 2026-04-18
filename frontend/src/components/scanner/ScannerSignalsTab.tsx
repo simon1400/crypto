@@ -9,11 +9,12 @@ import UnifiedSignalCard from './UnifiedSignalCard'
 interface ScannerSignalsTabProps {
   balance: number
   riskPct: number
+  realBalance: number | null
   refreshKey: number  // incremented by parent when scan tab modifies signals
   onShowChart: (signal: ScannerSignal) => void
 }
 
-export default function ScannerSignalsTab({ balance, riskPct, refreshKey, onShowChart }: ScannerSignalsTabProps) {
+export default function ScannerSignalsTab({ balance, riskPct, realBalance, refreshKey, onShowChart }: ScannerSignalsTabProps) {
   const [signals, setSignals] = useState<ScannerSignal[]>([])
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
@@ -302,7 +303,7 @@ export default function ScannerSignalsTab({ balance, riskPct, refreshKey, onShow
         <>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {visibleSignals.map(s => (
-              <UnifiedSignalCard key={s.id} mode="saved" signal={s} onStatusChange={loadSignals} onDelete={handleDelete} balance={balance} riskPct={riskPct} onShowChart={onShowChart} />
+              <UnifiedSignalCard key={s.id} mode="saved" signal={s} onStatusChange={loadSignals} onDelete={handleDelete} balance={balance} riskPct={riskPct} realBalance={realBalance} onShowChart={onShowChart} />
             ))}
           </div>
           {hasMore && !showAll && (

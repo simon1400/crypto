@@ -6,6 +6,7 @@ interface SignalCardActionsProps {
   mode: CardMode
   showTakeForm: boolean
   onOpenTakeForm: () => void
+  onOpenTakeFormReal: () => void
   onTakeSaved: () => void
   onSkipSaved: () => void
   onTakeScan: () => void
@@ -15,8 +16,8 @@ interface SignalCardActionsProps {
 }
 
 export default function SignalCardActions({
-  data, mode, showTakeForm, onOpenTakeForm, onTakeSaved, onSkipSaved,
-  onTakeScan, onSkipScan, onMarkSaved, onDelete,
+  data, mode, showTakeForm, onOpenTakeForm, onOpenTakeFormReal,
+  onSkipSaved, onSkipScan, onMarkSaved, onDelete,
 }: SignalCardActionsProps) {
   return (
     <div className="flex items-center justify-between border-t border-card pt-2">
@@ -29,7 +30,8 @@ export default function SignalCardActions({
         {/* Saved signal actions */}
         {mode === 'saved' && data.status === 'NEW' && !showTakeForm && (
           <>
-            <button onClick={onOpenTakeForm} className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20" title="Создать сделку в системе">Взять</button>
+            <button onClick={onOpenTakeForm} className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20" title="Создать сделку в системе (демо)">Взять</button>
+            <button onClick={onOpenTakeFormReal} className="px-2 py-1 text-xs rounded bg-accent/15 text-accent hover:bg-accent/25 border border-accent/30" title="Создать реальную сделку на Bybit + демо">Взять (Bybit)</button>
             <button
               onClick={onMarkSaved}
               className="px-2 py-1 text-xs rounded bg-accent/10 text-accent hover:bg-accent/20"
@@ -48,7 +50,8 @@ export default function SignalCardActions({
               <span className="text-xs text-neutral font-medium">Пропущен</span>
             ) : !showTakeForm ? (
               <>
-                <button onClick={onOpenTakeForm} className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20">Взять</button>
+                <button onClick={onOpenTakeForm} className="px-2 py-1 text-xs rounded bg-long/10 text-long hover:bg-long/20" title="Демо сделка">Взять</button>
+                <button onClick={onOpenTakeFormReal} className="px-2 py-1 text-xs rounded bg-accent/15 text-accent hover:bg-accent/25 border border-accent/30" title="Реальная сделка на Bybit + демо">Взять (Bybit)</button>
                 <button onClick={onSkipScan} className="px-2 py-1 text-xs rounded bg-neutral/10 text-neutral hover:bg-neutral/20">Пропустить</button>
               </>
             ) : null}

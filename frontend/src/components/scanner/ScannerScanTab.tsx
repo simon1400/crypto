@@ -6,12 +6,13 @@ interface ScannerScanTabProps {
   scanResults: ScanResponse | null
   balance: number
   riskPct: number
+  realBalance: number | null
   onTake: (id: number, amount: number, modelType?: string, leverage?: number, orderType?: 'market' | 'limit') => void
   onSkip: (id: number) => void
   onDelete: (id: number) => void
 }
 
-export default function ScannerScanTab({ scanResults, balance, riskPct, onTake, onSkip, onDelete }: ScannerScanTabProps) {
+export default function ScannerScanTab({ scanResults, balance, riskPct, realBalance, onTake, onSkip, onDelete }: ScannerScanTabProps) {
   if (!scanResults) return null
 
   return (
@@ -57,7 +58,7 @@ export default function ScannerScanTab({ scanResults, balance, riskPct, onTake, 
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {scanResults.signals.map((s: ScanSignal, i: number) => (
-            <UnifiedSignalCard key={i} mode="scan" signal={s} onTake={onTake} onSkip={onSkip} onDelete={onDelete} balance={balance} riskPct={riskPct} />
+            <UnifiedSignalCard key={i} mode="scan" signal={s} onTake={onTake} onSkip={onSkip} onDelete={onDelete} balance={balance} riskPct={riskPct} realBalance={realBalance} />
           ))}
         </div>
       )}

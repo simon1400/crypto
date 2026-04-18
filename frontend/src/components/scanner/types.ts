@@ -249,6 +249,7 @@ export interface SavedProps {
   onDelete: (id: number) => void
   balance: number
   riskPct: number
+  realBalance?: number | null
   onShowChart?: (signal: ScannerSignal) => void
 }
 
@@ -261,6 +262,9 @@ export interface ScanProps {
   onDelete: (id: number) => void
   balance: number
   riskPct: number
+  realBalance?: number | null
 }
 
 export type Props = SavedProps | ScanProps
+
+export type TakeMode = 'demo' | 'real'
