@@ -41,7 +41,7 @@ export default function Scanner() {
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'saved' | 'scan' | 'entry' | 'calc' | 'coins' | 'analytics'>('saved')
   const [useGPT, setUseGPT] = useState(true)
-  const [minScore, setMinScore] = useState(50)
+  const [minScore, setMinScore] = useState(70)
   const [chartSignal, setChartSignal] = useState<ScannerSignal | null>(null)
   const [coinCount, setCoinCount] = useState(0)
   const [balance, setBalance] = useState(0)

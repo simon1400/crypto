@@ -29,7 +29,7 @@ router.post('/scan', asyncHandler(async (req, res) => {
 
   const { results, funnel, savedIds } = await runScan(
     scanCoins,
-    minScore ?? 40,
+    minScore ?? 70,
     useGPT ?? true,
   )
 

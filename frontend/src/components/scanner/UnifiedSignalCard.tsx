@@ -125,6 +125,7 @@ export default function UnifiedSignalCard(props: Props) {
           onCancel={() => setShowTakeForm(false)}
           loading={loading}
           balance={balance}
+          riskPct={riskPct}
           calcRiskAmount={calcRiskAmount}
         />
       )}
