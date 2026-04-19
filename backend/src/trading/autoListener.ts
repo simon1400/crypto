@@ -8,12 +8,6 @@ import { executeSignalOrder } from './tradingService'
 import { logOrderAction } from './orderLogger'
 
 const EVENING_TRADER_PEER = 'EveningTrader'
-const NEAR512_PEER = '-1002726338238'
-const NEAR512_TOPIC_MAP: Record<number, string> = {
-  6: 'Near512-LowCap',
-  8: 'Near512-MidHigh',
-  18: 'Near512-Spot',
-}
 
 let isListenerActive = false
 let handlerRef: ((event: NewMessageEvent) => Promise<void>) | null = null
@@ -28,31 +22,13 @@ export async function handleAutoMessage(event: NewMessageEvent): Promise<void> {
   try {
     const msg = event.message
     const text = msg.message
-    const chatId = msg.chatId?.toString() ?? ''
     const messageId = msg.id
-    const topicId = (msg as any).replyTo?.replyToMsgId as number | undefined
     const isEdit = !!(msg as any).editDate
 
-    console.log(`[AutoListener] ${isEdit ? 'EDITED' : 'NEW'} msg #${messageId} chat=${chatId} topic=${topicId ?? '-'} text=${text?.substring(0, 80) ?? '(empty)'}`)
-
-    // Determine channel name
-    let channel: string | null = null
-    if (chatId === NEAR512_PEER || chatId === `-${NEAR512_PEER.replace('-', '')}`) {
-      // Near512 group - resolve topic
-      if (topicId && NEAR512_TOPIC_MAP[topicId]) {
-        channel = NEAR512_TOPIC_MAP[topicId]
-      } else {
-        return // Unknown topic in Near512 group
-      }
-    } else if (text) {
-      channel = 'EveningTrader'
-    } else {
-      return
-    }
-
-    if (!channel) return
+    console.log(`[AutoListener] ${isEdit ? 'EDITED' : 'NEW'} msg #${messageId} text=${text?.substring(0, 80) ?? '(empty)'}`)
 
     if (!text) return
+    const channel = 'EveningTrader'
     const parsed: any = parseSignalMessage(text)
 
     if (!parsed) {
@@ -66,24 +42,14 @@ export async function handleAutoMessage(event: NewMessageEvent): Promise<void> {
     const config = await prisma.botConfig.findUnique({ where: { id: 1 } })
     if (!config || config.tradingMode !== 'auto') return
 
-    // Channel/topic filter
-    if (channel.startsWith('Near512')) {
-      const enabledTopics = (config.near512Topics as string[]) || []
-      if (!enabledTopics.includes(channel)) {
-        await logOrderAction('AUTO_SKIPPED', {
-          details: { channel, reason: 'topic_not_enabled' },
-        })
-        return
-      }
-    } else if (channel === 'EveningTrader') {
-      const category = extractCategory(text)
-      const enabledCategories = (config.eveningTraderCategories as string[]) || []
-      if (category && enabledCategories.length > 0 && !enabledCategories.includes(category)) {
-        await logOrderAction('AUTO_SKIPPED', {
-          details: { channel, category, reason: 'category_not_enabled' },
-        })
-        return
-      }
+    // Category filter for EveningTrader
+    const category = extractCategory(text)
+    const enabledCategories = (config.eveningTraderCategories as string[]) || []
+    if (category && enabledCategories.length > 0 && !enabledCategories.includes(category)) {
+      await logOrderAction('AUTO_SKIPPED', {
+        details: { channel, category, reason: 'category_not_enabled' },
+      })
+      return
     }
 
     // Daily loss check
@@ -154,13 +120,13 @@ export async function handleAutoMessage(event: NewMessageEvent): Promise<void> {
 
 /**
  * Start the auto listener for Telegram signals.
- * Subscribes to EveningTrader and Near512 channels.
+ * Subscribes to EveningTrader channel.
  */
 export async function startAutoListener(): Promise<void> {
   if (isListenerActive) return
 
   const client = await getTelegramClient()
-  const chats = [EVENING_TRADER_PEER, NEAR512_PEER]
+  const chats = [EVENING_TRADER_PEER]
 
   handlerRef = handleAutoMessage
   client.addEventHandler(handlerRef, new NewMessage({ chats }))
@@ -179,7 +145,7 @@ export async function stopAutoListener(): Promise<void> {
   if (!isListenerActive) return
 
   const client = await getTelegramClient()
-  const chats = [EVENING_TRADER_PEER, NEAR512_PEER]
+  const chats = [EVENING_TRADER_PEER]
 
   if (handlerRef) {
     client.removeEventHandler(handlerRef, new NewMessage({ chats }))

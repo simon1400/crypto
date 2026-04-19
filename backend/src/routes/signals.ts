@@ -15,13 +15,7 @@ interface ChannelConfig {
 
 const CHANNELS: Record<string, ChannelConfig> = {
   EveningTrader: { peer: 'EveningTrader' },
-  'Near512-LowCap': { peer: '-1002726338238', topicId: 6 },
-  'Near512-MidHigh': { peer: '-1002726338238', topicId: 8 },
-  'Near512-Spot': { peer: '-1002726338238', topicId: 18 },
 }
-
-// Channels that belong to Near512 group (for "All" combined view)
-const NEAR512_CHANNELS = ['Near512-LowCap', 'Near512-MidHigh', 'Near512-Spot']
 
 // GET /api/signals?channel=EveningTrader&days=7
 router.get('/', asyncHandler(async (req, res) => {
@@ -29,11 +23,10 @@ router.get('/', asyncHandler(async (req, res) => {
   const days = Math.min(Math.max(parseInt(req.query.days as string) || 7, 1), 90)
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
 
-  const where = channel === 'Near512-All'
-    ? { channel: { in: NEAR512_CHANNELS }, publishedAt: { gte: since } }
-    : { channel, publishedAt: { gte: since } }
-
-  const signals = await prisma.signal.findMany({ where, orderBy: { publishedAt: 'desc' } })
+  const signals = await prisma.signal.findMany({
+    where: { channel, publishedAt: { gte: since } },
+    orderBy: { publishedAt: 'desc' },
+  })
   res.json({ data: signals, channel, days })
 }, 'Signals'))
 
@@ -61,57 +54,54 @@ router.post('/sync', asyncHandler(async (req, res) => {
   const since = Date.now() - days * 24 * 60 * 60 * 1000
   const sinceUnix = Math.floor(since / 1000)
 
-  // Determine which channels to sync
-  const channelsToSync = channel === 'Near512-All' ? NEAR512_CHANNELS : [channel]
-
   let imported = 0
   let skipped = 0
 
-  for (const ch of channelsToSync) {
-    const config = CHANNELS[ch]
-    if (!config) continue
+  const config = CHANNELS[channel]
+  if (!config) {
+    res.status(400).json({ error: `Unknown channel: ${channel}` })
+    return
+  }
 
-    const messages = await getChannelMessages(config.peer, sinceUnix, config.topicId)
+  const messages = await getChannelMessages(config.peer, sinceUnix, config.topicId)
 
-    for (const msg of messages) {
-      const parsed: any = parseSignalMessage(msg.text)
+  for (const msg of messages) {
+    const parsed: any = parseSignalMessage(msg.text)
 
-      if (!parsed) continue
+    if (!parsed) continue
 
-      try {
-        await prisma.signal.upsert({
-          where: {
-            channel_messageId: { channel: ch, messageId: msg.id },
-          },
-          create: {
-            channel: ch,
-            messageId: msg.id,
-            publishedAt: new Date(msg.date * 1000),
-            type: parsed.type,
-            coin: parsed.coin,
-            leverage: parsed.leverage,
-            entryMin: parsed.entryMin,
-            entryMax: parsed.entryMax,
-            stopLoss: parsed.stopLoss,
-            takeProfits: parsed.takeProfits,
-          },
-          update: {},
-        })
-        imported++
-      } catch {
-        skipped++
-      }
+    try {
+      await prisma.signal.upsert({
+        where: {
+          channel_messageId: { channel, messageId: msg.id },
+        },
+        create: {
+          channel,
+          messageId: msg.id,
+          publishedAt: new Date(msg.date * 1000),
+          type: parsed.type,
+          coin: parsed.coin,
+          leverage: parsed.leverage,
+          entryMin: parsed.entryMin,
+          entryMax: parsed.entryMax,
+          stopLoss: parsed.stopLoss,
+          takeProfits: parsed.takeProfits,
+        },
+        update: {},
+      })
+      imported++
+    } catch {
+      skipped++
     }
   }
 
   // Also run tracker to update statuses
   await trackActiveSignals()
 
-  const where = channel === 'Near512-All'
-    ? { channel: { in: NEAR512_CHANNELS }, publishedAt: { gte: new Date(since) } }
-    : { channel, publishedAt: { gte: new Date(since) } }
-
-  const signals = await prisma.signal.findMany({ where, orderBy: { publishedAt: 'desc' } })
+  const signals = await prisma.signal.findMany({
+    where: { channel, publishedAt: { gte: new Date(since) } },
+    orderBy: { publishedAt: 'desc' },
+  })
   res.json({ data: signals, imported, skipped, channel })
 }, 'Signals'))
 
@@ -158,11 +148,7 @@ router.delete('/clear', asyncHandler(async (req, res) => {
 
   const where: any = {}
   if (channel && channel !== 'all') {
-    if (channel === 'Near512-All') {
-      where.channel = { in: NEAR512_CHANNELS }
-    } else {
-      where.channel = channel
-    }
+    where.channel = channel
   }
   if (days > 0) {
     where.publishedAt = { gte: new Date(Date.now() - days * 24 * 60 * 60 * 1000) }

@@ -182,7 +182,6 @@ model BotConfig {
   dailyLossLimitPct       Float    @default(5)
   orderTtlMinutes         Int      @default(60)
   tradingMode             String   @default("manual")
-  near512Topics           Json     @default("[]")
   eveningTraderCategories Json     @default("[]")
   telegramBotToken        String?
   telegramChatId          String?

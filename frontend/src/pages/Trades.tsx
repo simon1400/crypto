@@ -49,7 +49,6 @@ export default function Trades() {
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [statusFilter, setStatusFilter] = useState('ACTIVE')
-  const [minScore, setMinScore] = useState(70)
   const [selected, setSelected] = useState<Trade | null>(null)
   const [closing, setClosing] = useState<Trade | null>(null)
   const [confirmCloseAll, setConfirmCloseAll] = useState(false)
@@ -267,20 +266,13 @@ export default function Trades() {
       <TradesFilterBar
         statusFilter={statusFilter}
         onStatusChange={(s) => { setStatusFilter(s); setPage(1) }}
-        minScore={minScore}
-        onMinScoreChange={(n) => { setMinScore(n); setPage(1) }}
         isFinished={statusFilter === 'FINISHED'}
         exporting={exporting}
         onExport={exportCSV}
       />
 
       <TradesTable
-        trades={trades.filter(t => {
-          if (minScore <= 0) return true
-          const m = t.notes?.match(/Score:\s*(\d+)/)
-          if (!m) return true
-          return Number(m[1]) >= minScore
-        })}
+        trades={trades}
         livePrices={livePrices}
         statusFilter={statusFilter}
         loading={loading}

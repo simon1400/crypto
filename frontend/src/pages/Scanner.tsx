@@ -10,7 +10,6 @@ import PositionChartModal, { PositionChartPosition } from '../components/Positio
 import ScannerSignalsTab from '../components/scanner/ScannerSignalsTab'
 import ScannerScanTab from '../components/scanner/ScannerScanTab'
 import ScannerEntryTab from '../components/scanner/ScannerEntryTab'
-import ScannerCalcTab from '../components/scanner/ScannerCalcTab'
 import ScannerCoinListTab from '../components/scanner/ScannerCoinListTab'
 import ScannerAnalyticsTab from '../components/scanner/ScannerAnalyticsTab'
 
@@ -40,7 +39,7 @@ export default function Scanner() {
   const [loadingMsg, setLoadingMsg] = useState('')
   const [progress, setProgress] = useState<ScanProgress | null>(null)
   const [error, setError] = useState('')
-  const [tab, setTab] = useState<'saved' | 'scan' | 'entry' | 'calc' | 'coins' | 'analytics'>('saved')
+  const [tab, setTab] = useState<'saved' | 'scan' | 'entry' | 'coins' | 'analytics'>('saved')
   const [searchParams, setSearchParams] = useSearchParams()
   const highlightParam = searchParams.get('highlight')
   const highlightId = highlightParam ? Number(highlightParam) : null
@@ -353,7 +352,6 @@ export default function Scanner() {
               { key: 'saved', label: 'Сигналы' },
               { key: 'scan', label: `Скан${scanResults ? ` (${scanResults.total})` : ''}` },
               { key: 'entry', label: 'Анализ входа' },
-              { key: 'calc', label: 'Калькулятор' },
               { key: 'coins', label: `Монеты${coinCount > 0 ? ` (${coinCount})` : ''}` },
               { key: 'analytics', label: 'Аналитика' },
             ] as const).map(t => (
@@ -404,11 +402,6 @@ export default function Scanner() {
           onEntryLoadingChange={setEntryLoading}
           onLoadingMsgChange={setLoadingMsg}
         />
-      )}
-
-      {/* Risk Calculator tab */}
-      {tab === 'calc' && (
-        <ScannerCalcTab balance={balance} riskPct={riskPct} />
       )}
 
       {/* Coin List tab */}

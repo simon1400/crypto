@@ -10,13 +10,10 @@ export interface ParsedSignal {
 }
 
 /**
- * Parse a trading signal message.
+ * Parse a trading signal message from EveningTrader.
  *
- * Evening Trader / Near512 Futures:
  *   "Risk Scalp Long $BEAT (Max 3x)"
  *   "Scalp Short $MIRA (Leverage 10x)"
- *
- * Near512 Spot:
  *   "SPOT $CLANKER"
  */
 export function parseSignalMessage(text: string): ParsedSignal | null {

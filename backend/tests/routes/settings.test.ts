@@ -46,7 +46,6 @@ function makeDefaultConfig(overrides: any = {}) {
     dailyLossLimitPct: 5,
     orderTtlMinutes: 60,
     tradingMode: 'manual',
-    near512Topics: '[]',
     eveningTraderCategories: '[]',
     updatedAt: new Date(),
     createdAt: new Date(),

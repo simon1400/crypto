@@ -21,7 +21,6 @@ export default function Settings() {
   const [dailyLossLimitPct, setDailyLossLimitPct] = useState(5)
   const [orderTtlMinutes, setOrderTtlMinutes] = useState(60)
   const [tradingMode, setTradingMode] = useState<string>('manual')
-  const [near512Topics, setNear512Topics] = useState<string[]>([])
   const [eveningTraderCategories, setEveningTraderCategories] = useState<string[]>([])
   const [telegramBotToken, setTelegramBotToken] = useState('')
   const [telegramChatId, setTelegramChatId] = useState('')
@@ -45,7 +44,6 @@ export default function Settings() {
         setDailyLossLimitPct(data.dailyLossLimitPct)
         setOrderTtlMinutes(data.orderTtlMinutes)
         setTradingMode(data.tradingMode)
-        setNear512Topics(data.near512Topics)
         setEveningTraderCategories(data.eveningTraderCategories)
         setTelegramEnabled(data.telegramEnabled ?? false)
         setTelegramChatId(data.telegramChatId ?? '')
@@ -86,7 +84,7 @@ export default function Settings() {
     setSaving(true)
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = await saveSettings({ apiKey: apiKey || null, apiSecret: apiSecret || null, useTestnet, positionSizePct, dailyLossLimitPct, orderTtlMinutes, tradingMode, near512Topics, eveningTraderCategories, telegramBotToken: telegramBotToken || null, telegramChatId: telegramChatId || null, telegramEnabled, autoScanEnabled, autoScanIntervalMin, autoScanMinScore, takerFeeRate, makerFeeRate } as any)
+      const result = await saveSettings({ apiKey: apiKey || null, apiSecret: apiSecret || null, useTestnet, positionSizePct, dailyLossLimitPct, orderTtlMinutes, tradingMode, eveningTraderCategories, telegramBotToken: telegramBotToken || null, telegramChatId: telegramChatId || null, telegramEnabled, autoScanEnabled, autoScanIntervalMin, autoScanMinScore, takerFeeRate, makerFeeRate } as any)
       setSettings(result)
       setApiKey('')
       setApiSecret('')
@@ -165,8 +163,6 @@ export default function Settings() {
           setTradingMode={setTradingMode}
         />
         <ChannelsSection
-          near512Topics={near512Topics}
-          setNear512Topics={setNear512Topics}
           eveningTraderCategories={eveningTraderCategories}
           setEveningTraderCategories={setEveningTraderCategories}
         />

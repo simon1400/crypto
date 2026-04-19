@@ -1,21 +1,67 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { getBudget } from '../api/client'
 
-interface ScannerCalcTabProps {
-  balance: number
-  riskPct: number
-}
+const LS_BALANCE = 'calc_balance'
+const LS_RISK = 'calc_risk'
 
-export default function ScannerCalcTab({ balance, riskPct }: ScannerCalcTabProps) {
+export default function Calculator() {
+  const [balance, setBalance] = useState<string>(() => localStorage.getItem(LS_BALANCE) || '')
+  const [riskPct, setRiskPct] = useState<string>(() => localStorage.getItem(LS_RISK) || '2')
   const [calcEntry, setCalcEntry] = useState('')
   const [calcSL, setCalcSL] = useState('')
   const [calcLeverage, setCalcLeverage] = useState('10')
   const [calcEntry2, setCalcEntry2] = useState('')
   const [calcShowEntry2, setCalcShowEntry2] = useState(false)
 
+  useEffect(() => {
+    if (!localStorage.getItem(LS_BALANCE)) {
+      getBudget().then(r => {
+        if (r.balance) setBalance(String(Math.floor(r.balance)))
+      }).catch(() => {})
+    }
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem(LS_BALANCE, balance)
+  }, [balance])
+
+  useEffect(() => {
+    localStorage.setItem(LS_RISK, riskPct)
+  }, [riskPct])
+
+  const balanceNum = Number(balance)
+  const riskNum = Number(riskPct)
+
   return (
     <div className="max-w-lg space-y-4">
+      <h1 className="text-xl font-semibold text-text-primary">Калькулятор позиции</h1>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs text-text-secondary block mb-1">Депозит ($)</label>
+          <input
+            type="number"
+            value={balance}
+            onChange={e => setBalance(e.target.value)}
+            placeholder="1000"
+            className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-text-secondary block mb-1">Риск (%)</label>
+          <input
+            type="number"
+            value={riskPct}
+            onChange={e => setRiskPct(e.target.value)}
+            placeholder="2"
+            step="0.1"
+            className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+      </div>
+
       <p className="text-text-secondary text-sm">
-        Депо: <span className="text-text-primary font-mono">${balance || '—'}</span> | Риск: <span className="text-text-primary font-mono">{riskPct}%</span> = <span className="text-accent font-mono">${balance && riskPct ? Math.floor(balance * riskPct / 100) : '—'}</span>
+        Депо: <span className="text-text-primary font-mono">${balanceNum || '—'}</span> | Риск: <span className="text-text-primary font-mono">{riskNum || '—'}%</span> = <span className="text-accent font-mono">${balanceNum && riskNum ? Math.floor(balanceNum * riskNum / 100) : '—'}</span>
       </p>
 
       <div className="grid grid-cols-3 gap-3">
@@ -76,10 +122,10 @@ export default function ScannerCalcTab({ balance, riskPct }: ScannerCalcTabProps
         const entry = Number(calcEntry)
         const sl = Number(calcSL)
         const lev = Number(calcLeverage)
-        if (!entry || !sl || !lev || !balance || !riskPct) return null
+        if (!entry || !sl || !lev || !balanceNum || !riskNum) return null
 
         const slPct = Math.abs((entry - sl) / entry) * 100
-        const riskAmount = balance * riskPct / 100
+        const riskAmount = balanceNum * riskNum / 100
         const margin = Math.floor(riskAmount / (slPct / 100 * lev))
         const direction = sl < entry ? 'LONG' : 'SHORT'
 
@@ -114,24 +160,22 @@ export default function ScannerCalcTab({ balance, riskPct }: ScannerCalcTabProps
             </div>
 
             {hasEntry2 && (
-              <>
-                <div className="border-t border-input pt-3 mt-2">
-                  <p className="text-xs text-text-secondary mb-2">Разделение маржи (50/50):</p>
-                  <div className="grid grid-cols-3 gap-x-4 gap-y-2 text-sm">
-                    <div className="text-text-secondary"></div>
-                    <div className="text-text-secondary text-xs">Маржа</div>
-                    <div className="text-text-secondary text-xs">Позиция</div>
+              <div className="border-t border-input pt-3 mt-2">
+                <p className="text-xs text-text-secondary mb-2">Разделение маржи (50/50):</p>
+                <div className="grid grid-cols-3 gap-x-4 gap-y-2 text-sm">
+                  <div className="text-text-secondary"></div>
+                  <div className="text-text-secondary text-xs">Маржа</div>
+                  <div className="text-text-secondary text-xs">Позиция</div>
 
-                    <div className="text-text-secondary">Вход 1 — ${entry}</div>
-                    <div className="font-mono text-accent">${margin1}</div>
-                    <div className="font-mono text-text-primary">${margin1 * lev}</div>
+                  <div className="text-text-secondary">Вход 1 — ${entry}</div>
+                  <div className="font-mono text-accent">${margin1}</div>
+                  <div className="font-mono text-text-primary">${margin1 * lev}</div>
 
-                    <div className="text-text-secondary">Вход 2 — ${entry2}</div>
-                    <div className="font-mono text-accent">${margin2}</div>
-                    <div className="font-mono text-text-primary">${margin2 * lev}</div>
-                  </div>
+                  <div className="text-text-secondary">Вход 2 — ${entry2}</div>
+                  <div className="font-mono text-accent">${margin2}</div>
+                  <div className="font-mono text-text-primary">${margin2 * lev}</div>
                 </div>
-              </>
+              </div>
             )}
           </div>
         )

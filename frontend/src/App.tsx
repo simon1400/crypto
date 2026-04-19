@@ -5,7 +5,7 @@ import Signals from './pages/Signals'
 import Trades from './pages/Trades'
 import Scanner from './pages/Scanner'
 import Settings from './pages/Settings'
-import Positions from './pages/Positions'
+import Calculator from './pages/Calculator'
 import Login from './pages/Login'
 import { setAuthToken } from './api/client'
 import { BalanceProvider } from './contexts/BalanceContext'
@@ -21,7 +21,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
           <Route path="/trades" element={<Trades />} />
           <Route path="/scanner" element={<Scanner />} />
           <Route path="/settings" element={<Settings />} />
-          <Route path="/positions" element={<Positions />} />
+          <Route path="/calculator" element={<Calculator />} />
         </Routes>
       </main>
     </div>

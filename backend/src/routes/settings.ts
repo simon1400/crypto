@@ -25,7 +25,6 @@ function buildConfigResponse(config: BotConfig, extras?: { balance?: string; key
     dailyLossLimitPct: config.dailyLossLimitPct,
     orderTtlMinutes: config.orderTtlMinutes,
     tradingMode: config.tradingMode,
-    near512Topics: config.near512Topics,
     eveningTraderCategories: config.eveningTraderCategories,
     telegramBotToken: config.telegramBotToken ? '****' + config.telegramBotToken.slice(-4) : null,
     telegramChatId: config.telegramChatId,
@@ -60,7 +59,6 @@ router.put('/', asyncHandler(async (req, res) => {
     dailyLossLimitPct,
     orderTtlMinutes,
     tradingMode,
-    near512Topics,
     eveningTraderCategories,
     telegramBotToken,
     telegramChatId,
@@ -112,7 +110,6 @@ router.put('/', asyncHandler(async (req, res) => {
   if (dailyLossLimitPct !== undefined) setBoth('dailyLossLimitPct', dailyLossLimitPct)
   if (orderTtlMinutes !== undefined) setBoth('orderTtlMinutes', orderTtlMinutes)
   if (tradingMode !== undefined) setBoth('tradingMode', tradingMode)
-  if (near512Topics !== undefined) setBoth('near512Topics', near512Topics)
   if (eveningTraderCategories !== undefined) setBoth('eveningTraderCategories', eveningTraderCategories)
   if (telegramBotToken !== undefined) setBoth('telegramBotToken', telegramBotToken)
   if (telegramChatId !== undefined) setBoth('telegramChatId', telegramChatId)

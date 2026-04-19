@@ -13,7 +13,6 @@ export interface SettingsResponse {
   positionSizePct: number
   dailyLossLimitPct: number
   orderTtlMinutes: number
-  near512Topics: string[]
   eveningTraderCategories: string[]
   telegramBotToken: string | null
   telegramChatId: string | null
