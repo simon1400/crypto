@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { prisma } from '../../db/prisma'
-import { assertBudget } from '../../services/budget'
+import { assertBudget, BudgetError } from '../../services/budget'
 import { adjustVirtualBalance } from '../../services/virtualBalance'
 import { OrderType } from '../../services/fees'
 import { computePortionPnlFromEntry } from '../../services/tradeClose'
@@ -268,16 +268,6 @@ router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
 
   const orderTypeNorm: OrderType = orderType === 'limit' ? 'limit' : 'market'
 
-  let entryFee = 0
-  try {
-    const lev = Number(customLeverage) || signal.leverage
-    const result = await assertBudget(Number(amount), lev, orderTypeNorm)
-    entryFee = result.entryFee
-  } catch (err) {
-    if (handleBudgetError(err, res)) return
-    throw err
-  }
-
   const mc = signal.marketContext as any
   const models = (mc?.entryModels as any[]) || []
   const model = modelType
@@ -299,9 +289,7 @@ router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
     percent: tpPercents[i] || Math.floor(100 / tpCount),
   }))
 
-  // === Step 1: place real order on Bybit (so demo doesn't get created if mainnet not configured) ===
-  // We try real order FIRST, but a failure does NOT block demo creation.
-  // The user wants: demo always created, real shown in modal if failed.
+  // === Step 1: place real order on Bybit FIRST — independent of demo budget ===
   let realResult: Awaited<ReturnType<typeof executeRealOrderForGenSignal>> | null = null
   let realError: string | null = null
 
@@ -316,7 +304,7 @@ router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
         orderType: orderTypeNorm,
         entryPrice: entry,
         stopLoss,
-        takeProfits,  // same array as demo: [{ price, percent }] with 40/30/30 etc.
+        takeProfits,
       })
     } catch (err: any) {
       realError = err?.message || 'Не удалось разместить ордер на Bybit'
@@ -324,50 +312,74 @@ router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
     }
   }
 
-  // === Step 2: create demo Trade (always) ===
-  await adjustVirtualBalance(-entryFee, `entry fee ${signal.coin} scanner ${orderTypeNorm}`)
-
-  const isMarket = orderTypeNorm === 'market'
-
-  let actualEntry = entry
-  if (isMarket) {
-    const coinSymbol = signal.coin.toUpperCase().replace('USDT', '') + 'USDT'
-    const currentPrice = await fetchCurrentPrice(coinSymbol)
-    if (currentPrice) actualEntry = currentPrice
+  // === Step 2: try to create demo Trade — skip if demo budget insufficient ===
+  let entryFee = 0
+  let demoSkippedReason: string | null = null
+  try {
+    const lev = Number(customLeverage) || signal.leverage
+    const result = await assertBudget(Number(amount), lev, orderTypeNorm)
+    entryFee = result.entryFee
+  } catch (err) {
+    if (err instanceof BudgetError) {
+      demoSkippedReason = err.message
+      console.warn(`[Scanner] Demo trade skipped for signal #${id}: ${err.message}`)
+    } else {
+      throw err
+    }
   }
 
-  const trade = await prisma.trade.create({
-    data: {
-      coin: signal.coin.toUpperCase().replace('USDT', '') + 'USDT',
-      type: signal.type,
-      leverage,
-      entryPrice: actualEntry,
-      amount,
-      stopLoss,
-      initialStop: isMarket ? stopLoss : undefined,
-      currentStop: isMarket ? stopLoss : undefined,
-      takeProfits,
-      status: isMarket ? 'OPEN' : 'PENDING_ENTRY',
-      openedAt: isMarket ? new Date() : undefined,
-      source: 'SCANNER',
-      entryOrderType: orderTypeNorm,
-      fees: entryFee,
-      notes: `Scanner signal #${signal.id} | ${signal.strategy} | Score: ${signal.score}${model ? ` | Model: ${model.type}` : ''}${realResult ? ` | Real: pos #${realResult.positionId}` : ''}`,
-    },
-  })
+  let trade: Awaited<ReturnType<typeof prisma.trade.create>> | null = null
 
-  await prisma.generatedSignal.update({
-    where: { id },
-    data: { status: 'TAKEN', amount, takenAt: new Date() },
-  })
+  if (!demoSkippedReason) {
+    await adjustVirtualBalance(-entryFee, `entry fee ${signal.coin} scanner ${orderTypeNorm}`)
+
+    const isMarket = orderTypeNorm === 'market'
+
+    let actualEntry = entry
+    if (isMarket) {
+      const coinSymbol = signal.coin.toUpperCase().replace('USDT', '') + 'USDT'
+      const currentPrice = await fetchCurrentPrice(coinSymbol)
+      if (currentPrice) actualEntry = currentPrice
+    }
+
+    trade = await prisma.trade.create({
+      data: {
+        coin: signal.coin.toUpperCase().replace('USDT', '') + 'USDT',
+        type: signal.type,
+        leverage,
+        entryPrice: actualEntry,
+        amount,
+        stopLoss,
+        initialStop: isMarket ? stopLoss : undefined,
+        currentStop: isMarket ? stopLoss : undefined,
+        takeProfits,
+        status: isMarket ? 'OPEN' : 'PENDING_ENTRY',
+        openedAt: isMarket ? new Date() : undefined,
+        source: 'SCANNER',
+        entryOrderType: orderTypeNorm,
+        fees: entryFee,
+        notes: `Scanner signal #${signal.id} | ${signal.strategy} | Score: ${signal.score}${model ? ` | Model: ${model.type}` : ''}${realResult ? ` | Real: pos #${realResult.positionId}` : ''}`,
+      },
+    })
+  }
+
+  // Mark signal as TAKEN if either real or demo succeeded; otherwise leave NEW
+  if (realResult || trade) {
+    await prisma.generatedSignal.update({
+      where: { id },
+      data: { status: 'TAKEN', amount, takenAt: new Date() },
+    })
+  }
 
   console.log(
-    `[Scanner] Signal #${id} taken as Trade #${trade.id} + ${realResult ? `Real Position #${realResult.positionId}` : `REAL FAILED: ${realError}`}`
+    `[Scanner] Signal #${id}: ` +
+    `${trade ? `Trade #${trade.id}` : `demo SKIPPED (${demoSkippedReason})`} + ` +
+    `${realResult ? `Real Position #${realResult.positionId}` : `REAL FAILED: ${realError}`}`
   )
 
   res.json({
     trade,
-    signal: { id, status: 'TAKEN' },
+    signal: { id, status: realResult || trade ? 'TAKEN' : 'NEW' },
     real: realResult ? {
       positionId: realResult.positionId,
       symbol: realResult.symbol,
@@ -378,6 +390,7 @@ router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
       takeProfits: realResult.takeProfits,
     } : null,
     realError,
+    demoSkippedReason,
   })
 }, 'Scanner'))
 

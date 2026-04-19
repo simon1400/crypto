@@ -1,5 +1,4 @@
 import { ScoreBadge, StrategyBadge, ScannerStatusBadge as StatusBadge, TradeStatusBadge } from '../StatusBadge'
-import { QUALITY_COLORS } from '../../lib/constants'
 import { fmt2Signed } from '../../lib/formatters'
 import { SETUP_CATEGORY_STYLES, EXECUTION_TYPE_STYLES, CATEGORY_STYLES } from './constants'
 import { CardData, CardMode, SavedProps } from './types'
@@ -80,11 +79,6 @@ export default function SignalCardHeader({ data, mode, onShowChart }: SignalCard
           const et = EXECUTION_TYPE_STYLES[data.executionType] || EXECUTION_TYPE_STYLES.IGNORE
           return <span className={`px-2 py-0.5 rounded text-xs font-bold ${et.bg} ${et.text}`}>{et.label}</span>
         })()}
-        {data.setupQuality && (
-          <span className={`font-mono font-bold text-sm ${QUALITY_COLORS[data.setupQuality] || 'text-neutral'}`}>
-            {data.setupQuality}
-          </span>
-        )}
       </div>
     </div>
   )

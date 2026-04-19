@@ -17,7 +17,6 @@ export default function EntryResultCard({ result, balance, riskPct, savedId, sav
   const [takeAmount, setTakeAmount] = useState('')
   const [takeLev, setTakeLev] = useState(result.leverage)
   const [taken, setTaken] = useState(savedStatus === 'TAKEN')
-  const [showGPT, setShowGPT] = useState(false)
 
   const suggestedAmount = balance > 0 && result.slPercent > 0
     ? Math.round(balance * (riskPct / 100) / (result.slPercent / 100) / takeLev * 100) / 100
@@ -53,10 +52,6 @@ export default function EntryResultCard({ result, balance, riskPct, savedId, sav
     }
   }
 
-  const qualityColor: Record<string, string> = {
-    A: 'text-long', B: 'text-accent', C: 'text-text-primary', D: 'text-orange-400', F: 'text-short',
-  }
-
   return (
     <div className={`bg-card rounded-xl p-4 border ${taken ? 'border-long/30 opacity-70' : 'border-accent/20'} transition-colors`}>
       {/* Header */}
@@ -69,11 +64,6 @@ export default function EntryResultCard({ result, balance, riskPct, savedId, sav
           <span className="px-2 py-0.5 rounded text-xs bg-accent/10 text-accent">Лимитный вход</span>
         </div>
         <div className="flex items-center gap-2">
-          {result.gpt && (
-            <span className={`font-mono font-bold text-lg ${qualityColor[result.gpt.setupQuality] || 'text-neutral'}`}>
-              {result.gpt.setupQuality}
-            </span>
-          )}
           <ScoreBadge score={result.score} />
         </div>
       </div>
@@ -89,7 +79,6 @@ export default function EntryResultCard({ result, balance, riskPct, savedId, sav
         <div className="bg-input rounded-lg p-3">
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-text-secondary">{result.entry1.label} ({result.entry1.positionPercent}%)</span>
-            {result.gpt && <span className={`text-xs font-bold ${qualityColor[result.gpt.entry1Quality] || ''}`}>{result.gpt.entry1Quality}</span>}
           </div>
           <div className={`font-mono font-bold text-lg ${isLong ? 'text-long' : 'text-short'}`}>${result.entry1.price}</div>
           <div className="text-[10px] text-text-secondary mt-1">
@@ -102,7 +91,6 @@ export default function EntryResultCard({ result, balance, riskPct, savedId, sav
         <div className="bg-input rounded-lg p-3">
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-text-secondary">{result.entry2.label} ({result.entry2.positionPercent}%)</span>
-            {result.gpt && <span className={`text-xs font-bold ${qualityColor[result.gpt.entry2Quality] || ''}`}>{result.gpt.entry2Quality}</span>}
           </div>
           <div className={`font-mono font-bold text-lg ${isLong ? 'text-long' : 'text-short'}`}>${result.entry2.price}</div>
           <div className="text-[10px] text-text-secondary mt-1">
@@ -140,33 +128,6 @@ export default function EntryResultCard({ result, balance, riskPct, savedId, sav
       {result.reasons.length > 0 && (
         <div className="text-xs text-text-secondary space-y-0.5 mb-3">
           {result.reasons.slice(0, 4).map((r, i) => <div key={i}>• {r}</div>)}
-        </div>
-      )}
-
-      {/* GPT analysis */}
-      {result.gpt && (
-        <div className="mb-3">
-          <button
-            onClick={() => setShowGPT(!showGPT)}
-            className="text-xs text-accent hover:text-accent/80 transition-colors"
-          >
-            {showGPT ? '▼' : '▸'} GPT-5.4 анализ
-          </button>
-          {showGPT && (
-            <div className="mt-2 text-xs space-y-1.5 bg-input rounded-lg p-3">
-              <div className="text-text-primary">{result.gpt.commentary}</div>
-              {result.gpt.entry1Comment && <div className="text-accent">Entry 1: {result.gpt.entry1Comment}</div>}
-              {result.gpt.entry2Comment && <div className="text-accent">Entry 2: {result.gpt.entry2Comment}</div>}
-              {result.gpt.risks.length > 0 && (
-                <div className="text-short">
-                  {result.gpt.risks.map((r, i) => <div key={i}>⚠ {r}</div>)}
-                </div>
-              )}
-              {result.gpt.keyLevels.length > 0 && (
-                <div className="text-text-secondary">Уровни: {result.gpt.keyLevels.join(', ')}</div>
-              )}
-            </div>
-          )}
         </div>
       )}
 

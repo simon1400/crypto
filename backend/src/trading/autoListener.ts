@@ -3,14 +3,12 @@ import { EditedMessage } from 'telegram/events/EditedMessage'
 import { prisma } from '../db/prisma'
 import { getTelegramClient } from '../services/telegram'
 import { parseSignalMessage, extractCategory } from '../services/signalParser'
-import { isBinanceKillersSignal, parseSignalImage } from '../services/imageParser'
 import { checkDailyLoss } from './dailyLossGuard'
 import { executeSignalOrder } from './tradingService'
 import { logOrderAction } from './orderLogger'
 
 const EVENING_TRADER_PEER = 'EveningTrader'
 const NEAR512_PEER = '-1002726338238'
-const BINANCE_KILLERS_PEER = 'binancekillers'
 const NEAR512_TOPIC_MAP: Record<number, string> = {
   6: 'Near512-LowCap',
   8: 'Near512-MidHigh',
@@ -39,7 +37,6 @@ export async function handleAutoMessage(event: NewMessageEvent): Promise<void> {
 
     // Determine channel name
     let channel: string | null = null
-    let isBKChannel = false
     if (chatId === NEAR512_PEER || chatId === `-${NEAR512_PEER.replace('-', '')}`) {
       // Near512 group - resolve topic
       if (topicId && NEAR512_TOPIC_MAP[topicId]) {
@@ -47,45 +44,16 @@ export async function handleAutoMessage(event: NewMessageEvent): Promise<void> {
       } else {
         return // Unknown topic in Near512 group
       }
+    } else if (text) {
+      channel = 'EveningTrader'
     } else {
-      // Try to detect BinanceKillers by text pattern
-      const bkTicker = text ? isBinanceKillersSignal(text) : null
-      if (bkTicker && msg.media) {
-        channel = 'BinanceKillers'
-        isBKChannel = true
-      } else if (text) {
-        channel = 'EveningTrader'
-      } else {
-        return
-      }
+      return
     }
 
     if (!channel) return
 
-    // Parse signal — different flow for image-based channels
-    let parsed: any = null
-
-    if (isBKChannel) {
-      // BinanceKillers: download photo and parse with GPT-4o vision
-      const ticker = isBinanceKillersSignal(text!)
-      console.log(`[AutoListener] BinanceKillers signal detected: ${ticker}, downloading image...`)
-
-      try {
-        const tg = await getTelegramClient()
-        const buffer = await tg.downloadMedia(msg, {}) as Buffer
-        if (!buffer) {
-          console.warn(`[AutoListener] Failed to download BK image for msg #${messageId}`)
-          return
-        }
-        parsed = await parseSignalImage(buffer)
-      } catch (err: any) {
-        console.error(`[AutoListener] BK image download/parse error:`, err.message)
-        return
-      }
-    } else {
-      if (!text) return
-      parsed = parseSignalMessage(text)
-    }
+    if (!text) return
+    const parsed: any = parseSignalMessage(text)
 
     if (!parsed) {
       console.log(`[AutoListener] Could not parse signal from msg #${messageId} (channel=${channel})`)
@@ -192,7 +160,7 @@ export async function startAutoListener(): Promise<void> {
   if (isListenerActive) return
 
   const client = await getTelegramClient()
-  const chats = [EVENING_TRADER_PEER, NEAR512_PEER, BINANCE_KILLERS_PEER]
+  const chats = [EVENING_TRADER_PEER, NEAR512_PEER]
 
   handlerRef = handleAutoMessage
   client.addEventHandler(handlerRef, new NewMessage({ chats }))
@@ -201,7 +169,7 @@ export async function startAutoListener(): Promise<void> {
   client.addEventHandler(editHandlerRef, new EditedMessage({ chats }))
 
   isListenerActive = true
-  console.log('[AutoListener] Started -- listening for new + edited signals (incl. BinanceKillers)')
+  console.log('[AutoListener] Started -- listening for new + edited signals')
 }
 
 /**
@@ -211,7 +179,7 @@ export async function stopAutoListener(): Promise<void> {
   if (!isListenerActive) return
 
   const client = await getTelegramClient()
-  const chats = [EVENING_TRADER_PEER, NEAR512_PEER, BINANCE_KILLERS_PEER]
+  const chats = [EVENING_TRADER_PEER, NEAR512_PEER]
 
   if (handlerRef) {
     client.removeEventHandler(handlerRef, new NewMessage({ chats }))

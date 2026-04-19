@@ -13,10 +13,9 @@ router.post('/scan', asyncHandler(async (req, res) => {
     return
   }
 
-  const { coins, minScore, useGPT } = req.body as {
+  const { coins, minScore } = req.body as {
     coins?: string[]
     minScore?: number
-    useGPT?: boolean
   }
 
   // Use provided coins, or load from DB selection, or fallback to default
@@ -30,7 +29,6 @@ router.post('/scan', asyncHandler(async (req, res) => {
   const { results, funnel, savedIds } = await runScan(
     scanCoins,
     minScore ?? 70,
-    useGPT ?? true,
   )
 
     res.json({
@@ -63,14 +61,6 @@ router.post('/scan', asyncHandler(async (req, res) => {
         // All entry models
         entryModels: r.signal.entryModels,
         reasons: r.signal.reasons,
-        // GPT annotation (overlay, not verdict)
-        setupQuality: r.gptAnnotation.setupQuality,
-        aiCommentary: r.gptAnnotation.commentary,
-        aiRisks: r.gptAnnotation.risks,
-        aiConflicts: r.gptAnnotation.conflicts,
-        aiKeyLevels: r.gptAnnotation.keyLevels,
-        recommendedEntryType: r.gptAnnotation.recommendedEntryType,
-        waitForConfirmation: r.gptAnnotation.waitForConfirmation,
         // === New 3-layer scoring ===
         setup_category: r.setup_category ?? null,
         execution_type: r.execution_type ?? null,

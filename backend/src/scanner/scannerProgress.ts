@@ -17,7 +17,7 @@ export type ScanPhase =
   | 'regime'        // detect market regime from BTC
   | 'scoring'       // strategies + 3-layer scoring (hard filters → setup → entry trigger)
   | 'risk_calc'     // legacy (kept for backward compat with old frontend)
-  | 'gpt'           // GPT annotation (per-signal progress)
+  | 'classifying'   // classification + build results (per-signal progress)
   | 'saving'        // save to DB
   | 'done'
   | 'error'

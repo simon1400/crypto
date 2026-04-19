@@ -9,7 +9,6 @@ import { detectMarketRegime } from '../marketRegime'
 import { detectCoinRegime, CoinRegimeContext } from '../coinRegime'
 import { runStrategies } from '../strategies/index'
 import { SignalWithRisk, EntryModel, ScoreBreakdown } from '../scoring/types'
-import { gptAnnotateSignal, GPTAnnotation } from '../gptFilter'
 import { scannerProgress } from '../scannerProgress'
 import { prisma } from '../../db/prisma'
 import { SCAN_COINS } from './coins'
@@ -35,23 +34,9 @@ export function isScannerRunning(): boolean {
   return isScanning
 }
 
-const NEUTRAL_GPT: GPTAnnotation = {
-  setupQuality: 'C',
-  commentary: 'AI аннотация отключена',
-  risks: [],
-  conflicts: [],
-  suggestedEntry: null,
-  suggestedSL: null,
-  suggestedTP1: null,
-  recommendedEntryType: 'confirmation',
-  keyLevels: [],
-  waitForConfirmation: null,
-}
-
-// Bridge: build SignalWithRisk from EnrichedSignal so gptFilter still works
+// Bridge: build SignalWithRisk from EnrichedSignal
 function enrichedToSignalWithRisk(e: EnrichedSignal): SignalWithRisk {
   const slPercent = round2(Math.abs((e.initial_stop - e.entry) / e.entry) * 100)
-  const riskAmount = Math.abs(e.entry - e.initial_stop)
 
   // Build legacy-compatible entry models from new pipeline
   const primaryModel: EntryModel = {
@@ -118,7 +103,6 @@ function mapToLegacyCategory(e: EnrichedSignal): import('./types').SignalCategor
 export async function runScan(
   coins: string[] = SCAN_COINS,
   minScore = 40,
-  useGPT = true,
 ): Promise<{ results: ScanResult[]; funnel: ScanFunnel; savedIds: Record<string, number> }> {
   if (isScanning) throw new Error('Scanner already running')
   isScanning = true
@@ -302,38 +286,19 @@ export async function runScan(
     const topSignals = enrichedSignals.slice(0, topN)
     funnel.passedRisk = topSignals.length
 
-    // === Phase D: AI Annotation + build results ===
+    // === Phase D: Classification + build results ===
     const results: ScanResult[] = []
-    const totalForGpt = topSignals.length
-    scannerProgress.setPhase('gpt', useGPT ? `GPT анализ ${totalForGpt} сигналов...` : 'Классификация...', 0, totalForGpt)
-    let gptDone = 0
+    const totalForClassify = topSignals.length
+    scannerProgress.setPhase('classifying', 'Классификация...', 0, totalForClassify)
+    let classifiedDone = 0
 
     for (const enriched of topSignals) {
       if (scannerProgress.aborted) throw new Error('Scan aborted by user')
-      // Build SignalWithRisk bridge for GPT annotator
       const signalWithRisk = enrichedToSignalWithRisk(enriched)
 
-      let gptAnnotation: GPTAnnotation
-      if (useGPT) {
-        const liqStats = getLiquidationStats(enriched.coin, 15)
-        gptAnnotation = await gptAnnotateSignal(
-          signalWithRisk,
-          regime,
-          fundingMap[enriched.coin],
-          newsMap[enriched.coin],
-          oiMap[enriched.coin],
-          liqStats.totalUsd > 0 ? liqStats : null,
-          lsrMap[enriched.coin],
-        )
-      } else {
-        gptAnnotation = NEUTRAL_GPT
-      }
-
-      // Map new category to legacy
       const category = mapToLegacyCategory(enriched)
       const coinRegime = coinRegimes[enriched.coin]
 
-      // Legacy compatibility fields
       const scoreBand = enriched.setup_score >= 72 ? 'STRONG' as const
         : enriched.setup_score >= 64 ? 'ACTIONABLE' as const
         : enriched.setup_score >= 56 ? 'CONDITIONAL' as const
@@ -345,7 +310,6 @@ export async function runScan(
 
       results.push({
         signal: signalWithRisk,
-        gptAnnotation,
         regime,
         category,
         scoreBand,
@@ -353,7 +317,6 @@ export async function runScan(
         triggerState: null,
         coinRegime,
         exchange: coinExchanges[enriched.coin] || 'bybit',
-        // New 3-layer scoring
         enriched,
         setup_category: enriched.category,
         execution_type: enriched.execution_type,
@@ -367,8 +330,8 @@ export async function runScan(
         risk_profile: enriched.risk_profile,
       })
 
-      gptDone++
-      scannerProgress.tick(gptDone, totalForGpt, useGPT ? `GPT: ${enriched.coin} (${gptDone}/${totalForGpt})` : `Классификация: ${gptDone}/${totalForGpt}`)
+      classifiedDone++
+      scannerProgress.tick(classifiedDone, totalForClassify, `Классификация: ${classifiedDone}/${totalForClassify}`)
     }
 
     funnel.final = results.length
@@ -407,7 +370,6 @@ export async function runScan(
               news: newsMap[enriched.coin] ?? null,
               liquidations: liqStats.totalUsd > 0 ? liqStats : null,
               lsr: lsrMap[enriched.coin] ?? null,
-              setupQuality: r.gptAnnotation.setupQuality,
               coinRegime: r.coinRegime ?? null,
               // 3-layer scoring context
               setup_category: enriched.category,
@@ -426,7 +388,6 @@ export async function runScan(
               entry_model: enriched.risk_profile.entry_model,
               data_completeness: enriched.data_completeness,
             })),
-            aiAnalysis: `[${r.gptAnnotation.setupQuality}] ${r.gptAnnotation.commentary}\n\nРиски: ${r.gptAnnotation.risks.join('; ')}\nКонфликты: ${r.gptAnnotation.conflicts.join('; ')}\nУровни: ${r.gptAnnotation.keyLevels.join('; ')}${r.gptAnnotation.waitForConfirmation ? `\n⏳ Ждать: ${r.gptAnnotation.waitForConfirmation}` : ''}`,
             status: 'NEW',
             expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
             // New DB columns

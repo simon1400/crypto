@@ -40,7 +40,6 @@ export default function Scanner() {
   const [progress, setProgress] = useState<ScanProgress | null>(null)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'saved' | 'scan' | 'entry' | 'calc' | 'coins' | 'analytics'>('saved')
-  const [useGPT, setUseGPT] = useState(true)
   const [minScore, setMinScore] = useState(70)
   const [chartSignal, setChartSignal] = useState<ScannerSignal | null>(null)
   const [coinCount, setCoinCount] = useState(0)
@@ -127,7 +126,7 @@ export default function Scanner() {
     })
 
     try {
-      const res = await triggerScan(undefined, minScore, useGPT)
+      const res = await triggerScan(undefined, minScore)
       setScanResults(res)
       refreshSignals()
     } catch (err: any) {
@@ -200,15 +199,6 @@ export default function Scanner() {
               max={100}
             />
           </div>
-          <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
-            <input
-              type="checkbox"
-              checked={useGPT}
-              onChange={e => setUseGPT(e.target.checked)}
-              className="accent-accent"
-            />
-            GPT-5.4 фильтр
-          </label>
           {loading ? (
             <button
               onClick={() => cancelScan().catch(() => {})}
@@ -237,12 +227,12 @@ export default function Scanner() {
               fetching: 'Свечи',
               regime: 'Режим',
               scoring: 'Скоринг',
-              gpt: 'GPT анализ',
+              classifying: 'Классификация',
               saving: 'Сохранение',
               done: 'Готово',
               error: 'Ошибка',
             }
-            const phases = ['market_data', 'fetching', 'regime', 'scoring', 'gpt', 'saving']
+            const phases = ['market_data', 'fetching', 'regime', 'scoring', 'classifying', 'saving']
             const currentIdx = phases.indexOf(progress.phase)
             const elapsed = progress.startedAt ? Math.round((Date.now() - progress.startedAt) / 1000) : 0
             return (

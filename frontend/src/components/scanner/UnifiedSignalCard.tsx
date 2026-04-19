@@ -19,7 +19,6 @@ export default function UnifiedSignalCard(props: Props) {
     ? normalizeFromSaved((props as SavedProps).signal)
     : normalizeFromScan((props as ScanProps).signal)
 
-  const [expanded, setExpanded] = useState(false)
   const [showTakeForm, setShowTakeForm] = useState(false)
   const [takeMode, setTakeMode] = useState<TakeMode>('demo')
   const [selectedModel, setSelectedModel] = useState(0)
@@ -30,7 +29,7 @@ export default function UnifiedSignalCard(props: Props) {
 
   // Real-order result modal state
   const [realModal, setRealModal] = useState<
-    | { kind: 'success'; info: RealOrderInfo }
+    | { kind: 'success'; info: RealOrderInfo; demoSkippedReason?: string | null }
     | { kind: 'error'; message: string }
     | null
   >(null)
@@ -79,7 +78,7 @@ export default function UnifiedSignalCard(props: Props) {
       if (takeMode === 'real') {
         const res = await takeSignalAsRealTrade(data.id!, Number(amount), active?.type, lev, orderType)
         if (res.real) {
-          setRealModal({ kind: 'success', info: res.real })
+          setRealModal({ kind: 'success', info: res.real, demoSkippedReason: res.demoSkippedReason })
         } else {
           setRealModal({ kind: 'error', message: res.realError || 'Реальная сделка не была создана' })
         }
@@ -117,13 +116,15 @@ export default function UnifiedSignalCard(props: Props) {
       try {
         const res = await takeSignalAsRealTrade(data.id, Number(amount), active?.type, lev, orderType)
         if (res.real) {
-          setRealModal({ kind: 'success', info: res.real })
+          setRealModal({ kind: 'success', info: res.real, demoSkippedReason: res.demoSkippedReason })
         } else {
           setRealModal({ kind: 'error', message: res.realError || 'Реальная сделка не была создана' })
         }
         setShowTakeForm(false)
-        // mark as taken in scan tab via parent callback shape
-        ;(props as ScanProps).onTake(data.id, Number(amount), active?.type, lev, orderType)
+        // mark as taken in scan tab via parent callback shape (only if demo was actually created)
+        if (res.trade) {
+          ;(props as ScanProps).onTake(data.id, Number(amount), active?.type, lev, orderType)
+        }
       } catch (err: any) {
         alert(err.message || 'Failed to take signal')
       } finally { setLoading(false) }
@@ -158,8 +159,6 @@ export default function UnifiedSignalCard(props: Props) {
       <SignalCardContext
         data={data}
         active={active}
-        expanded={expanded}
-        onToggleExpanded={() => setExpanded(e => !e)}
       />
       {showTakeForm && (
         <>
@@ -213,10 +212,13 @@ function RealOrderModal({
   modal,
   onClose,
 }: {
-  modal: { kind: 'success'; info: RealOrderInfo } | { kind: 'error'; message: string }
+  modal:
+    | { kind: 'success'; info: RealOrderInfo; demoSkippedReason?: string | null }
+    | { kind: 'error'; message: string }
   onClose: () => void
 }) {
   const isError = modal.kind === 'error'
+  const demoSkipped = modal.kind === 'success' ? modal.demoSkippedReason : null
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div
@@ -245,7 +247,14 @@ function RealOrderModal({
           </>
         ) : (
           <>
-            <div className="text-sm text-text-primary mb-3">Демо + реальная сделка успешно созданы.</div>
+            <div className="text-sm text-text-primary mb-3">
+              {demoSkipped ? 'Реальная сделка создана на Bybit. Демо пропущено — не хватает виртуального баланса.' : 'Демо + реальная сделка успешно созданы.'}
+            </div>
+            {demoSkipped && (
+              <div className="bg-input rounded p-2 text-xs text-accent font-mono break-words mb-3">
+                {demoSkipped}
+              </div>
+            )}
             <div className="space-y-1.5 text-sm font-mono bg-input rounded p-3">
               <div><span className="text-text-secondary">Символ: </span><span className="text-text-primary">{modal.info.symbol}</span></div>
               <div><span className="text-text-secondary">Position ID: </span><span className="text-text-primary">#{modal.info.positionId}</span></div>

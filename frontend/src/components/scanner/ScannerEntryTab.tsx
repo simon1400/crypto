@@ -26,7 +26,6 @@ export default function ScannerEntryTab({
 }: ScannerEntryTabProps) {
   const [entryResults, setEntryResults] = useState<EntryAnalysisResponse | null>(null)
   const [entryCoins, setEntryCoins] = useState<string[]>([])
-  const [entryUseGPT, setEntryUseGPT] = useState(true)
   const [savedEntries, setSavedEntries] = useState<any[]>([])
 
   useEffect(() => {
@@ -53,7 +52,7 @@ export default function ScannerEntryTab({
     }, 2500)
 
     try {
-      const res = await analyzeEntry(entryCoins, entryUseGPT)
+      const res = await analyzeEntry(entryCoins)
       setEntryResults(res)
       loadSavedEntries()
     } catch (err: any) {
@@ -73,15 +72,6 @@ export default function ScannerEntryTab({
             onChange={setEntryCoins}
             max={5}
           />
-          <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
-            <input
-              type="checkbox"
-              checked={entryUseGPT}
-              onChange={e => setEntryUseGPT(e.target.checked)}
-              className="accent-accent"
-            />
-            GPT-5.4 анализ
-          </label>
           <button
             onClick={handleEntryAnalyze}
             disabled={entryLoading || entryCoins.length === 0}
@@ -153,7 +143,6 @@ export default function ScannerEntryTab({
                 riskReward: mc.riskReward || 0,
                 reasons: mc.reasons || [],
                 regime: mc.regime || { regime: '', confidence: 0, btcTrend: '', fearGreedZone: '', volatility: '' },
-                gpt: mc.gpt || null,
                 funding: mc.funding || null,
                 oi: mc.oi || null,
               }

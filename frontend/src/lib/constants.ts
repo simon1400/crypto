@@ -26,11 +26,3 @@ export const STRATEGY_MAP: Record<string, { label: string; color: string }> = {
   breakout: { label: 'Пробой', color: 'text-orange-400 bg-orange-400/10' },
 }
 
-// === Quality grade colors ===
-export const QUALITY_COLORS: Record<string, string> = {
-  A: 'text-long',
-  B: 'text-accent',
-  C: 'text-text-secondary',
-  D: 'text-orange-400',
-  F: 'text-short',
-}

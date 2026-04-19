@@ -1,5 +1,4 @@
 import { SignalWithRisk } from '../scoring/types'
-import { GPTAnnotation } from '../gptFilter'
 import { RegimeContext } from '../marketRegime'
 import { CoinRegimeContext } from '../coinRegime'
 import {
@@ -48,7 +47,6 @@ export interface TriggerState {
 
 export interface ScanResult {
   signal: SignalWithRisk
-  gptAnnotation: GPTAnnotation
   regime: RegimeContext
   category: SignalCategory
   scoreBand: ScoreBand

@@ -16,7 +16,7 @@ router.post('/analyze-entry', asyncHandler(async (req, res) => {
     return
   }
 
-  const { coins, useGPT } = req.body as { coins: string[]; useGPT?: boolean }
+  const { coins } = req.body as { coins: string[] }
   if (!coins || !Array.isArray(coins) || coins.length === 0) {
     res.status(400).json({ error: 'coins required (array of 1-5 tickers)' })
     return
@@ -26,7 +26,7 @@ router.post('/analyze-entry', asyncHandler(async (req, res) => {
     return
   }
 
-  const { results, errors } = await analyzeEntries(coins, useGPT ?? true)
+  const { results, errors } = await analyzeEntries(coins)
 
     // Save results to DB as GeneratedSignals + build response in single pass
     const savedIds: Record<string, number> = {}
@@ -58,11 +58,9 @@ router.post('/analyze-entry', asyncHandler(async (req, res) => {
             currentPrice: r.currentPrice,
             regime: r.regime,
             reasons: r.reasons,
-            gpt: r.gpt,
             funding: r.funding ? { rate: r.funding.fundingRate } : null,
             oi: r.oi ? { value: r.oi.openInterest } : null,
           })),
-          aiAnalysis: r.gpt ? JSON.stringify(r.gpt) : null,
           expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24h expiry
         },
       })
@@ -86,7 +84,6 @@ router.post('/analyze-entry', asyncHandler(async (req, res) => {
         riskReward: r.riskReward,
         reasons: r.reasons,
         regime: r.regime,
-        gpt: r.gpt,
         funding: r.funding ? { rate: r.funding.fundingRate } : null,
         oi: r.oi ? { value: r.oi.openInterest } : null,
       })

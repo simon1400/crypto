@@ -8,7 +8,6 @@ import { detectMarketRegime, RegimeContext } from '../marketRegime'
 import { detectCoinRegime, CoinRegimeContext } from '../coinRegime'
 import { runStrategies } from '../strategies/index'
 import { runScoringPipeline } from '../scoring/index'
-import { gptAnnotateEntrySignal, EntryGPTAnnotation } from '../gptEntryFilter'
 import { getLiquidationStats, LiquidationStats } from '../../services/liquidations'
 import { fetchLongShortRatios, LSRData } from '../../services/longShortRatio'
 import { round } from '../utils/round'
@@ -47,7 +46,6 @@ export interface EntryAnalysisResult {
   indicators: MultiTFIndicators
   regime: RegimeContext
   coinRegime: CoinRegimeContext
-  gpt: EntryGPTAnnotation | null
   funding: FundingData | null
   oi: OIData | null
   news: NewsSentiment | null
@@ -78,7 +76,6 @@ const DEFAULT_REGIME: RegimeContext = {
  */
 export async function analyzeEntries(
   coins: string[],
-  useGPT = true,
 ): Promise<{ results: EntryAnalysisResult[]; errors: string[] }> {
   if (isAnalyzing) throw new Error('Entry analyzer already running')
   isAnalyzing = true
@@ -153,15 +150,6 @@ export async function analyzeEntries(
         if (!result) {
           console.log(`[EntryAnalyzer] ${coin}: no valid entry levels found`)
           continue
-        }
-
-        // GPT annotation
-        if (useGPT) {
-          try {
-            result.gpt = await gptAnnotateEntrySignal(result, regime)
-          } catch (err) {
-            console.warn(`[EntryAnalyzer] GPT failed for ${coin}:`, err)
-          }
         }
 
         results.push(result)
@@ -318,7 +306,6 @@ function analyzeCoin(
     indicators: ind,
     regime,
     coinRegime,
-    gpt: null,
     funding,
     oi,
     news,

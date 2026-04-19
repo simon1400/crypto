@@ -80,7 +80,6 @@ export default function ScannerSignalsTab({ balance, riskPct, realBalance, refre
         'RSI 1h', 'ADX 1h', 'Volume Ratio', 'Funding Rate', 'OI Δ 1h', 'OI Δ 4h',
         'Distance to EMA20', 'Distance to VWAP', 'Impulse Extension',
         'Data Completeness',
-        'GPT анализ',
       ]
 
       const fmt2 = (n: number) => Number(n).toFixed(2)
@@ -157,7 +156,6 @@ export default function ScannerSignalsTab({ balance, riskPct, realBalance, refre
           sc.distance_to_vwap != null ? fmt2(sc.distance_to_vwap) + '%' : '',
           sc.impulse_extension_at_entry_atr_1h ?? '',
           sc.data_completeness != null ? fmt2(sc.data_completeness * 100) + '%' : '',
-          esc(s.aiAnalysis || ''),
         ].map(v => typeof v === 'string' && v.startsWith('"') ? v : esc(String(v)))
       })
 

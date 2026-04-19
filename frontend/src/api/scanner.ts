@@ -58,7 +58,6 @@ export interface ScannerMarketContext {
   news: Record<string, unknown> | null
   liquidations: Record<string, unknown> | null
   lsr: Record<string, unknown> | null
-  setupQuality: string
   coinRegime: Record<string, unknown> | null
   setup_category: string
   execution_type: string
@@ -99,7 +98,6 @@ export interface ScannerSignal {
   amount: number
   indicators: ScannerIndicators
   marketContext: ScannerMarketContext
-  aiAnalysis: string | null
   closes: SignalClose[]
   closedPct: number
   realizedPnl: number
@@ -207,13 +205,6 @@ export interface ScanSignal {
   bestEntryType: string
   entryModels: EntryModel[]
   reasons: string[]
-  setupQuality: string
-  aiCommentary: string
-  aiRisks: string[]
-  aiConflicts: string[]
-  aiKeyLevels: string[]
-  recommendedEntryType: string
-  waitForConfirmation: string | null
   // === New 3-layer scoring ===
   setup_category?: string
   execution_type?: string
@@ -298,11 +289,11 @@ export interface ScanResponse {
   signals: ScanSignal[]
 }
 
-export async function triggerScan(coins?: string[], minScore?: number, useGPT?: boolean): Promise<ScanResponse> {
+export async function triggerScan(coins?: string[], minScore?: number): Promise<ScanResponse> {
   const res = await fetch(`${BASE}/api/scanner/scan`, {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ coins, minScore, useGPT }),
+    body: JSON.stringify({ coins, minScore }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Scan failed' }))
@@ -318,7 +309,7 @@ export async function cancelScan(): Promise<void> {
 // === Scanner progress (Server-Sent Events) ===
 export type ScanPhase =
   | 'idle' | 'starting' | 'market_data' | 'fetching' | 'regime'
-  | 'scoring' | 'risk_calc' | 'gpt' | 'saving' | 'done' | 'error'
+  | 'scoring' | 'risk_calc' | 'classifying' | 'saving' | 'done' | 'error'
   // risk_calc kept for backward compat with older backend
 
 export interface ScanProgress {
@@ -441,10 +432,11 @@ export interface RealOrderInfo {
 }
 
 export interface TakeRealResponse {
-  trade: Trade
+  trade: Trade | null
   signal: { id: number; status: string }
   real: RealOrderInfo | null
   realError: string | null
+  demoSkippedReason?: string | null
 }
 
 export async function takeSignalAsRealTrade(
@@ -586,20 +578,6 @@ export interface EntryPointData {
   fillProbability: number
 }
 
-export interface EntryGPT {
-  setupQuality: string
-  commentary: string
-  entry1Quality: string
-  entry1Comment: string
-  entry2Quality: string
-  entry2Comment: string
-  risks: string[]
-  suggestedEntry1: number | null
-  suggestedEntry2: number | null
-  suggestedSL: number | null
-  keyLevels: string[]
-}
-
 export interface EntryAnalysisSignal {
   coin: string
   type: string
@@ -617,7 +595,6 @@ export interface EntryAnalysisSignal {
   riskReward: number
   reasons: string[]
   regime: { regime: string; confidence: number; btcTrend: string; fearGreedZone: string; volatility: string }
-  gpt: EntryGPT | null
   funding: { rate: number } | null
   oi: { value: number } | null
 }
@@ -628,11 +605,11 @@ export interface EntryAnalysisResponse {
   results: EntryAnalysisSignal[]
 }
 
-export async function analyzeEntry(coins: string[], useGPT = true): Promise<EntryAnalysisResponse> {
+export async function analyzeEntry(coins: string[]): Promise<EntryAnalysisResponse> {
   const res = await fetch(`${BASE}/api/scanner/analyze-entry`, {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ coins, useGPT }),
+    body: JSON.stringify({ coins }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Entry analysis failed' }))

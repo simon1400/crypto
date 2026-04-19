@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { CandidateInfo } from '../../api/client'
 import { fmtPrice, fmt2Signed, formatDate } from '../../lib/formatters'
-import AiAnalysisBlock from './AiAnalysisBlock'
 import { CardData, EntryModelData } from './types'
 
 function CandidateRow({ candidate, role }: { candidate: CandidateInfo; role: 'preferred' | 'secondary' | 'deep' }) {
@@ -82,11 +81,9 @@ function CandidateRow({ candidate, role }: { candidate: CandidateInfo; role: 'pr
 interface SignalCardContextProps {
   data: CardData
   active: EntryModelData | undefined
-  expanded: boolean
-  onToggleExpanded: () => void
 }
 
-export default function SignalCardContext({ data, active, expanded, onToggleExpanded }: SignalCardContextProps) {
+export default function SignalCardContext({ data, active }: SignalCardContextProps) {
   return (
     <>
       {/* === Trigger state (scan) === */}
@@ -255,38 +252,6 @@ export default function SignalCardContext({ data, active, expanded, onToggleExpa
         </div>
       )}
 
-      {/* === AI Analysis (saved — expandable text) === */}
-      {data.aiAnalysis && data.aiAnalysis !== 'GPT фільтр отключен\n\nРиски: \nУровні: ' && (
-        <>
-          <button onClick={onToggleExpanded} className="text-xs text-text-secondary hover:text-accent transition-colors mb-2">
-            {expanded ? '▾ Скрыть GPT анализ' : '▸ GPT-5.4 анализ'}
-          </button>
-          {expanded && <AiAnalysisBlock text={data.aiAnalysis} />}
-        </>
-      )}
-
-      {/* === AI Annotation (scan — structured) === */}
-      {data.aiCommentary && (
-        <div className="bg-input rounded-lg p-3 mb-3 text-sm text-text-secondary">
-          <div className="text-xs text-accent mb-1 font-medium">AI Annotation{data.setupQuality ? ` [${data.setupQuality}]` : ''}:</div>
-          <div>{data.aiCommentary}</div>
-          {data.aiConflicts.length > 0 && (
-            <div className="mt-1 text-xs text-orange-400">
-              Конфликты: {data.aiConflicts.join(' · ')}
-            </div>
-          )}
-          {data.aiRisks.length > 0 && (
-            <div className="mt-1 text-xs text-short">
-              Риски: {data.aiRisks.join(' · ')}
-            </div>
-          )}
-          {data.waitForConfirmation && (
-            <div className="mt-1 text-xs text-blue-400">
-              ⏳ Ждать: {data.waitForConfirmation}
-            </div>
-          )}
-        </div>
-      )}
     </>
   )
 }

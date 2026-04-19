@@ -1,8 +1,7 @@
 import { Router } from 'express'
 import { prisma } from '../db/prisma'
-import { getChannelMessages, downloadMessageMedia } from '../services/telegram'
+import { getChannelMessages } from '../services/telegram'
 import { parseSignalMessage } from '../services/signalParser'
-import { parseSignalImage, isBinanceKillersSignal } from '../services/imageParser'
 import { trackActiveSignals, resolveSymbolFromCache } from '../services/signalTracker'
 import { fetchCurrentPrice } from '../services/market'
 import { asyncHandler, parseIdParam } from './_helpers'
@@ -19,11 +18,7 @@ const CHANNELS: Record<string, ChannelConfig> = {
   'Near512-LowCap': { peer: '-1002726338238', topicId: 6 },
   'Near512-MidHigh': { peer: '-1002726338238', topicId: 8 },
   'Near512-Spot': { peer: '-1002726338238', topicId: 18 },
-  BinanceKillers: { peer: 'binancekillers' },
 }
-
-// Channels that require image parsing (signal data is in photos, not text)
-const IMAGE_CHANNELS = ['BinanceKillers']
 
 // Channels that belong to Near512 group (for "All" combined view)
 const NEAR512_CHANNELS = ['Near512-LowCap', 'Near512-MidHigh', 'Near512-Spot']
@@ -77,30 +72,9 @@ router.post('/sync', asyncHandler(async (req, res) => {
     if (!config) continue
 
     const messages = await getChannelMessages(config.peer, sinceUnix, config.topicId)
-    const isImageChannel = IMAGE_CHANNELS.includes(ch)
 
     for (const msg of messages) {
-      let parsed: any = null
-
-      if (isImageChannel) {
-        // BinanceKillers: signal data is in the photo, text is just ✅✅TICKER✅✅
-        const ticker = isBinanceKillersSignal(msg.text)
-        if (!ticker || !msg.hasMedia) continue
-
-        console.log(`[Signals] BinanceKillers signal detected: ${ticker}, downloading image...`)
-        const imageBuffer = await downloadMessageMedia(config.peer, msg.id, config.topicId)
-        if (!imageBuffer) {
-          console.warn(`[Signals] Failed to download image for msg #${msg.id}`)
-          continue
-        }
-
-        parsed = await parseSignalImage(imageBuffer)
-        if (parsed) {
-          console.log(`[Signals] BinanceKillers parsed: ${parsed.coin} ${parsed.type} entry=${parsed.entryMin}-${parsed.entryMax}`)
-        }
-      } else {
-        parsed = parseSignalMessage(msg.text)
-      }
+      const parsed: any = parseSignalMessage(msg.text)
 
       if (!parsed) continue
 

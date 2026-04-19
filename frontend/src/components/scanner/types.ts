@@ -61,7 +61,6 @@ export interface CardData {
   setupScore: number | null
   setupCategory: string | null
   executionType: string | null
-  setupQuality: string | null
   legacyCategory: string | null
 
   // levels
@@ -94,13 +93,8 @@ export interface CardData {
   marketEntryPlan: { max_chase_price: number; explanation: string } | null
   candidates: CandidateSetInfo | null
 
-  // reasons & AI
+  // reasons
   reasons: string[]
-  aiAnalysis: string | null
-  aiCommentary: string | null
-  aiRisks: string[]
-  aiConflicts: string[]
-  waitForConfirmation: string | null
 
   // saved signal specifics
   amount: number
@@ -145,7 +139,6 @@ export function normalizeFromSaved(s: ScannerSignal): CardData {
     setupScore: s.setupScore ?? mc.setup_score ?? null,
     setupCategory: s.setupCategory ?? mc.setup_category ?? null,
     executionType: s.executionType ?? mc.execution_type ?? null,
-    setupQuality: null,
     legacyCategory: null,
     entry: s.entry,
     stopLoss: s.stopLoss,
@@ -168,11 +161,6 @@ export function normalizeFromSaved(s: ScannerSignal): CardData {
     marketEntryPlan: mc.market_entry_plan || null,
     candidates: mc.limit_entry_plan?.candidates || null,
     reasons: mc.reasons || [],
-    aiAnalysis: s.aiAnalysis,
-    aiCommentary: null,
-    aiRisks: [],
-    aiConflicts: [],
-    waitForConfirmation: null,
     amount: s.amount,
     closedPct: s.closedPct,
     realizedPnl: s.realizedPnl,
@@ -200,7 +188,6 @@ export function normalizeFromScan(s: ScanSignal): CardData {
     setupScore: s.setup_score ?? null,
     setupCategory: s.setup_category ?? null,
     executionType: s.execution_type ?? null,
-    setupQuality: s.setupQuality || null,
     legacyCategory: s.category || null,
     entry: s.entry,
     stopLoss: s.stopLoss,
@@ -223,11 +210,6 @@ export function normalizeFromScan(s: ScanSignal): CardData {
     marketEntryPlan: s.market_entry_plan || null,
     candidates: s.candidates || s.limit_entry_plan?.candidates || null,
     reasons: s.reasons || [],
-    aiAnalysis: null,
-    aiCommentary: s.aiCommentary || null,
-    aiRisks: s.aiRisks || [],
-    aiConflicts: s.aiConflicts || [],
-    waitForConfirmation: s.waitForConfirmation || null,
     amount: 0,
     closedPct: 0,
     realizedPnl: 0,
