@@ -146,7 +146,7 @@ model Trade {
   closedPct     Float    @default(0)             // суммарно закрыто % позиции (0-100)
   realizedPnl   Float    @default(0)             // реализованный P&L в USDT (без вычета fees/funding)
   status        String   @default("OPEN")        // OPEN, PARTIALLY_CLOSED, CLOSED, SL_HIT, CANCELLED
-  source        String   @default("MANUAL")      // MANUAL, SIGNAL, BACKTEST, SCANNER, ENTRY_ANALYZER
+  source        String   @default("MANUAL")      // MANUAL, SIGNAL, SCANNER, ENTRY_ANALYZER
   entryOrderType String  @default("market")      // market (taker) / limit (maker) — определяет fee вхождения
   fees          Float    @default(0)             // суммарные trading fees (entry + exit)
   fundingPaid   Float    @default(0)             // суммарно уплачено funding (положительное = платил, отрицательное = получал)

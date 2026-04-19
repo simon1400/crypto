@@ -1,6 +1,5 @@
 import { BASE, getHeaders } from './base'
 
-// Klines (Backtester)
 export interface KlineData {
   time: number
   open: number

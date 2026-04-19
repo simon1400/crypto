@@ -9,7 +9,7 @@ import { asyncHandler, handleBudgetError, parseIdParam } from '../_helpers'
 
 const router = Router()
 
-const VALID_SOURCES = ['MANUAL', 'SIGNAL', 'BACKTEST']
+const VALID_SOURCES = ['MANUAL', 'SIGNAL']
 
 // POST /api/trades — создать сделку
 router.post('/', asyncHandler(async (req, res) => {
