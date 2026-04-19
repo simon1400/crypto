@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { sanitizeCsvField } from '../../utils/sanitizeCsv'
 import {
   getScannerSignals, deleteSignal, deleteAllSignals, deleteUnusedSignals,
@@ -12,9 +12,10 @@ interface ScannerSignalsTabProps {
   realBalance: number | null
   refreshKey: number  // incremented by parent when scan tab modifies signals
   onShowChart: (signal: ScannerSignal) => void
+  highlightId?: number | null
 }
 
-export default function ScannerSignalsTab({ balance, riskPct, realBalance, refreshKey, onShowChart }: ScannerSignalsTabProps) {
+export default function ScannerSignalsTab({ balance, riskPct, realBalance, refreshKey, onShowChart, highlightId }: ScannerSignalsTabProps) {
   const [signals, setSignals] = useState<ScannerSignal[]>([])
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
@@ -32,6 +33,25 @@ export default function ScannerSignalsTab({ balance, riskPct, realBalance, refre
   useEffect(() => {
     loadSignals()
   }, [page, statusFilter, dateFrom, dateTo, refreshKey])
+
+  // When landing with highlightId — force "Новые" filter, show all, scroll to card and flash.
+  const highlightRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (highlightId == null) return
+    if (statusFilter !== 'NEW') setStatusFilter('NEW')
+    setPage(1)
+    setShowAll(true)
+  }, [highlightId])
+
+  useEffect(() => {
+    if (highlightId == null) return
+    if (!signals.some(s => s.id === highlightId)) return
+    // Wait a frame so the card is rendered
+    const t = setTimeout(() => {
+      highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 50)
+    return () => clearTimeout(t)
+  }, [highlightId, signals])
 
   async function loadSignals() {
     try {
@@ -300,9 +320,18 @@ export default function ScannerSignalsTab({ balance, riskPct, realBalance, refre
       ) : (
         <>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {visibleSignals.map(s => (
-              <UnifiedSignalCard key={s.id} mode="saved" signal={s} onStatusChange={loadSignals} onDelete={handleDelete} balance={balance} riskPct={riskPct} realBalance={realBalance} onShowChart={onShowChart} />
-            ))}
+            {visibleSignals.map(s => {
+              const isHighlighted = highlightId === s.id
+              return (
+                <div
+                  key={s.id}
+                  ref={isHighlighted ? highlightRef : undefined}
+                  className={isHighlighted ? 'rounded-xl ring-2 ring-accent shadow-[0_0_16px_rgba(240,185,11,0.45)] animate-pulse' : ''}
+                >
+                  <UnifiedSignalCard mode="saved" signal={s} onStatusChange={loadSignals} onDelete={handleDelete} balance={balance} riskPct={riskPct} realBalance={realBalance} onShowChart={onShowChart} />
+                </div>
+              )
+            })}
           </div>
           {hasMore && !showAll && (
             <div className="flex justify-center">

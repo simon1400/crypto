@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   triggerScan, cancelScan, takeSignalAsTrade, skipSignal, deleteSignal,
   getScannerCoins, getBudget, getBalance,
@@ -40,6 +41,27 @@ export default function Scanner() {
   const [progress, setProgress] = useState<ScanProgress | null>(null)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'saved' | 'scan' | 'entry' | 'calc' | 'coins' | 'analytics'>('saved')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const highlightParam = searchParams.get('highlight')
+  const highlightId = highlightParam ? Number(highlightParam) : null
+
+  // When landing with ?highlight=<id> — force "saved" tab and "Новые" filter inside it.
+  useEffect(() => {
+    if (highlightId != null) {
+      setTab('saved')
+    }
+  }, [highlightId])
+
+  // Clear the highlight param after 5s so back-nav or refresh doesn't re-trigger animation.
+  useEffect(() => {
+    if (highlightId == null) return
+    const t = setTimeout(() => {
+      const next = new URLSearchParams(searchParams)
+      next.delete('highlight')
+      setSearchParams(next, { replace: true })
+    }, 5000)
+    return () => clearTimeout(t)
+  }, [highlightId, searchParams, setSearchParams])
   const [minScore, setMinScore] = useState(70)
   const [chartSignal, setChartSignal] = useState<ScannerSignal | null>(null)
   const [coinCount, setCoinCount] = useState(0)
@@ -355,6 +377,7 @@ export default function Scanner() {
           realBalance={realBalance}
           refreshKey={signalsRefreshKey}
           onShowChart={setChartSignal}
+          highlightId={highlightId}
         />
       )}
 

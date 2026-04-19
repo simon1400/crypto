@@ -19,6 +19,7 @@ import { seedTickerMappings } from './trading/tickerMapper'
 import { trackScannerTrades } from './services/scannerTracker'
 import { checkSignalIntegrity } from './services/integrityMonitor'
 import { startFundingTracker, stopFundingTracker } from './services/fundingTracker'
+import { startAutoScanner, stopAutoScanner } from './services/autoScanner'
 import { startLiquidationListener, stopLiquidationListener } from './services/liquidations'
 import { stopHealthCheck } from './services/telegram'
 import { SCAN_COINS } from './scanner/coinScanner'
@@ -117,7 +118,8 @@ const server = app.listen(PORT, () => {
   // Seed ticker mappings (PEPE, BONK, FLOKI, PLAY)
   seedTickerMappings().catch(err => console.error('[Startup] Seed ticker mappings error:', err.message))
 
-  // Auto-scan disabled — manual scan only via POST /api/scanner/scan
+  // Background auto-scanner — runs on interval when enabled in settings
+  startAutoScanner()
 })
 
 async function gracefulShutdown(signal: string) {
@@ -134,6 +136,7 @@ async function gracefulShutdown(signal: string) {
   clearInterval(reconcileInterval)
   stopTtlChecker(ttlInterval)
   stopFundingTracker()
+  stopAutoScanner()
   stopHealthCheck()
 
   // 3. Close WebSocket connections

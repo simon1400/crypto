@@ -18,6 +18,9 @@ export interface SettingsResponse {
   telegramBotToken: string | null
   telegramChatId: string | null
   telegramEnabled: boolean
+  autoScanEnabled: boolean
+  autoScanIntervalMin: number
+  autoScanMinScore: number
   hasKeys: boolean
   balance: number | null
   isConnected: boolean

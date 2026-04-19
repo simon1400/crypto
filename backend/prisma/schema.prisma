@@ -188,6 +188,9 @@ model BotConfig {
   telegramChatId          String?
   telegramEnabled         Boolean  @default(false)
   scannerCoins            Json     @default("[]")
+  autoScanEnabled         Boolean  @default(false)
+  autoScanIntervalMin     Int      @default(12)
+  autoScanMinScore        Int      @default(80)
   // === Virtual trading simulation ===
   virtualBalance          Float    @default(1000)  // текущий виртуальный депозит USDT
   virtualBalanceStart     Float    @default(1000)  // стартовый депозит (для расчёта ROI)

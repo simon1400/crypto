@@ -4,6 +4,7 @@ import { prisma } from '../db/prisma'
 import { encrypt, maskKey } from '../services/encryption'
 import { createBybitClient, validateBybitKeys } from '../services/bybit'
 import { startAutoListener, stopAutoListener } from '../trading/autoListener'
+import { restartAutoScanner } from '../services/autoScanner'
 import { getInstrumentInfo } from '../trading/instrumentCache'
 import { sendTestNotification, sendNotification } from '../services/notifier'
 import { getVirtualBalanceInfo, setVirtualBalance } from '../services/virtualBalance'
@@ -29,6 +30,9 @@ function buildConfigResponse(config: BotConfig, extras?: { balance?: string; key
     telegramBotToken: config.telegramBotToken ? '****' + config.telegramBotToken.slice(-4) : null,
     telegramChatId: config.telegramChatId,
     telegramEnabled: config.telegramEnabled,
+    autoScanEnabled: config.autoScanEnabled,
+    autoScanIntervalMin: config.autoScanIntervalMin,
+    autoScanMinScore: config.autoScanMinScore,
     virtualBalance: config.virtualBalance,
     virtualBalanceStart: config.virtualBalanceStart,
     virtualStartedAt: config.virtualStartedAt,
@@ -61,6 +65,9 @@ router.put('/', asyncHandler(async (req, res) => {
     telegramBotToken,
     telegramChatId,
     telegramEnabled,
+    autoScanEnabled,
+    autoScanIntervalMin,
+    autoScanMinScore,
     takerFeeRate,
     makerFeeRate,
   } = req.body
@@ -80,6 +87,14 @@ router.put('/', asyncHandler(async (req, res) => {
   }
   if (tradingMode !== undefined && !['manual', 'auto'].includes(tradingMode)) {
     res.status(400).json({ error: 'tradingMode must be "manual" or "auto"' })
+    return
+  }
+  if (autoScanIntervalMin !== undefined && (autoScanIntervalMin < 5 || autoScanIntervalMin > 120)) {
+    res.status(400).json({ error: 'autoScanIntervalMin must be between 5 and 120' })
+    return
+  }
+  if (autoScanMinScore !== undefined && (autoScanMinScore < 50 || autoScanMinScore > 100)) {
+    res.status(400).json({ error: 'autoScanMinScore must be between 50 and 100' })
     return
   }
 
@@ -102,6 +117,9 @@ router.put('/', asyncHandler(async (req, res) => {
   if (telegramBotToken !== undefined) setBoth('telegramBotToken', telegramBotToken)
   if (telegramChatId !== undefined) setBoth('telegramChatId', telegramChatId)
   if (telegramEnabled !== undefined) setBoth('telegramEnabled', telegramEnabled)
+  if (autoScanEnabled !== undefined) setBoth('autoScanEnabled', autoScanEnabled)
+  if (autoScanIntervalMin !== undefined) setBoth('autoScanIntervalMin', autoScanIntervalMin)
+  if (autoScanMinScore !== undefined) setBoth('autoScanMinScore', autoScanMinScore)
   if (takerFeeRate !== undefined && takerFeeRate >= 0 && takerFeeRate <= 0.01) setBoth('takerFeeRate', takerFeeRate)
   if (makerFeeRate !== undefined && makerFeeRate >= 0 && makerFeeRate <= 0.01) setBoth('makerFeeRate', makerFeeRate)
 
@@ -124,6 +142,11 @@ router.put('/', asyncHandler(async (req, res) => {
   // If apiKey is null/undefined, do NOT touch existing keys (Pitfall 4)
 
   const config = await prisma.botConfig.upsert({ where: { id: 1 }, update: updateData, create: createData })
+
+  // Restart auto scanner if any of its config fields changed
+  if (autoScanEnabled !== undefined || autoScanIntervalMin !== undefined || autoScanMinScore !== undefined) {
+    restartAutoScanner()
+  }
 
   // Start/stop auto listener based on tradingMode change
   if (tradingMode === 'auto') {
