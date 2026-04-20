@@ -45,9 +45,18 @@ function exportCSV(signals: Signal[], prices: Record<string, number | null>, cha
   URL.revokeObjectURL(url)
 }
 
+const CHANNELS = [
+  { value: 'EveningTrader', label: 'EveningTrader' },
+  { value: 'ETG', label: 'ETG x CSF Copytrading VIP' },
+]
+
 export default function Signals() {
-  const channel = 'EveningTrader'
+  const [channel, setChannel] = useState<string>(() => localStorage.getItem('signals_channel') || 'EveningTrader')
   const [days, setDays] = useState(7)
+
+  useEffect(() => {
+    localStorage.setItem('signals_channel', channel)
+  }, [channel])
   const [data, setData] = useState<SignalsResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -203,6 +212,21 @@ export default function Signals() {
           <p className="text-text-secondary mt-1">Мониторинг торговых сигналов из Telegram</p>
         </div>
         <div className="flex items-center gap-3">
+          {/* Channel selector */}
+          <select
+            value={channel}
+            onChange={e => {
+              setChannel(e.target.value)
+              setData(null)
+              setSyncedDays(null)
+            }}
+            className="bg-input text-text-primary rounded-lg px-3 py-2.5 text-sm border border-card focus:border-accent outline-none"
+          >
+            {CHANNELS.map(c => (
+              <option key={c.value} value={c.value}>{c.label}</option>
+            ))}
+          </select>
+
           {/* Period selector */}
           <select
             value={days}

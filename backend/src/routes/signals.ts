@@ -15,6 +15,7 @@ interface ChannelConfig {
 
 const CHANNELS: Record<string, ChannelConfig> = {
   EveningTrader: { peer: 'EveningTrader' },
+  ETG: { peer: process.env.ETG_CHANNEL_ID || '-1003873272082' },
 }
 
 // GET /api/signals?channel=EveningTrader&days=7
