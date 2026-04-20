@@ -92,6 +92,7 @@ export interface TelegramMessage {
   date: number // unix timestamp
   text: string
   hasMedia?: boolean
+  replyToMsgId?: number // id of the message this one replies to (for ETG status updates)
 }
 
 /**
@@ -211,11 +212,14 @@ export async function getChannelMessages(
           break
         }
         if (msg.message || msg.media) {
+          const replyTo = (msg as any).replyTo
+          const replyToMsgId = replyTo?.replyToMsgId as number | undefined
           allMessages.push({
             id: msg.id,
             date: msg.date,
             text: msg.message || '',
             hasMedia: !!msg.media,
+            replyToMsgId: typeof replyToMsgId === 'number' ? replyToMsgId : undefined,
           })
         }
       }

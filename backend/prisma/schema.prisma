@@ -25,6 +25,14 @@ model Signal {
   statusUpdatedAt DateTime?
   priceHistory    Json     @default("[]") // {time: number, price: number}[]
   createdAt       DateTime @default(now())
+  // === Author-reported final outcome (ETG reply updates) ===
+  authorStatus    String?  // TP1_HIT..TP5_HIT, SL_HIT, TRAILING_WIN, MANUAL_WIN, MANUAL_LOSS, CANCELLED
+  authorPnlPct    Float?   // reported profit/loss % (includes leverage — as written by author)
+  authorPeriod    String?  // "1 day 3 hr", "20 hr 38 min"
+  authorClosedAt  DateTime?
+  authorUpdateMsgId Int?   // telegram message id of the update itself
+  averageEntryPrice Float? // author-reported Average Entry Price (set on Entry N / All entries achieved)
+  allEntriesFilled Boolean @default(false) // true after "All entries achieved"
 
   positions       Position[]
 

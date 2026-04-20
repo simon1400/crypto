@@ -17,6 +17,13 @@ export interface Signal {
   statusUpdatedAt: string | null
   priceHistory: { time: number; price: number }[]
   createdAt: string
+  // Author-reported (ETG reply updates)
+  authorStatus?: string | null
+  authorPnlPct?: number | null
+  authorPeriod?: string | null
+  authorClosedAt?: string | null
+  averageEntryPrice?: number | null
+  allEntriesFilled?: boolean
 }
 
 export interface SignalsResponse {

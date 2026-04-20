@@ -154,6 +154,33 @@ export default function Signals() {
       const levKey = s.leverage <= 5 ? '1-5x' : s.leverage <= 10 ? '6-10x' : '11x+'
       if (!leverageStats[levKey]) leverageStats[levKey] = { wins: 0, losses: 0 }
 
+      // CANCELLED — exclude from stats entirely
+      if (s.status === 'CANCELLED') continue
+
+      // Author-reported P&L (ETG) takes precedence over candle-derived numbers
+      if (s.authorPnlPct != null) {
+        const pnl = s.authorPnlPct
+        totalPnl += pnl
+        closedCount++
+        if (pnl >= 0) {
+          winPnls.push(pnl)
+          leverageStats[levKey].wins++
+          if (s.type === 'LONG') directionStats.longWins++
+          else directionStats.shortWins++
+          // TP2+ counter: only when we know the specific TP hit
+          if (s.status.startsWith('TP')) {
+            const tpIdx = parseInt(s.status.replace('TP', '').replace('_HIT', '')) - 1
+            if (tpIdx >= 1) tp2plus++
+          }
+        } else {
+          lossPnls.push(pnl)
+          leverageStats[levKey].losses++
+          if (s.type === 'LONG') directionStats.longLosses++
+          else directionStats.shortLosses++
+        }
+        continue
+      }
+
       if (s.status === 'SL_HIT') {
         const diff = s.type === 'LONG'
           ? ((s.stopLoss - entry) / entry) * 100
@@ -187,11 +214,13 @@ export default function Signals() {
     const avgWin = winPnls.length > 0 ? winPnls.reduce((a, b) => a + b, 0) / winPnls.length : 0
     const avgLoss = lossPnls.length > 0 ? lossPnls.reduce((a, b) => a + b, 0) / lossPnls.length : 0
 
+    const winStatuses = new Set(['TRAILING_WIN', 'MANUAL_WIN'])
+    const lossStatuses = new Set(['SL_HIT', 'MANUAL_LOSS'])
     return {
       total: data.data.length,
       active: data.data.filter(s => s.status === 'ACTIVE' || s.status === 'ENTRY_WAIT').length,
-      tp: data.data.filter(s => s.status.startsWith('TP')).length,
-      sl: data.data.filter(s => s.status === 'SL_HIT').length,
+      tp: data.data.filter(s => s.status.startsWith('TP') || winStatuses.has(s.status)).length,
+      sl: data.data.filter(s => lossStatuses.has(s.status)).length,
       totalPnl,
       closedCount,
       avgWin,

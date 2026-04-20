@@ -16,6 +16,18 @@ export default function SignalBadge({ status, type }: Props) {
   } else if (status === 'SL_HIT') {
     label = 'Stop Loss'
     colorClass = 'bg-short/15 text-short'
+  } else if (status === 'TRAILING_WIN') {
+    label = 'Trailing SL'
+    colorClass = 'bg-long/15 text-long'
+  } else if (status === 'MANUAL_WIN') {
+    label = 'Закрыт вручную'
+    colorClass = 'bg-long/15 text-long'
+  } else if (status === 'MANUAL_LOSS') {
+    label = 'Закрыт вручную'
+    colorClass = 'bg-short/15 text-short'
+  } else if (status === 'CANCELLED') {
+    label = 'Отменён'
+    colorClass = 'bg-neutral/20 text-neutral'
   } else if (status.startsWith('TP')) {
     const tpNum = status.replace('_HIT', '').replace('TP', '')
     label = `Take Profit ${tpNum}`

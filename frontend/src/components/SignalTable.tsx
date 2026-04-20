@@ -14,6 +14,14 @@ interface Props {
 }
 
 function pnl(signal: Signal): { text: string; color: string } | null {
+  // Author-reported P&L wins over candle-derived P&L (ETG channel)
+  if (signal.authorPnlPct != null && signal.status !== 'CANCELLED') {
+    const p = signal.authorPnlPct
+    if (Math.abs(p) < 0.001) return null
+    const sign = p > 0 ? '+' : ''
+    return { text: `${sign}${p.toFixed(2)}%`, color: p >= 0 ? 'text-long' : 'text-short' }
+  }
+
   if (signal.status === 'SL_HIT') {
     const entry = (signal.entryMin + signal.entryMax) / 2
     const diff = signal.type === 'LONG'

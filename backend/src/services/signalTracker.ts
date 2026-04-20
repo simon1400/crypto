@@ -56,9 +56,12 @@ export function resolveSymbolFromCache(coin: string): string {
  * Called every hour via setInterval and after sync.
  */
 export async function trackActiveSignals() {
+  // ETG is driven entirely by author-reported updates (replies in the channel),
+  // so we never run the candle-based tracker on its signals.
   const signals = await prisma.signal.findMany({
     where: {
       status: { in: ['ENTRY_WAIT', 'ACTIVE'] },
+      channel: { not: 'ETG' },
     },
   })
 
