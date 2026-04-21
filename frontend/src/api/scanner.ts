@@ -380,8 +380,8 @@ export function subscribeScanProgress(onUpdate: (p: ScanProgress) => void): () =
   }
 }
 
-export async function getScannerSignals(page = 1, status?: string, dateFrom?: string, dateTo?: string): Promise<{ data: ScannerSignal[]; total: number; page: number; totalPages: number }> {
-  const q = new URLSearchParams({ page: String(page), limit: '20' })
+export async function getScannerSignals(page = 1, status?: string, dateFrom?: string, dateTo?: string, sortBy: 'score' | 'date' = 'score'): Promise<{ data: ScannerSignal[]; total: number; page: number; totalPages: number }> {
+  const q = new URLSearchParams({ page: String(page), limit: '20', sortBy })
   if (status) q.set('status', status)
   if (dateFrom) q.set('dateFrom', dateFrom)
   if (dateTo) q.set('dateTo', dateTo)

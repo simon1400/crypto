@@ -26,6 +26,10 @@ router.get('/signals', asyncHandler(async (req, res) => {
   const category = req.query.category as string | undefined
   const dateFrom = req.query.dateFrom as string | undefined
   const dateTo = req.query.dateTo as string | undefined
+  const sortBy = (req.query.sortBy as string | undefined) === 'score' ? 'score' : 'date'
+  const orderBy = sortBy === 'score'
+    ? [{ score: 'desc' as const }, { createdAt: 'desc' as const }]
+    : [{ createdAt: 'desc' as const }]
 
   // Check if this is a trade-based virtual filter
   const tradeFilter = status ? TRADE_STATUS_FILTERS[status] : undefined
@@ -56,7 +60,7 @@ router.get('/signals', asyncHandler(async (req, res) => {
   const [data, total] = await Promise.all([
     prisma.generatedSignal.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy,
       skip: tradeFilter ? undefined : skip,
       take: tradeFilter ? undefined : limit,
     }),

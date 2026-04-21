@@ -32,7 +32,7 @@ export default function ScannerSignalsTab({ balance, riskPct, realBalance, refre
 
   useEffect(() => {
     loadSignals()
-  }, [page, statusFilter, dateFrom, dateTo, refreshKey])
+  }, [page, statusFilter, dateFrom, dateTo, sortBy, refreshKey])
 
   // When landing with highlightId — force "Новые" filter, show all, scroll to card and flash.
   const highlightRef = useRef<HTMLDivElement | null>(null)
@@ -55,7 +55,7 @@ export default function ScannerSignalsTab({ balance, riskPct, realBalance, refre
 
   async function loadSignals() {
     try {
-      const res = await getScannerSignals(page, statusFilter || undefined, dateFrom || undefined, dateTo || undefined)
+      const res = await getScannerSignals(page, statusFilter || undefined, dateFrom || undefined, dateTo || undefined, sortBy)
       setSignals(res.data.filter((s: ScannerSignal) => s.strategy !== 'entry_analysis'))
       setTotalPages(res.totalPages)
       setTotalCount(res.total)
@@ -260,13 +260,13 @@ export default function ScannerSignalsTab({ balance, riskPct, realBalance, refre
           <div className="flex items-center gap-2">
             <span className="text-xs text-text-secondary">Сортировка:</span>
             <button
-              onClick={() => setSortBy('score')}
+              onClick={() => { setSortBy('score'); setPage(1); setShowAll(false) }}
               className={`px-3 py-1.5 text-xs rounded ${sortBy === 'score' ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text-primary'}`}
             >
               По скору ↓
             </button>
             <button
-              onClick={() => setSortBy('date')}
+              onClick={() => { setSortBy('date'); setPage(1); setShowAll(false) }}
               className={`px-3 py-1.5 text-xs rounded ${sortBy === 'date' ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text-primary'}`}
             >
               По дате
