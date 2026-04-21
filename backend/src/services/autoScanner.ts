@@ -2,9 +2,37 @@ import { prisma } from '../db/prisma'
 import { runScan, isScannerRunning, SCAN_COINS } from '../scanner/coinScanner'
 
 const PUBLIC_APP_URL = 'https://crypto.pechunka.com'
+const ALERT_TTL_MS = 2 * 60 * 60 * 1000
 
 let timer: NodeJS.Timeout | null = null
-const alertedIds = new Set<number>()
+const alertedByKey = new Map<string, { score: number; alertedAt: number }>()
+
+function alertKey(coin: string, type: string): string {
+  return `${coin.toUpperCase().replace(/USDT$/, '')}:${type}`
+}
+
+async function isCoinInTrade(coin: string, type: string): Promise<boolean> {
+  const base = coin.toUpperCase().replace(/USDT$/, '')
+  const [takenSignal, openTrade] = await Promise.all([
+    prisma.generatedSignal.findFirst({
+      where: {
+        type,
+        status: { in: ['TAKEN', 'PARTIALLY_CLOSED'] },
+        OR: [{ coin: base }, { coin: `${base}USDT` }],
+      },
+      select: { id: true },
+    }),
+    prisma.trade.findFirst({
+      where: {
+        type,
+        status: { in: ['OPEN', 'PARTIALLY_CLOSED'] },
+        OR: [{ coin: base }, { coin: `${base}USDT` }],
+      },
+      select: { id: true },
+    }),
+  ])
+  return !!(takenSignal || openTrade)
+}
 
 export function startAutoScanner() {
   scheduleNextTick().catch(err => console.error('[AutoScanner] Initial schedule error:', err.message))
@@ -60,14 +88,27 @@ async function tick() {
     const hits = results.filter(r => r.signal.score >= minScore)
     console.log(`[AutoScanner] Scan done: ${results.length} passed, ${hits.length} >= ${minScore}`)
 
+    const now = Date.now()
+    for (const [key, entry] of alertedByKey) {
+      if (now - entry.alertedAt > ALERT_TTL_MS) alertedByKey.delete(key)
+    }
+
     for (const r of hits) {
       const savedId = savedIds[r.signal.coin]
       if (!savedId) continue
-      if (alertedIds.has(savedId)) continue
+
+      const key = alertKey(r.signal.coin, r.signal.type)
+      const prev = alertedByKey.get(key)
+      if (prev && r.signal.score <= prev.score) continue
+
+      if (await isCoinInTrade(r.signal.coin, r.signal.type)) {
+        console.log(`[AutoScanner] Skip ${key}: already in trade`)
+        continue
+      }
 
       try {
         await sendAlert(savedId, config.telegramBotToken, config.telegramChatId, config.telegramEnabled)
-        alertedIds.add(savedId)
+        alertedByKey.set(key, { score: r.signal.score, alertedAt: Date.now() })
       } catch (err: any) {
         console.error(`[AutoScanner] Alert failed for signal #${savedId}:`, err.message)
       }
