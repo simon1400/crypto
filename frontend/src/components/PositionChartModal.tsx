@@ -10,7 +10,7 @@ import {
   createSeriesMarkers,
 } from 'lightweight-charts'
 import { createDarkChartOptions } from '../lib/chartConfig'
-import { usePositionChart, toUnix, snapToHour, pickPrecision, FUTURE_BARS, CLOSED_TAIL_BARS } from '../hooks/usePositionChart'
+import { usePositionChart, toUnix, snapToBar, pickPrecision, FUTURE_BARS, CLOSED_TAIL_BARS, ChartInterval } from '../hooks/usePositionChart'
 
 // =============================================================================
 // Position overlay modal: renders a TradingView-style Long/Short Position tool
@@ -37,6 +37,9 @@ export default function PositionChartModal({ position, onClose }: Props) {
     symbol,
     isLong,
     latestKlineTime,
+    interval,
+    setInterval: setChartInterval,
+    intervalSec,
     depEntry,
     depStopLoss,
     depTakeProfits,
@@ -108,20 +111,20 @@ export default function PositionChartModal({ position, onClose }: Props) {
       }))
     )
 
-    // Always ensure there is a visible candle at the current hour.
+    // Always ensure there is a visible candle at the current bar boundary.
     // Bybit may not include the currently-forming candle, leaving a gap.
     if (klines.length > 0) {
       const lastK = klines[klines.length - 1]
       const nowSec = Math.floor(Date.now() / 1000)
-      const currentHourStart = (Math.floor(nowSec / 3600) * 3600) as UTCTimestamp
+      const currentBarStart = (Math.floor(nowSec / intervalSec) * intervalSec) as UTCTimestamp
       const price = position.currentPrice ?? lastK.close
 
       // Determine base OHLC for the live candle
-      const isNewHour = currentHourStart > lastK.time
-      const targetTime = (isNewHour ? currentHourStart : lastK.time) as UTCTimestamp
-      const baseOpen = isNewHour ? lastK.close : lastK.open
-      const baseHigh = isNewHour ? Math.max(lastK.close, price) : Math.max(lastK.high, price)
-      const baseLow = isNewHour ? Math.min(lastK.close, price) : Math.min(lastK.low, price)
+      const isNewBar = currentBarStart > lastK.time
+      const targetTime = (isNewBar ? currentBarStart : lastK.time) as UTCTimestamp
+      const baseOpen = isNewBar ? lastK.close : lastK.open
+      const baseHigh = isNewBar ? Math.max(lastK.close, price) : Math.max(lastK.high, price)
+      const baseLow = isNewBar ? Math.min(lastK.close, price) : Math.min(lastK.low, price)
 
       liveCandleRef.current = { time: targetTime, open: baseOpen, high: baseHigh, low: baseLow }
 
@@ -147,17 +150,17 @@ export default function PositionChartModal({ position, onClose }: Props) {
     // Entry time: openedAt if known, else last candle (for NEW scanner signals)
     const openedSec = toUnix(position.openedAt)
     const entryTime = openedSec != null
-      ? snapToHour(Math.max(openedSec, firstCandleSec))
-      : snapToHour(lastCandleSec)
+      ? snapToBar(Math.max(openedSec, firstCandleSec), intervalSec)
+      : snapToBar(lastCandleSec, intervalSec)
 
     const closedSec = toUnix(position.closedAt)
     // Right edge of the zone. Stable — does NOT depend on Date.now().
     //   closed → closedAt + small tail
-    //   open   → lastCandle + 3 days (72 * 1h)
-    //   new    → lastCandle + 3 days
+    //   open   → lastCandle + FUTURE_BARS
+    //   new    → lastCandle + FUTURE_BARS
     const rightEdgeSec = closedSec != null
-      ? snapToHour(closedSec) + CLOSED_TAIL_BARS * 3600
-      : snapToHour(lastCandleSec) + FUTURE_BARS * 3600
+      ? snapToBar(closedSec, intervalSec) + CLOSED_TAIL_BARS * intervalSec
+      : snapToBar(lastCandleSec, intervalSec) + FUTURE_BARS * intervalSec
 
     // Two hourly ticks is enough — BaselineSeries draws flat zones.
     const leftEdge = entryTime as UTCTimestamp
@@ -274,7 +277,7 @@ export default function PositionChartModal({ position, onClose }: Props) {
       for (const close of position.partialCloses) {
         const closeSec = toUnix(close.closedAt)
         if (closeSec == null) continue
-        const time = snapToHour(closeSec)
+        const time = snapToBar(closeSec, intervalSec)
         markers.push({
           time,
           position: close.isSL ? (isLong ? 'belowBar' : 'aboveBar') : (isLong ? 'aboveBar' : 'belowBar'),
@@ -289,10 +292,52 @@ export default function PositionChartModal({ position, onClose }: Props) {
       createSeriesMarkers(candleSeries, markers)
     }
 
-    // Fit the chart to content on initial build, then scroll so the latest candle
-    // is visible on the right edge (not buried under future overlay zones).
-    chart.timeScale().fitContent()
-    chart.timeScale().scrollToRealTime()
+    // Center the position horizontally around entryTime using logical indices.
+    // On 5m TF use a wider window than on 1h — same covered time (~1.5 days each side)
+    // and a slightly smaller zoom so price action is easier to read.
+    // On narrow (mobile) screens use fewer bars — more zoom.
+    // lightweight-charts needs rightOffset to extend the axis past the last candle,
+    // so we also push rightOffset high enough to cover HALF_BARS of empty future.
+    // Center entry horizontally by fixing barSpacing and rightOffset.
+    // TOTAL_BARS = desired number of bars visible across the container width.
+    // Entry is placed at ~50% — we calculate rightOffset so the position marker
+    // lands in the middle: rightOffset = halfBars - (bars between entry and last candle).
+    const applyView = () => {
+      try {
+        const container = containerRef.current
+        if (!container) return
+        const isMobile = container.clientWidth < 768
+        const TOTAL_BARS = interval === '5m'
+          ? (isMobile ? 60 : 150)
+          : (isMobile ? 30 : 60)
+        const halfBars = Math.round(TOTAL_BARS / 2)
+
+        // Anchor = entry for open/new, midpoint(entry, closed) for closed.
+        let anchorTime: number = entryTime
+        if (closedSec != null) {
+          anchorTime = Math.round((entryTime + snapToBar(closedSec, intervalSec)) / 2)
+        }
+        const lastK = klines[klines.length - 1]
+        const barsAnchorToLast = Math.round((lastK.time - anchorTime) / intervalSec)
+        const rightOffset = halfBars - barsAnchorToLast
+
+        const barSpacing = container.clientWidth / TOTAL_BARS
+        chart.timeScale().applyOptions({
+          rightOffset,
+          barSpacing,
+        })
+      } catch {
+        chart.timeScale().fitContent()
+      }
+    }
+    applyView()
+    // Re-apply after layout settles — on mobile the container may report a
+    // smaller width during the first paint, which skews the initial zoom.
+    requestAnimationFrame(applyView)
+    // And once more after lightweight-charts has processed all pending series
+    // updates (baseline setData, etc.) which can otherwise override barSpacing.
+    const t1 = setTimeout(applyView, 50)
+    const t2 = setTimeout(applyView, 200)
 
     // Resize handler
     const handleResize = () => {
@@ -306,6 +351,8 @@ export default function PositionChartModal({ position, onClose }: Props) {
 
     return () => {
       window.removeEventListener('resize', handleResize)
+      clearTimeout(t1)
+      clearTimeout(t2)
       chart.remove()
       chartRef.current = null
       candleSeriesRef.current = null
@@ -362,9 +409,9 @@ export default function PositionChartModal({ position, onClose }: Props) {
     const closedSec = toUnix(depClosedAt)
     let rightEdge: UTCTimestamp
     if (closedSec != null) {
-      rightEdge = (snapToHour(closedSec) + CLOSED_TAIL_BARS * 3600) as UTCTimestamp
+      rightEdge = (snapToBar(closedSec, intervalSec) + CLOSED_TAIL_BARS * intervalSec) as UTCTimestamp
     } else if (latestKlineTime > 0) {
-      rightEdge = (snapToHour(latestKlineTime) + FUTURE_BARS * 3600) as UTCTimestamp
+      rightEdge = (snapToBar(latestKlineTime, intervalSec) + FUTURE_BARS * intervalSec) as UTCTimestamp
     } else {
       rightEdge = edges.right
     }
@@ -433,43 +480,54 @@ export default function PositionChartModal({ position, onClose }: Props) {
     } catch {}
   }, [depCurrentPrice, depEntry, depStopLoss, depTakeProfits, depClosedAt, isLong, latestKlineTime])
 
-  const headerTitle = position.title || `${position.coin.replace('USDT', '')} · ${position.type}`
+  const headerTitle = position.title || position.coin.replace('USDT', '')
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-0 md:p-4"
       onClick={onClose}
     >
       <div
-        className="bg-primary border border-card rounded-lg shadow-2xl flex flex-col"
-        style={{ width: '90vw', height: '90vh' }}
+        className="bg-primary border-0 md:border md:border-card rounded-none md:rounded-lg shadow-2xl flex flex-col w-screen h-[100dvh] md:w-[90vw] md:h-[90vh]"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-card flex-shrink-0">
-          <div className="flex items-center gap-3">
-            <h3 className="text-text-primary font-semibold">{headerTitle}</h3>
-            <span className={`px-2 py-0.5 rounded text-xs font-bold ${isLong ? 'bg-long/15 text-long' : 'bg-short/15 text-short'}`}>
+        <div className="flex items-center justify-between px-3 md:px-4 py-2 md:py-3 border-b border-card flex-shrink-0 gap-2">
+          <div className="flex items-center gap-2 md:gap-3 min-w-0">
+            <h3 className="text-text-primary font-semibold text-sm md:text-base truncate">{headerTitle}</h3>
+            <span className={`px-2 py-0.5 rounded text-xs font-bold flex-shrink-0 ${isLong ? 'bg-long/15 text-long' : 'bg-short/15 text-short'}`}>
               {position.type}
             </span>
-            <span className="text-text-secondary text-xs font-mono">1h · Bybit</span>
+            <span className="hidden md:inline text-text-secondary text-xs font-mono">{interval} · Bybit</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
+            <div className="flex items-center bg-input rounded overflow-hidden text-xs">
+              {(['5m', '1h'] as ChartInterval[]).map(iv => (
+                <button
+                  key={iv}
+                  onClick={() => setChartInterval(iv)}
+                  className={`px-2.5 py-1 transition-colors ${interval === iv ? 'bg-accent/15 text-accent' : 'text-text-secondary hover:text-text-primary'}`}
+                  title={`Переключить на ${iv}`}
+                >
+                  {iv}
+                </button>
+              ))}
+            </div>
             <a
               href={`https://www.tradingview.com/chart/?symbol=BYBIT:${symbol}.P`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-text-secondary hover:text-accent text-xs transition-colors"
+              className="hidden md:inline text-text-secondary hover:text-accent text-xs transition-colors"
               title="Открыть в TradingView"
             >
               TV ↗
             </a>
             <button
               onClick={onClose}
-              className="text-text-secondary hover:text-text-primary p-1"
+              className="text-text-secondary hover:text-text-primary p-2 md:p-1"
               title="Закрыть (Esc)"
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg className="w-7 h-7 md:w-[18px] md:h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="18" y1="6" x2="6" y2="18" />
                 <line x1="6" y1="6" x2="18" y2="18" />
               </svg>

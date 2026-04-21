@@ -240,7 +240,7 @@ export default function Signals() {
           <h1 className="text-3xl font-bold">Сигналы</h1>
           <p className="text-text-secondary mt-1">Мониторинг торговых сигналов из Telegram</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 md:gap-3 flex-wrap w-full md:w-auto">
           {/* Channel selector */}
           <select
             value={channel}
@@ -249,7 +249,7 @@ export default function Signals() {
               setData(null)
               setSyncedDays(null)
             }}
-            className="bg-input text-text-primary rounded-lg px-3 py-2.5 text-sm border border-card focus:border-accent outline-none"
+            className="bg-input text-text-primary rounded-lg px-3 py-2.5 text-sm border border-card focus:border-accent outline-none w-full md:w-auto"
           >
             {CHANNELS.map(c => (
               <option key={c.value} value={c.value}>{c.label}</option>
@@ -260,7 +260,7 @@ export default function Signals() {
           <select
             value={days}
             onChange={e => setDays(Number(e.target.value))}
-            className="bg-input text-text-primary rounded-lg px-3 py-2.5 text-sm border border-card focus:border-accent outline-none"
+            className="bg-input text-text-primary rounded-lg px-3 py-2.5 text-sm border border-card focus:border-accent outline-none w-full md:w-auto"
           >
             <option value={3}>3 дня</option>
             <option value={7}>Неделя</option>

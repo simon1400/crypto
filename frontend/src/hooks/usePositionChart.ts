@@ -2,6 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import { UTCTimestamp } from 'lightweight-charts'
 import { getKlines, KlineData } from '../api/client'
 
+export type ChartInterval = '5m' | '1h'
+
+export const INTERVAL_SECONDS: Record<ChartInterval, number> = {
+  '5m': 300,
+  '1h': 3600,
+}
+
 // =============================================================================
 // Data fetching + state management for PositionChartModal.
 // Extracted so the modal component focuses purely on chart rendering.
@@ -25,6 +32,11 @@ export interface PositionChartPosition {
 export const FUTURE_BARS = 24
 export const CLOSED_TAIL_BARS = 5
 
+/** Snap a unix-seconds timestamp to the floor of a bar boundary of given interval. */
+export function snapToBar(unixSec: number, intervalSec: number): UTCTimestamp {
+  return (Math.floor(unixSec / intervalSec) * intervalSec) as UTCTimestamp
+}
+
 export function normalizeSymbol(coin: string): string {
   const upper = coin.toUpperCase()
   return upper.endsWith('USDT') ? upper : `${upper}USDT`
@@ -34,11 +46,6 @@ export function toUnix(iso: string | null): number | null {
   if (!iso) return null
   const t = Date.parse(iso)
   return Number.isNaN(t) ? null : Math.floor(t / 1000)
-}
-
-/** Snap a unix-seconds timestamp to the floor of a 1h candle boundary. */
-export function snapToHour(unixSec: number): UTCTimestamp {
-  return (Math.floor(unixSec / 3600) * 3600) as UTCTimestamp
 }
 
 /**
@@ -68,6 +75,9 @@ export interface UsePositionChartResult {
   precision: number
   isPositionOpen: boolean
   latestKlineTime: number
+  interval: ChartInterval
+  setInterval: (iv: ChartInterval) => void
+  intervalSec: number
   // Stable primitive deps — avoids rebuilding chart on parent re-renders
   depEntry: number
   depStopLoss: number
@@ -105,6 +115,8 @@ export function usePositionChart(position: PositionChartPosition): UsePositionCh
   const [latestKlineTime, setLatestKlineTime] = useState<number>(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [interval, setChartInterval] = useState<ChartInterval>('1h')
+  const intervalSec = INTERVAL_SECONDS[interval]
 
   const symbol = normalizeSymbol(position.coin)
   const isLong = position.type === 'LONG'
@@ -127,7 +139,7 @@ export function usePositionChart(position: PositionChartPosition): UsePositionCh
 
     async function fetchKlines(isInitial: boolean) {
       try {
-        const res = await getKlines(symbol, '1h', 500)
+        const res = await getKlines(symbol, interval, 500)
         if (cancelled) return
         if (isInitial) {
           setKlines(res.data)
@@ -165,6 +177,8 @@ export function usePositionChart(position: PositionChartPosition): UsePositionCh
 
     setLoading(true)
     setError(null)
+    setKlines([])
+    setLatestKlineTime(0)
     fetchKlines(true)
 
     let timer: ReturnType<typeof setInterval> | null = null
@@ -176,7 +190,7 @@ export function usePositionChart(position: PositionChartPosition): UsePositionCh
       cancelled = true
       if (timer) clearInterval(timer)
     }
-  }, [symbol, isPositionOpen])
+  }, [symbol, isPositionOpen, interval])
 
   return {
     klines,
@@ -187,6 +201,9 @@ export function usePositionChart(position: PositionChartPosition): UsePositionCh
     precision,
     isPositionOpen,
     latestKlineTime,
+    interval,
+    setInterval: setChartInterval,
+    intervalSec,
     depEntry,
     depStopLoss,
     depTakeProfits,
