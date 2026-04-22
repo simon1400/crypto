@@ -13,25 +13,15 @@ function alertKey(coin: string, type: string): string {
 
 async function isCoinInTrade(coin: string, type: string): Promise<boolean> {
   const base = coin.toUpperCase().replace(/USDT$/, '')
-  const [takenSignal, openTrade] = await Promise.all([
-    prisma.generatedSignal.findFirst({
-      where: {
-        type,
-        status: { in: ['TAKEN', 'PARTIALLY_CLOSED'] },
-        OR: [{ coin: base }, { coin: `${base}USDT` }],
-      },
-      select: { id: true },
-    }),
-    prisma.trade.findFirst({
-      where: {
-        type,
-        status: { in: ['OPEN', 'PARTIALLY_CLOSED'] },
-        OR: [{ coin: base }, { coin: `${base}USDT` }],
-      },
-      select: { id: true },
-    }),
-  ])
-  return !!(takenSignal || openTrade)
+  const openTrade = await prisma.trade.findFirst({
+    where: {
+      type,
+      status: { in: ['OPEN', 'PARTIALLY_CLOSED'] },
+      OR: [{ coin: base }, { coin: `${base}USDT` }],
+    },
+    select: { id: true },
+  })
+  return !!openTrade
 }
 
 export function startAutoScanner() {
