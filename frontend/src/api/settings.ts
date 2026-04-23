@@ -110,6 +110,32 @@ export async function resetSimulation(balance: number): Promise<{ deletedTrades:
   return res.json()
 }
 
+// ===================== MT5 Balance (forex/gold calculator) =====================
+
+export interface Mt5BalanceInfo {
+  balance: number | null
+  riskPct: number
+}
+
+export async function getMt5Balance(): Promise<Mt5BalanceInfo> {
+  const res = await fetch(`${BASE}/api/settings/mt5-balance`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch MT5 balance')
+  return res.json()
+}
+
+export async function setMt5Balance(data: { balance?: number | null; riskPct?: number }): Promise<Mt5BalanceInfo> {
+  const res = await fetch(`${BASE}/api/settings/mt5-balance`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function testNotification(data?: { telegramBotToken?: string, telegramChatId?: string }): Promise<{ success: boolean; error?: string }> {
   const res = await fetch(`${BASE}/api/settings/test-notification`, {
     method: 'POST',

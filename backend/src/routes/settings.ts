@@ -250,6 +250,42 @@ router.post('/reset-simulation', asyncHandler(async (req, res) => {
   res.json({ deletedTrades: count, ...info })
 }, 'Settings'))
 
+// GET /api/settings/mt5-balance — депозит МТ5 для калькулятора лотов
+router.get('/mt5-balance', asyncHandler(async (_req, res) => {
+  const config = await prisma.botConfig.upsert({ where: { id: 1 }, update: {}, create: { id: 1 } })
+  res.json({ balance: config.mt5Balance, riskPct: config.mt5RiskPct })
+}, 'Settings'))
+
+// PUT /api/settings/mt5-balance — сохранить депозит МТ5
+router.put('/mt5-balance', asyncHandler(async (req, res) => {
+  const { balance, riskPct } = req.body as { balance?: number | null; riskPct?: number }
+
+  const updateData: any = {}
+  if (balance === null) {
+    updateData.mt5Balance = null
+  } else if (balance !== undefined) {
+    if (typeof balance !== 'number' || balance < 0 || balance > 10_000_000) {
+      res.status(400).json({ error: 'balance must be a number between 0 and 10,000,000' })
+      return
+    }
+    updateData.mt5Balance = balance
+  }
+  if (riskPct !== undefined) {
+    if (typeof riskPct !== 'number' || riskPct <= 0 || riskPct > 100) {
+      res.status(400).json({ error: 'riskPct must be between 0 and 100' })
+      return
+    }
+    updateData.mt5RiskPct = riskPct
+  }
+
+  const config = await prisma.botConfig.upsert({
+    where: { id: 1 },
+    update: updateData,
+    create: { id: 1, ...updateData },
+  })
+  res.json({ balance: config.mt5Balance, riskPct: config.mt5RiskPct })
+}, 'Settings'))
+
 // GET /api/settings/balance — реальный баланс с Bybit
 router.get('/balance', asyncHandler(async (_req, res) => {
   try {

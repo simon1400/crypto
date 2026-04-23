@@ -204,6 +204,9 @@ model BotConfig {
   virtualStartedAt        DateTime @default(now()) // когда запущена симуляция
   takerFeeRate            Float    @default(0.00055) // 0.055% — Bybit default VIP 0
   makerFeeRate            Float    @default(0.0002)  // 0.02%  — Bybit default VIP 0
+  // === MT5 calculator deposit (forex/gold position sizing) ===
+  mt5Balance              Float?                   // MT5 account balance in USD for lot size calculator
+  mt5RiskPct              Float    @default(2)     // default risk % per trade on MT5
   updatedAt               DateTime @updatedAt
   createdAt               DateTime @default(now())
 }
