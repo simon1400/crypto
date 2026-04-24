@@ -1,9 +1,46 @@
 import { useState } from 'react'
 import { takeSignalAsTrade, takeSignalAsRealTrade, takeSignal, skipSignal, RealOrderInfo } from '../../api/client'
 import {
-  CardData, CardMode, SavedProps, ScanProps, Props, TakeMode,
+  CardData, SavedProps, ScanProps, Props, TakeMode,
   normalizeFromSaved, normalizeFromScan,
 } from './types'
+
+/**
+ * Humanize common Bybit errors so alert() shows something actionable.
+ * Raw error comes from realOrderForGenSignal / Bybit retMsg.
+ */
+function formatRealError(raw: string | null | undefined): string {
+  if (!raw) return 'Неизвестная ошибка'
+
+  // maxLeverage: "cannot set leverage [600] gt maxLeverage [500] by risk limit"
+  const maxLevMatch = raw.match(/leverage\s*\[(\d+)\][^[]*maxLeverage\s*\[(\d+)\]/i)
+  if (maxLevMatch) {
+    const wanted = Number(maxLevMatch[1])
+    const max = Number(maxLevMatch[2])
+    return `Плечо ${wanted}x превышает лимит Bybit для этой монеты (max ${max}x по risk limit tier). Уменьши Leverage в форме и попробуй снова.`
+  }
+
+  if (/API keys not configured/i.test(raw)) {
+    return 'API-ключи Bybit не настроены. Проверь Настройки.'
+  }
+  if (/testnet/i.test(raw)) {
+    return 'Bybit подключен к testnet. Переключись на mainnet в Настройках.'
+  }
+  if (/SL\s+\S+\s+(>=|<=)/i.test(raw)) {
+    return `Stop Loss уже за текущей ценой — цена успела дойти до SL. ${raw}`
+  }
+  if (/Symbol.*not found/i.test(raw) || /not on Bybit/i.test(raw)) {
+    return `Монета отсутствует на Bybit. ${raw}`
+  }
+  if (/< минимума/i.test(raw) || /min.*qty/i.test(raw)) {
+    return `Размер позиции меньше минимального лота Bybit. Увеличь сумму. ${raw}`
+  }
+  if (/insufficient/i.test(raw) || /balance/i.test(raw)) {
+    return `Недостаточно средств на Bybit. ${raw}`
+  }
+
+  return raw
+}
 import SignalCardHeader from './SignalCardHeader'
 import SignalCardScores from './SignalCardScores'
 import SignalCardModels from './SignalCardModels'
@@ -79,14 +116,19 @@ export default function UnifiedSignalCard(props: Props) {
         const res = await takeSignalAsRealTrade(data.id!, Number(amount), active?.type, lev, orderType)
         if (res.real) {
           setRealModal({ kind: 'success', info: res.real, demoSkippedReason: res.demoSkippedReason })
+          setShowTakeForm(false)
+          ;(props as SavedProps).onStatusChange()
         } else {
-          setRealModal({ kind: 'error', message: res.realError || 'Реальная сделка не была создана' })
+          // Error path: alert survives even if card remounts after parent refetch
+          alert(`⚠ Реальная сделка не создана на Bybit\n\n${formatRealError(res.realError)}\n\n(Демо сделка создана в журнале)`)
+          setShowTakeForm(false)
+          ;(props as SavedProps).onStatusChange()
         }
       } else {
         await takeSignalAsTrade(data.id!, Number(amount), active?.type, lev, orderType)
+        setShowTakeForm(false)
+        ;(props as SavedProps).onStatusChange()
       }
-      setShowTakeForm(false)
-      ;(props as SavedProps).onStatusChange()
     } catch (err: any) {
       alert(err.message || 'Failed to take signal')
     } finally { setLoading(false) }
@@ -117,13 +159,16 @@ export default function UnifiedSignalCard(props: Props) {
         const res = await takeSignalAsRealTrade(data.id, Number(amount), active?.type, lev, orderType)
         if (res.real) {
           setRealModal({ kind: 'success', info: res.real, demoSkippedReason: res.demoSkippedReason })
+          setShowTakeForm(false)
+          // onTake remounts card → modal would vanish; skip for success path,
+          // parent will refetch on next natural trigger
         } else {
-          setRealModal({ kind: 'error', message: res.realError || 'Реальная сделка не была создана' })
-        }
-        setShowTakeForm(false)
-        // mark as taken in scan tab via parent callback shape (only if demo was actually created)
-        if (res.trade) {
-          ;(props as ScanProps).onTake(data.id, Number(amount), active?.type, lev, orderType)
+          // Error path: alert survives card remount caused by onTake
+          alert(`⚠ Реальная сделка не создана на Bybit\n\n${formatRealError(res.realError)}\n\n(Демо сделка создана в журнале)`)
+          setShowTakeForm(false)
+          if (res.trade) {
+            ;(props as ScanProps).onTake(data.id, Number(amount), active?.type, lev, orderType)
+          }
         }
       } catch (err: any) {
         alert(err.message || 'Failed to take signal')
