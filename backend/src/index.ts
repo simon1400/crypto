@@ -9,7 +9,10 @@ import tradesRouter from './routes/trades'
 import tradingRouter from './routes/trading'
 import { trackActiveSignals } from './services/signalTracker'
 import scannerRouter from './routes/scanner'
+import scannerForexRouter from './routes/scannerForex'
+import forexTradesRouter from './routes/forexTrades'
 import settingsRouter from './routes/settings'
+import { startForexScanner, stopForexScanner } from './scannerForex'
 import { expireOldSignals } from './scanner/coinScanner'
 import { startWsListener, stopWsListener } from './trading/wsListener'
 import { startTtlChecker, stopTtlChecker } from './trading/tradingService'
@@ -48,6 +51,8 @@ app.use('/api/market', marketRouter)
 app.use('/api/signals', signalsRouter)
 app.use('/api/trades', tradesRouter)
 app.use('/api/scanner', scannerRouter)
+app.use('/api/scanner-forex', scannerForexRouter)
+app.use('/api/forex-trades', forexTradesRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/api/trading', tradingRouter)
 app.use('/api/klines', klinesRouter)
@@ -120,6 +125,19 @@ const server = app.listen(PORT, () => {
 
   // Background auto-scanner — runs on interval when enabled in settings
   startAutoScanner()
+
+  // Forex scanner — hourly scans of FX/metals/indices via Twelve Data.
+  // Respects BotConfig.forexScanEnabled (default false) and market hours (24/5).
+  prisma.botConfig
+    .findUnique({ where: { id: 1 } })
+    .then((config) => {
+      if (config?.forexScanEnabled) {
+        startForexScanner()
+      } else {
+        console.log('[ForexScanner] Disabled in BotConfig — not starting')
+      }
+    })
+    .catch(() => {})
 })
 
 async function gracefulShutdown(signal: string) {
@@ -137,6 +155,7 @@ async function gracefulShutdown(signal: string) {
   stopTtlChecker(ttlInterval)
   stopFundingTracker()
   stopAutoScanner()
+  stopForexScanner()
   stopHealthCheck()
 
   // 3. Close WebSocket connections

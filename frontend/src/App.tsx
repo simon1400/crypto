@@ -4,6 +4,8 @@ import Navbar from './components/Navbar'
 import Signals from './pages/Signals'
 import Trades from './pages/Trades'
 import Scanner from './pages/Scanner'
+import ScannerForex from './pages/ScannerForex'
+import TradesForex from './pages/TradesForex'
 import Settings from './pages/Settings'
 import Calculator from './pages/Calculator'
 import Login from './pages/Login'
@@ -20,6 +22,8 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
           <Route path="/signals" element={<Signals />} />
           <Route path="/trades" element={<Trades />} />
           <Route path="/scanner" element={<Scanner />} />
+          <Route path="/scanner-forex" element={<ScannerForex />} />
+          <Route path="/trades-forex" element={<TradesForex />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/calculator" element={<Calculator />} />
         </Routes>

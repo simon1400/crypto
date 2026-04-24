@@ -15,6 +15,7 @@ const NOTIFY_ACTIONS: Set<OrderAction> = new Set([
   'AUTO_SKIPPED',
   'MARKET_ENTRY',
   'ERROR',
+  'FOREX_SIGNAL_NEW',
 ])
 
 function fmt(p: number | undefined): string {
@@ -126,9 +127,58 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
     case 'ERROR':
       return `❌ Ошибка: ${d.message}`
 
+    case 'FOREX_SIGNAL_NEW': {
+      const instrument = String(d.instrument || '')
+      const type = String(d.type || 'LONG') as 'LONG' | 'SHORT'
+      const emoji = type === 'LONG' ? '🟢' : '🔴'
+      const score = Number(d.score || 0)
+      const entry = Number(d.entry || 0)
+      const sl = Number(d.stopLoss || 0)
+      const tps = (d.takeProfits as { price: number; rr: number }[]) || []
+      const session = d.session ? String(d.session) : ''
+      const reasons = (d.reasons as string[]) || []
+
+      // Precision: FX pairs (EURUSD, GBPUSD) need 5 decimals; JPY pairs / XAU / indices 2-3
+      const decimals = forexDecimals(instrument)
+      const fx = (v: number) => v.toFixed(decimals)
+
+      const stopDist = Math.abs(entry - sl)
+      const tpLines = tps
+        .map((tp, i) => `   ├ TP${i + 1}  <code>${fx(tp.price)}</code>  (R:R 1:${tp.rr})`)
+        .join('\n')
+
+      const sessionLine = session ? `🕐 Сессия: ${session}` : ''
+      const reasonLine = reasons.length
+        ? `\n📝 ${reasons.slice(0, 3).join(' · ')}`
+        : ''
+
+      return [
+        `${emoji} <b>FOREX ${instrument} ${type}</b>  Score: ${score}`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `📍 Вход     <code>${fx(entry)}</code>`,
+        `🛑 SL       <code>${fx(sl)}</code>  (Δ ${fx(stopDist)})`,
+        `🎯 Тейки:`,
+        tpLines,
+        sessionLine,
+        reasonLine ? reasonLine.trim() : '',
+        `\n→ Открой в MT5. Калькулятор лотов в приложении.`,
+      ]
+        .filter((l) => l !== '')
+        .join('\n')
+    }
+
     default:
       return `📋 ${action}: ${JSON.stringify(d)}`
   }
+}
+
+// Decimal precision for forex/indices pricing
+function forexDecimals(instrument: string): number {
+  if (/^US30|NAS100|SPX500|GER40|UK100/.test(instrument)) return 2
+  if (/JPY/.test(instrument)) return 3
+  if (/^XAU/.test(instrument)) return 2
+  if (/^XAG/.test(instrument)) return 3
+  return 5 // EURUSD etc.
 }
 
 export async function sendNotification(action: OrderAction, details?: Record<string, any>): Promise<void> {

@@ -134,9 +134,13 @@ model GeneratedSignal {
   tp3HitTimestamp   DateTime?                    // when TP3 was hit
   exitReason        String?                      // INITIAL_STOP, BE_STOP, TRAILING_STOP, MANUAL_EXIT, TIME_STOP, TP1_PARTIAL, etc.
   timeInTradeMin    Int?                         // time from entry to final exit in minutes
+  // === Market classification (crypto vs forex) ===
+  market            String   @default("CRYPTO")  // CRYPTO | FOREX
+  session           String?                      // ASIA | LONDON | NY | OVERLAP | DEAD (forex only)
 
   @@index([status])
   @@index([coin])
+  @@index([market])
 }
 
 model Trade {
@@ -181,6 +185,42 @@ model Trade {
   @@index([coin])
 }
 
+model ForexTrade {
+  id              Int       @id @default(autoincrement())
+  instrument      String                                // EURUSD, XAUUSD, US30...
+  type            String                                // LONG or SHORT
+  lots            Float                                 // размер позиции в лотах (0.01+)
+  entryPrice      Float
+  stopLoss        Float
+  initialStop     Float?                                // original SL (never overwritten)
+  currentStop     Float?                                // active SL (may be moved to BE/trailing)
+  takeProfits     Json                                  // [{price: number, percent: number, rr?: number}]
+  closes          Json      @default("[]")              // [{price, percent, pipsPnl, usdPnl, closedAt, isSL?}]
+  closedPct       Float     @default(0)                 // 0-100
+  realizedPipsPnl Float     @default(0)                 // реализованный P&L в пипсах
+  realizedUsdPnl  Float     @default(0)                 // реализованный P&L в USD (через lots × pipSize × contractSize)
+  status          String    @default("OPEN")            // OPEN, PARTIALLY_CLOSED, CLOSED, SL_HIT, CANCELLED
+  source          String    @default("MANUAL")          // MANUAL, SCANNER
+  signalId        Int?                                  // FK to GeneratedSignal when taken from scanner
+  session         String?                               // ASIA | LONDON | NY | OVERLAP | DEAD (snapshot at entry)
+  notes           String?
+  openedAt        DateTime?
+  closedAt        DateTime?
+  createdAt       DateTime  @default(now())
+  // === lifecycle ===
+  stopMovedToBe   Boolean   @default(false)
+  stopMoveReason  String?
+  tp1HitTimestamp DateTime?
+  tp2HitTimestamp DateTime?
+  tp3HitTimestamp DateTime?
+  exitReason      String?                               // INITIAL_STOP, BE_STOP, MANUAL_EXIT, TP_FULL
+  timeInTradeMin  Int?
+
+  @@index([status])
+  @@index([instrument])
+  @@index([signalId])
+}
+
 model BotConfig {
   id                      Int      @id @default(1)
   apiKey                  String?
@@ -207,6 +247,10 @@ model BotConfig {
   // === MT5 calculator deposit (forex/gold position sizing) ===
   mt5Balance              Float?                   // MT5 account balance in USD for lot size calculator
   mt5RiskPct              Float    @default(2)     // default risk % per trade on MT5
+  // === Forex Scanner ===
+  forexScanEnabled        Boolean  @default(false) // включить авто-сканер форекс-инструментов
+  forexScanMinScore       Int      @default(70)    // минимальный score для уведомления в Telegram
+  forexLastScanAt         DateTime?                // время последнего успешного скана
   updatedAt               DateTime @updatedAt
   createdAt               DateTime @default(now())
 }
