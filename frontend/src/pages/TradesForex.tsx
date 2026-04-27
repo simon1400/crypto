@@ -12,8 +12,67 @@ import {
   type ForexTradeStats,
   type ForexTradeStatus,
 } from '../api/client'
-
 type Filter = 'ALL' | 'OPEN' | 'CLOSED' | 'SL_HIT' | 'CANCELLED'
+
+// Маппинг наших инструментов на TradingView-символы.
+// Форекс — биржа FX (cross-rate); металлы и индексы — OANDA (есть на free плане TV).
+const TV_SYMBOL_MAP: Record<string, string> = {
+  // Forex majors / crosses
+  EURUSD: 'FX:EURUSD',
+  GBPUSD: 'FX:GBPUSD',
+  AUDUSD: 'FX:AUDUSD',
+  NZDUSD: 'FX:NZDUSD',
+  USDJPY: 'FX:USDJPY',
+  USDCHF: 'FX:USDCHF',
+  USDCAD: 'FX:USDCAD',
+  EURJPY: 'FX:EURJPY',
+  GBPJPY: 'FX:GBPJPY',
+  AUDJPY: 'FX:AUDJPY',
+  CADJPY: 'FX:CADJPY',
+  CHFJPY: 'FX:CHFJPY',
+  NZDJPY: 'FX:NZDJPY',
+  EURGBP: 'FX:EURGBP',
+  EURAUD: 'FX:EURAUD',
+  EURCHF: 'FX:EURCHF',
+  EURCAD: 'FX:EURCAD',
+  EURNZD: 'FX:EURNZD',
+  GBPAUD: 'FX:GBPAUD',
+  GBPCHF: 'FX:GBPCHF',
+  GBPCAD: 'FX:GBPCAD',
+  GBPNZD: 'FX:GBPNZD',
+  AUDCAD: 'FX:AUDCAD',
+  AUDCHF: 'FX:AUDCHF',
+  AUDNZD: 'FX:AUDNZD',
+  NZDCAD: 'FX:NZDCAD',
+  NZDCHF: 'FX:NZDCHF',
+  CADCHF: 'FX:CADCHF',
+  // Exotics
+  USDSEK: 'FX:USDSEK',
+  USDNOK: 'FX:USDNOK',
+  USDZAR: 'FX:USDZAR',
+  USDMXN: 'FX:USDMXN',
+  USDTRY: 'FX:USDTRY',
+  // Metals
+  XAUUSD: 'OANDA:XAUUSD',
+  XAGUSD: 'OANDA:XAGUSD',
+  XPTUSD: 'OANDA:XPTUSD',
+  XPDUSD: 'OANDA:XPDUSD',
+  // Indices
+  US30: 'OANDA:US30USD',
+  NAS100: 'OANDA:NAS100USD',
+  SPX500: 'OANDA:SPX500USD',
+  GER40: 'OANDA:DE40EUR',
+  UK100: 'OANDA:UK100GBP',
+}
+
+function tradingViewUrl(instrument: string): string {
+  const sym = TV_SYMBOL_MAP[instrument.toUpperCase()] || instrument.toUpperCase()
+  return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(sym)}&interval=60`
+}
+
+function openTradingView(instrument: string) {
+  window.open(tradingViewUrl(instrument), '_blank', 'noopener,noreferrer')
+}
 
 export default function TradesForex() {
   const [trades, setTrades] = useState<ForexTrade[]>([])
@@ -165,7 +224,7 @@ export default function TradesForex() {
       ) : trades.length === 0 ? (
         <p className="text-text-secondary text-sm">Сделок нет.</p>
       ) : (
-        <TradesTable trades={trades} onClick={(t) => setSelected(t)} />
+        <TradesTable trades={trades} onClick={(t) => setSelected(t)} onChart={(t) => openTradingView(t.instrument)} />
       )}
 
       {selected && (
@@ -178,6 +237,7 @@ export default function TradesForex() {
           onCancel={handleCancel}
           onDelete={handleDelete}
           onSaveNotes={handleSaveNotes}
+          onChart={() => openTradingView(selected.instrument)}
         />
       )}
     </div>
@@ -260,14 +320,33 @@ function Stat({ label, value, sub, valueClass = '' }: { label: string; value: st
 
 // ===================== Table =====================
 
-function TradesTable({ trades, onClick }: { trades: ForexTrade[]; onClick: (t: ForexTrade) => void }) {
+// Парсим Score: NN из notes (так же как в крипто-таблице — score не лежит отдельным полем).
+function getTradeScore(t: ForexTrade): number | null {
+  const m = t.notes?.match(/Score:\s*(\d+)/)
+  return m ? Number(m[1]) : null
+}
+
+function formatOpenedAt(t: ForexTrade): string {
+  const iso = t.openedAt || t.createdAt
+  const d = new Date(iso)
+  return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+function TradesTable({
+  trades, onClick, onChart,
+}: {
+  trades: ForexTrade[]
+  onClick: (t: ForexTrade) => void
+  onChart: (t: ForexTrade) => void
+}) {
   return (
     <div className="bg-card rounded-lg overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead className="bg-input text-text-secondary">
             <tr>
-              <th className="text-left px-3 py-2">Дата</th>
+              <th className="text-left px-3 py-2">Открыта</th>
+              <th className="text-left px-3 py-2">Score</th>
               <th className="text-left px-3 py-2">Инструмент</th>
               <th className="text-left px-3 py-2">Тип</th>
               <th className="text-right px-3 py-2">Лоты</th>
@@ -277,63 +356,79 @@ function TradesTable({ trades, onClick }: { trades: ForexTrade[]; onClick: (t: F
               <th className="text-right px-3 py-2">P&L (пипсы)</th>
               <th className="text-right px-3 py-2">P&L ($)</th>
               <th className="text-left px-3 py-2">Статус</th>
+              <th className="text-right px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
-            {trades.map((t) => (
-              <tr
-                key={t.id}
-                onClick={() => onClick(t)}
-                className="border-t border-input hover:bg-input/50 cursor-pointer transition-colors"
-              >
-                <td className="px-3 py-2 text-text-secondary whitespace-nowrap">
-                  {new Date(t.createdAt).toLocaleDateString('ru-RU')}
-                </td>
-                <td className="px-3 py-2 font-mono text-text-primary">{t.instrument}</td>
-                <td className={`px-3 py-2 font-semibold ${t.type === 'LONG' ? 'text-long' : 'text-short'}`}>
-                  {t.type}
-                </td>
-                <td className="px-3 py-2 text-right font-mono text-text-primary">{t.lots.toFixed(2)}</td>
-                <td className="px-3 py-2 text-right font-mono text-text-primary">
-                  {formatPrice(t.instrument, t.entryPrice)}
-                </td>
-                <td className="px-3 py-2 text-right font-mono text-short">
-                  {formatPrice(t.instrument, t.currentStop ?? t.stopLoss)}
-                </td>
-                <td className="px-3 py-2 text-right font-mono text-long">
-                  {(() => {
-                    const tps = t.takeProfits as { price: number }[]
-                    if (!tps?.length) return '—'
-                    if (tps.length === 1) return formatPrice(t.instrument, tps[0].price)
-                    // Старые multi-TP сделки (до варианта А) — показываем диапазон
-                    return `${formatPrice(t.instrument, tps[0].price)}…${formatPrice(t.instrument, tps[tps.length - 1].price)}`
-                  })()}
-                </td>
-                {/* P&L показываем только когда сделка реально что-то закрыла.
-                    Для OPEN тут всегда 0 — система не подтягивает live-цену, юзер не должен думать что это unrealized. */}
-                {t.status === 'OPEN' ? (
-                  <>
-                    <td className="px-3 py-2 text-right font-mono text-text-secondary">—</td>
-                    <td className="px-3 py-2 text-right font-mono text-text-secondary">—</td>
-                  </>
-                ) : (
-                  <>
-                    <td className={`px-3 py-2 text-right font-mono ${pnlColor(t.realizedPipsPnl)}`}>
-                      {t.realizedPipsPnl > 0 ? '+' : ''}
-                      {t.realizedPipsPnl.toFixed(1)}
-                    </td>
-                    <td className={`px-3 py-2 text-right font-mono ${pnlColor(t.realizedUsdPnl)}`}>
-                      {t.realizedUsdPnl > 0 ? '+' : ''}${t.realizedUsdPnl.toFixed(2)}
-                    </td>
-                  </>
-                )}
-                <td className="px-3 py-2">
-                  <span className={`px-1.5 py-0.5 text-[10px] font-semibold rounded ${statusColor(t.status)}`}>
-                    {t.status}
-                  </span>
-                </td>
-              </tr>
-            ))}
+            {trades.map((t) => {
+              const score = getTradeScore(t)
+              return (
+                <tr
+                  key={t.id}
+                  onClick={() => onClick(t)}
+                  className="border-t border-input hover:bg-input/50 cursor-pointer transition-colors"
+                >
+                  <td className="px-3 py-2 text-text-secondary whitespace-nowrap">
+                    {formatOpenedAt(t)}
+                  </td>
+                  <td className="px-3 py-2 font-mono">
+                    {score != null ? <span className="text-accent">{score}</span> : <span className="text-text-secondary">—</span>}
+                  </td>
+                  <td className="px-3 py-2 font-mono text-text-primary">{t.instrument}</td>
+                  <td className={`px-3 py-2 font-semibold ${t.type === 'LONG' ? 'text-long' : 'text-short'}`}>
+                    {t.type}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-text-primary">{t.lots.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-text-primary">
+                    {formatPrice(t.instrument, t.entryPrice)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-short">
+                    {formatPrice(t.instrument, t.currentStop ?? t.stopLoss)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-long">
+                    {(() => {
+                      const tps = t.takeProfits as { price: number }[]
+                      if (!tps?.length) return '—'
+                      if (tps.length === 1) return formatPrice(t.instrument, tps[0].price)
+                      // Старые multi-TP сделки (до варианта А) — показываем диапазон
+                      return `${formatPrice(t.instrument, tps[0].price)}…${formatPrice(t.instrument, tps[tps.length - 1].price)}`
+                    })()}
+                  </td>
+                  {/* P&L показываем только когда сделка реально что-то закрыла.
+                      Для OPEN тут всегда 0 — система не подтягивает live-цену, юзер не должен думать что это unrealized. */}
+                  {t.status === 'OPEN' ? (
+                    <>
+                      <td className="px-3 py-2 text-right font-mono text-text-secondary">—</td>
+                      <td className="px-3 py-2 text-right font-mono text-text-secondary">—</td>
+                    </>
+                  ) : (
+                    <>
+                      <td className={`px-3 py-2 text-right font-mono ${pnlColor(t.realizedPipsPnl)}`}>
+                        {t.realizedPipsPnl > 0 ? '+' : ''}
+                        {t.realizedPipsPnl.toFixed(1)}
+                      </td>
+                      <td className={`px-3 py-2 text-right font-mono ${pnlColor(t.realizedUsdPnl)}`}>
+                        {t.realizedUsdPnl > 0 ? '+' : ''}${t.realizedUsdPnl.toFixed(2)}
+                      </td>
+                    </>
+                  )}
+                  <td className="px-3 py-2">
+                    <span className={`px-1.5 py-0.5 text-[10px] font-semibold rounded ${statusColor(t.status)}`}>
+                      {t.status}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onChart(t) }}
+                      className="text-text-secondary hover:text-accent transition-colors"
+                      title="Открыть на TradingView"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -352,6 +447,7 @@ function TradeModal({
   onCancel,
   onDelete,
   onSaveNotes,
+  onChart,
 }: {
   trade: ForexTrade
   onClose: () => void
@@ -361,6 +457,7 @@ function TradeModal({
   onCancel: (t: ForexTrade) => void
   onDelete: (t: ForexTrade) => void
   onSaveNotes: (t: ForexTrade, notes: string) => void
+  onChart: () => void
 }) {
   const [closePrice, setClosePrice] = useState('')
   const [closePct, setClosePct] = useState('50')
@@ -386,22 +483,39 @@ function TradeModal({
       >
         <div className="flex items-start justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-text-primary">
+            <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
               <span className="font-mono">{trade.instrument}</span>{' '}
               <span className={trade.type === 'LONG' ? 'text-long' : 'text-short'}>{trade.type}</span>
-              <span className="text-sm text-text-secondary ml-2">{trade.lots.toFixed(2)} лот</span>
+              <span className="text-sm text-text-secondary">{trade.lots.toFixed(2)} лот</span>
+              {(() => {
+                const score = getTradeScore(trade)
+                return score != null ? (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent" title="Score сигнала">
+                    Score {score}
+                  </span>
+                ) : null
+              })()}
             </h2>
             <p className="text-xs text-text-secondary mt-1">
-              Сделка #{trade.id} · {new Date(trade.createdAt).toLocaleString('ru-RU')}
+              Сделка #{trade.id} · открыта {new Date(trade.openedAt || trade.createdAt).toLocaleString('ru-RU')}
               {trade.source === 'SCANNER' && trade.signalId && (
                 <> · из сигнала #{trade.signalId}</>
               )}
               {trade.session && ` · ${trade.session}`}
             </p>
           </div>
-          <button onClick={onClose} className="text-text-secondary hover:text-text-primary text-xl leading-none">
-            ×
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onChart}
+              className="text-text-secondary hover:text-accent transition-colors"
+              title="График позиции"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+            </button>
+            <button onClick={onClose} className="text-text-secondary hover:text-text-primary text-xl leading-none">
+              ×
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-x-4 gap-y-2 bg-card rounded p-3 text-sm">
