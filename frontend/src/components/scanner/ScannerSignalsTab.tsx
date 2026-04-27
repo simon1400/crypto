@@ -5,6 +5,7 @@ import {
   ScannerSignal,
 } from '../../api/client'
 import UnifiedSignalCard from './UnifiedSignalCard'
+import type { RealOrderModalState } from './types'
 
 interface ScannerSignalsTabProps {
   balance: number
@@ -13,9 +14,11 @@ interface ScannerSignalsTabProps {
   refreshKey: number  // incremented by parent when scan tab modifies signals
   onShowChart: (signal: ScannerSignal) => void
   highlightId?: number | null
+  onHighlightConsumed?: () => void  // called once the highlight has been visually shown
+  onRealOrderSuccess?: (modal: RealOrderModalState) => void
 }
 
-export default function ScannerSignalsTab({ balance, riskPct, realBalance, refreshKey, onShowChart, highlightId }: ScannerSignalsTabProps) {
+export default function ScannerSignalsTab({ balance, riskPct, realBalance, refreshKey, onShowChart, highlightId, onHighlightConsumed, onRealOrderSuccess }: ScannerSignalsTabProps) {
   const [signals, setSignals] = useState<ScannerSignal[]>([])
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
@@ -35,23 +38,33 @@ export default function ScannerSignalsTab({ balance, riskPct, realBalance, refre
   }, [page, statusFilter, dateFrom, dateTo, sortBy, refreshKey])
 
   // When landing with highlightId — force "Новые" filter, show all, scroll to card and flash.
+  // Подсветка живёт в локальном state, чтобы не зависеть от URL (?highlight=) —
+  // даже если родитель его уже снял, мы всё равно покажем подсветку до 15 сек после первого рендера.
   const highlightRef = useRef<HTMLDivElement | null>(null)
+  const [highlightActiveId, setHighlightActiveId] = useState<number | null>(null)
+
   useEffect(() => {
     if (highlightId == null) return
     if (statusFilter !== 'NEW') setStatusFilter('NEW')
     setPage(1)
     setShowAll(true)
+    setHighlightActiveId(highlightId)
   }, [highlightId])
 
   useEffect(() => {
-    if (highlightId == null) return
-    if (!signals.some(s => s.id === highlightId)) return
-    // Wait a frame so the card is rendered
-    const t = setTimeout(() => {
+    if (highlightActiveId == null) return
+    if (!signals.some(s => s.id === highlightActiveId)) return
+    // Карточка появилась в DOM — скроллим к ней, запускаем 15-сек таймер на снятие подсветки,
+    // и сообщаем родителю что URL ?highlight= можно почистить.
+    const scrollT = setTimeout(() => {
       highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }, 50)
-    return () => clearTimeout(t)
-  }, [highlightId, signals])
+    onHighlightConsumed?.()
+    const fadeT = setTimeout(() => {
+      setHighlightActiveId(null)
+    }, 15000)
+    return () => { clearTimeout(scrollT); clearTimeout(fadeT) }
+  }, [highlightActiveId, signals, onHighlightConsumed])
 
   async function loadSignals() {
     try {
@@ -321,14 +334,14 @@ export default function ScannerSignalsTab({ balance, riskPct, realBalance, refre
         <>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {visibleSignals.map(s => {
-              const isHighlighted = highlightId === s.id
+              const isHighlighted = highlightActiveId === s.id
               return (
                 <div
                   key={s.id}
                   ref={isHighlighted ? highlightRef : undefined}
                   className={isHighlighted ? 'rounded-xl ring-2 ring-accent shadow-[0_0_16px_rgba(240,185,11,0.45)] animate-pulse' : ''}
                 >
-                  <UnifiedSignalCard mode="saved" signal={s} onStatusChange={loadSignals} onDelete={handleDelete} balance={balance} riskPct={riskPct} realBalance={realBalance} onShowChart={onShowChart} />
+                  <UnifiedSignalCard mode="saved" signal={s} onStatusChange={loadSignals} onDelete={handleDelete} balance={balance} riskPct={riskPct} realBalance={realBalance} onShowChart={onShowChart} onRealOrderSuccess={onRealOrderSuccess} />
                 </div>
               )
             })}

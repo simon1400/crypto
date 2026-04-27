@@ -445,12 +445,19 @@ export async function takeSignalAsRealTrade(
   modelType?: string,
   leverage?: number,
   orderType: 'market' | 'limit' = 'market',
+  realRequired = false,
 ): Promise<TakeRealResponse> {
   const res = await fetch(`${BASE}/api/scanner/signals/${id}/take-trade-real`, {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ amount, modelType, leverage, orderType }),
+    body: JSON.stringify({ amount, modelType, leverage, orderType, realRequired }),
   })
+  // 400 при realRequired+ошибка реала отдаёт structured payload (TakeRealResponse) —
+  // его нужно вернуть как есть, чтобы вызывающий код мог показать realError в форме.
+  if (res.status === 400 && realRequired) {
+    const body = await res.json().catch(() => null)
+    if (body && 'realError' in body) return body as TakeRealResponse
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }))
     throw new Error(err.error || `HTTP ${res.status}`)

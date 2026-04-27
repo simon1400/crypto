@@ -12,6 +12,8 @@ import ScannerScanTab from '../components/scanner/ScannerScanTab'
 import ScannerEntryTab from '../components/scanner/ScannerEntryTab'
 import ScannerCoinListTab from '../components/scanner/ScannerCoinListTab'
 import ScannerAnalyticsTab from '../components/scanner/ScannerAnalyticsTab'
+import { RealOrderSuccessModal } from '../components/scanner/UnifiedSignalCard'
+import type { RealOrderModalState } from '../components/scanner/types'
 
 function scannerSignalToPosition(s: ScannerSignal): PositionChartPosition {
   const tps = (s.takeProfits as { price: number; rr: number }[] | undefined)?.map(tp => tp.price) || []
@@ -51,18 +53,18 @@ export default function Scanner() {
     }
   }, [highlightId])
 
-  // Clear the highlight param after 5s so back-nav or refresh doesn't re-trigger animation.
-  useEffect(() => {
+  // Снять ?highlight= из URL только когда дочерний компонент сообщит что подсветка отыграла.
+  // Раньше очищали по таймеру 5с от прихода ссылки — но если loadSignals долго грузится
+  // или фильтр перестраивается, карточка появлялась ПОСЛЕ очистки и подсветка терялась.
+  function handleHighlightConsumed() {
     if (highlightId == null) return
-    const t = setTimeout(() => {
-      const next = new URLSearchParams(searchParams)
-      next.delete('highlight')
-      setSearchParams(next, { replace: true })
-    }, 5000)
-    return () => clearTimeout(t)
-  }, [highlightId, searchParams, setSearchParams])
+    const next = new URLSearchParams(searchParams)
+    next.delete('highlight')
+    setSearchParams(next, { replace: true })
+  }
   const [minScore, setMinScore] = useState(70)
   const [chartSignal, setChartSignal] = useState<ScannerSignal | null>(null)
+  const [realModal, setRealModal] = useState<RealOrderModalState>(null)
   const [coinCount, setCoinCount] = useState(0)
   const [balance, setBalance] = useState(0)
   const [manualBalance, setManualBalance] = useState('')
@@ -376,6 +378,8 @@ export default function Scanner() {
           refreshKey={signalsRefreshKey}
           onShowChart={setChartSignal}
           highlightId={highlightId}
+          onHighlightConsumed={handleHighlightConsumed}
+          onRealOrderSuccess={setRealModal}
         />
       )}
 
@@ -389,6 +393,7 @@ export default function Scanner() {
           onTake={handleScanTake}
           onSkip={handleScanSkip}
           onDelete={handleScanDelete}
+          onRealOrderSuccess={setRealModal}
         />
       )}
 
@@ -418,6 +423,14 @@ export default function Scanner() {
         <PositionChartModal
           position={scannerSignalToPosition(chartSignal)}
           onClose={() => setChartSignal(null)}
+        />
+      )}
+
+      {realModal?.kind === 'success' && (
+        <RealOrderSuccessModal
+          info={realModal.info}
+          demoSkippedReason={realModal.demoSkippedReason}
+          onClose={() => setRealModal(null)}
         />
       )}
     </div>

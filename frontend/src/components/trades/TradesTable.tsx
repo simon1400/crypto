@@ -126,19 +126,19 @@ export default function TradesTable({
     <div className="hidden md:block overflow-x-auto">
       {isFinished ? (
         /* === Таблица для завершённых сделок === */
-        <table className="w-full text-sm min-w-[850px]">
-          <thead>
-            <tr className="text-text-secondary text-xs border-b border-input">
-              <th className="text-left py-3 px-2">Открыта</th>
-              <th className="text-left py-3 px-2">Монета</th>
-              <th className="text-left py-3 px-2">Закрыта</th>
-              <th className="text-left py-3 px-2">Длительность</th>
-              <th className="text-right py-3 px-2">Размер</th>
-              <th className="text-right py-3 px-2">Вход</th>
-              <th className="text-right py-3 px-2">Закрытие</th>
-              <th className="text-right py-3 px-2">Изм.</th>
-              <th className="text-right py-3 px-2">P&L</th>
-              <th className="text-center py-3 px-2">Статус</th>
+        <table className="w-full text-xs min-w-[850px]">
+          <thead className="bg-input text-text-secondary">
+            <tr>
+              <th className="text-left px-3 py-2">Открыта</th>
+              <th className="text-left px-3 py-2">Монета</th>
+              <th className="text-left px-3 py-2">Закрыта</th>
+              <th className="text-left px-3 py-2">Длительность</th>
+              <th className="text-right px-3 py-2">Размер</th>
+              <th className="text-right px-3 py-2">Вход</th>
+              <th className="text-right px-3 py-2">Закрытие</th>
+              <th className="text-right px-3 py-2">Изм.</th>
+              <th className="text-right px-3 py-2">P&L</th>
+              <th className="text-center px-3 py-2">Статус</th>
             </tr>
           </thead>
           <tbody>
@@ -147,15 +147,15 @@ export default function TradesTable({
               const dir = t.type === 'LONG' ? 1 : -1
               const changePct = closePrice ? ((closePrice - t.entryPrice) / t.entryPrice) * 100 * dir * t.leverage : null
               return (
-                <tr key={t.id} className="border-b border-input/50 hover:bg-card/50 cursor-pointer"
+                <tr key={t.id} className="border-t border-input hover:bg-input/50 cursor-pointer transition-colors"
                   onClick={() => onSelectTrade(t)}>
-                  <td className="py-3 px-2 text-text-secondary text-xs">{formatDate(t.openedAt)}</td>
-                  <td className="py-3 px-2 font-mono font-medium text-text-primary">
+                  <td className="px-3 py-2 text-text-secondary whitespace-nowrap">{formatDate(t.openedAt)}</td>
+                  <td className="px-3 py-2 font-mono font-medium text-text-primary">
                     <span className="flex items-center gap-2">
                       {(() => {
                         const scoreMatch = t.notes?.match(/Score:\s*(\d+)/)
                         return scoreMatch ? (
-                          <span className="font-mono text-xs text-accent">{scoreMatch[1]}</span>
+                          <span className="font-mono text-accent">{scoreMatch[1]}</span>
                         ) : <span className="text-text-secondary">—</span>
                       })()}
                       <span className={`${t.type === 'LONG' ? 'text-long' : 'text-short'}`}>{t.coin.replace('USDT', '')} - {t.leverage}x</span>
@@ -170,39 +170,39 @@ export default function TradesTable({
                         className="text-text-secondary hover:text-accent transition-colors"
                         title="График позиции"
                       >
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
                       </button>
                     </span>
                   </td>
-                  <td className="py-3 px-2 text-text-secondary text-xs">{t.closedAt ? formatDate(t.closedAt) : '—'}</td>
-                  <td className="py-3 px-2 text-text-secondary text-xs">{formatDuration(t.openedAt, t.closedAt)}</td>
-                  <td className="py-3 px-2 text-right font-mono">
+                  <td className="px-3 py-2 text-text-secondary whitespace-nowrap">{t.closedAt ? formatDate(t.closedAt) : '—'}</td>
+                  <td className="px-3 py-2 text-text-secondary whitespace-nowrap">{formatDuration(t.openedAt, t.closedAt)}</td>
+                  <td className="px-3 py-2 text-right font-mono leading-tight">
                     <span className="text-text-primary">${fmt2(t.amount)}</span>
                     {t.leverage > 1 && (
-                      <div className="text-xs text-text-secondary">${fmt2(t.amount * t.leverage)}</div>
+                      <div className="text-[10px] text-text-secondary">${fmt2(t.amount * t.leverage)}</div>
                     )}
                   </td>
-                  <td className="py-3 px-2 text-right font-mono text-text-primary">${t.entryPrice}</td>
-                  <td className="py-3 px-2 text-right font-mono">
+                  <td className="px-3 py-2 text-right font-mono text-text-primary">${t.entryPrice}</td>
+                  <td className="px-3 py-2 text-right font-mono">
                     {closePrice ? (
                       <span className={pnlColor(t.realizedPnl - (t.fees || 0))}>${closePrice}</span>
                     ) : (
                       <span className="text-text-secondary">—</span>
                     )}
                   </td>
-                  <td className="py-3 px-2 text-right font-mono text-xs">
+                  <td className="px-3 py-2 text-right font-mono">
                     {changePct !== null ? (
                       <span className={pnlColor(changePct)}>{fmt2Signed(changePct)}%</span>
                     ) : (
                       <span className="text-text-secondary">—</span>
                     )}
                   </td>
-                  <td className="py-3 px-2 text-right font-mono font-semibold">
+                  <td className="px-3 py-2 text-right font-mono">
                     <span className={pnlColor(t.realizedPnl - (t.fees || 0))} title={t.fees > 0 ? `Gross: ${fmt2Signed(t.realizedPnl)}$ · Комиссии: -${fmt2(t.fees)}$` : undefined}>
                       {fmt2Signed(t.realizedPnl - (t.fees || 0))}$
                     </span>
                   </td>
-                  <td className="py-3 px-2 text-center"><TradeStatusBadge status={t.status} pnl={t.realizedPnl} /></td>
+                  <td className="px-3 py-2 text-center"><TradeStatusBadge status={t.status} pnl={t.realizedPnl} /></td>
                 </tr>
               )
             })}
@@ -210,9 +210,9 @@ export default function TradesTable({
         </table>
       ) : (
         /* === Таблица для остальных табов === */
-        <table className="w-full text-sm min-w-[900px]">
-          <thead>
-            <tr className="text-text-secondary text-xs border-b border-input">
+        <table className="w-full text-xs min-w-[900px]">
+          <thead className="bg-input text-text-secondary">
+            <tr>
               {([
                 { key: 'date', label: 'Дата', align: 'text-left' },
                 { key: 'elapsed', label: '⏱', align: 'text-left' },
@@ -224,47 +224,47 @@ export default function TradesTable({
                 { key: 'tp', label: 'TP', align: 'text-right' },
               ] as const).map(col => (
                 <th key={col.key}
-                  className={`${col.align} py-3 px-2 cursor-pointer hover:text-accent transition-colors select-none`}
+                  className={`${col.align} px-3 py-2 cursor-pointer hover:text-accent transition-colors select-none`}
                   onClick={() => { setSortDir(sortCol === col.key && sortDir === 'desc' ? 'asc' : 'desc'); setSortCol(col.key) }}
                 >
                   {col.label}{sortCol === col.key ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}
                 </th>
               ))}
               {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && (
-                <th className="text-center py-3 px-2 cursor-pointer hover:text-accent transition-colors select-none"
+                <th className="text-center px-3 py-2 cursor-pointer hover:text-accent transition-colors select-none"
                   onClick={() => { setSortDir(sortCol === 'closed' && sortDir === 'desc' ? 'asc' : 'desc'); setSortCol('closed') }}
                 >Закрыто{sortCol === 'closed' ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}</th>
               )}
               {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && (
-                <th className="text-right py-3 px-2 cursor-pointer hover:text-accent transition-colors select-none"
+                <th className="text-right px-3 py-2 cursor-pointer hover:text-accent transition-colors select-none"
                   onClick={() => { setSortDir(sortCol === 'realized' && sortDir === 'desc' ? 'asc' : 'desc'); setSortCol('realized') }}
                 >Рлз.{sortCol === 'realized' ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}</th>
               )}
-              <th className="text-right py-3 px-2 cursor-pointer hover:text-accent transition-colors select-none"
+              <th className="text-right px-3 py-2 cursor-pointer hover:text-accent transition-colors select-none"
                 onClick={() => { setSortDir(sortCol === 'pnl' && sortDir === 'desc' ? 'asc' : 'desc'); setSortCol('pnl') }}
               >{statusFilter === 'CANCELLED' ? 'Причина' : 'P&L'}{sortCol === 'pnl' ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}</th>
-              <th className="text-center py-3 px-2">Статус</th>
-              <th className="text-right py-3 px-2"></th>
+              <th className="text-center px-3 py-2">Статус</th>
+              <th className="text-right px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
             {sortedTrades.map(t => (
-              <tr key={t.id} className="border-b border-input/50 hover:bg-card/50 cursor-pointer"
+              <tr key={t.id} className="border-t border-input hover:bg-input/50 cursor-pointer transition-colors"
                 onClick={() => onSelectTrade(t)}>
-                <td className="py-3 px-2 text-text-secondary text-xs">{formatDate(t.openedAt)}</td>
-                <td className="py-3 px-2 font-mono text-xs text-accent">
+                <td className="px-3 py-2 text-text-secondary whitespace-nowrap">{formatDate(t.openedAt)}</td>
+                <td className="px-3 py-2 font-mono text-accent">
                   {(t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') ? (
                     <LiveTimer openedAt={t.openedAt} />
                   ) : (
                     <span className="text-text-secondary">{formatElapsed(t.openedAt)}</span>
                   )}
                 </td>
-                <td className="py-3 px-2 font-mono font-medium text-text-primary">
+                <td className="px-3 py-2 font-mono font-medium text-text-primary">
                   <span className="flex items-center gap-2">
                     {(() => {
                       const scoreMatch = t.notes?.match(/Score:\s*(\d+)/)
                       return scoreMatch ? (
-                        <span className="font-mono text-xs text-accent">{scoreMatch[1]}</span>
+                        <span className="font-mono text-accent">{scoreMatch[1]}</span>
                       ) : <span className="text-text-secondary">—</span>
                     })()}
                     <span className={`${t.type === 'LONG' ? 'text-long' : 'text-short'}`}>{t.coin.replace('USDT', '')} - {t.leverage}x</span>
@@ -280,12 +280,12 @@ export default function TradesTable({
                       className="text-text-secondary hover:text-accent transition-colors"
                       title="График позиции"
                     >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
                     </button>
                   </span>
                 </td>
-                <td className="py-3 px-2 text-right font-mono text-text-primary">${t.entryPrice}</td>
-                <td className="py-3 px-2 text-right font-mono">
+                <td className="px-3 py-2 text-right font-mono text-text-primary">${t.entryPrice}</td>
+                <td className="px-3 py-2 text-right font-mono">
                   {livePrices[t.id]?.currentPrice ? (
                     <span className={pnlColor(livePrices[t.id].unrealizedPnl)}>
                       ${livePrices[t.id].currentPrice}
@@ -294,7 +294,7 @@ export default function TradesTable({
                     <span className="text-text-secondary">—</span>
                   )}
                 </td>
-                <td className="py-3 px-2 text-right font-mono">
+                <td className="px-3 py-2 text-right font-mono leading-tight">
                   {(() => {
                     const remaining = t.amount * ((100 - t.closedPct) / 100)
                     const isReduced = t.closedPct > 0 && t.closedPct < 100
@@ -304,13 +304,13 @@ export default function TradesTable({
                           ${fmt2(remaining)}
                         </span>
                         {t.leverage > 1 && (
-                          <div className="text-xs text-text-secondary">${fmt2(remaining * t.leverage)}</div>
+                          <div className="text-[10px] text-text-secondary">${fmt2(remaining * t.leverage)}</div>
                         )}
                       </>
                     )
                   })()}
                 </td>
-                <td className="py-3 px-2 text-right font-mono">
+                <td className="px-3 py-2 text-right font-mono leading-tight">
                   {(() => {
                     const dir = t.type === 'LONG' ? 1 : -1
                     const diff = (t.stopLoss - t.entryPrice) * dir
@@ -320,12 +320,12 @@ export default function TradesTable({
                     return (
                       <span title={`${fmt2(loss)}$ (${fmt2(pct)}%)`} className="cursor-help">
                         <span className="text-short">${t.stopLoss}</span>
-                        <div className="text-xs text-short/70">{fmt2(pct)}%</div>
+                        <div className="text-[10px] text-short/70">{fmt2(pct)}%</div>
                       </span>
                     )
                   })()}
                 </td>
-                <td className="py-3 px-2 text-right font-mono">
+                <td className="px-3 py-2 text-right font-mono leading-tight">
                   {(() => {
                     const tps = (t.takeProfits as { price: number; percent?: number }[]) || []
                     const maxTp = tps.length > 0 ? tps[tps.length - 1] : null
@@ -338,14 +338,14 @@ export default function TradesTable({
                     return (
                       <span title={`+${fmt2(profit)}$ (+${fmt2(pct)}%)`} className="cursor-help">
                         <span className="text-long">${maxTp.price}</span>
-                        <div className="text-xs text-long/70">+{fmt2(pct)}%</div>
+                        <div className="text-[10px] text-long/70">+{fmt2(pct)}%</div>
                       </span>
                     )
                   })()}
                 </td>
 
-                {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <td className="py-3 px-2 text-center text-text-secondary">{t.closedPct}%</td>}
-                {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <td className="py-3 px-2 text-right font-mono text-sm">
+                {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <td className="px-3 py-2 text-center text-text-secondary">{t.closedPct}%</td>}
+                {!['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter) && <td className="px-3 py-2 text-right font-mono">
                   {t.closedPct > 0 && t.closedPct < 100 ? (
                     <span className={pnlColor(t.realizedPnl - (t.fees || 0))} title={t.fees > 0 ? `Gross: ${fmt2Signed(t.realizedPnl)}$ · Комиссии: -${fmt2(t.fees)}$` : undefined}>
                       {fmt2Signed(t.realizedPnl - (t.fees || 0))}$
@@ -354,9 +354,9 @@ export default function TradesTable({
                     <span className="text-text-secondary">—</span>
                   )}
                 </td>}
-                <td className="py-3 px-2 text-right font-mono font-semibold">
+                <td className="px-3 py-2 text-right font-mono leading-tight">
                   {t.status === 'CANCELLED' ? (
-                    <span className="text-text-secondary text-xs font-sans">
+                    <span className="text-text-secondary font-sans">
                       {{
                         PRICE_PASSED: 'Цена прошла мимо',
                         TP1_REACHED: 'Достиг TP1',
@@ -369,9 +369,9 @@ export default function TradesTable({
                   ) : (t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && livePrices[t.id] ? (
                     <span className={pnlColor(livePrices[t.id].unrealizedPnl)}>
                       {fmt2Signed(livePrices[t.id].unrealizedPnl)}$
-                      <span className="text-xs ml-1 opacity-70">
+                      <div className="text-[10px] opacity-70">
                         ({fmt2Signed(livePrices[t.id].unrealizedPnlPct)}%)
-                      </span>
+                      </div>
                     </span>
                   ) : (
                     <span className={pnlColor(t.realizedPnl - (t.fees || 0))} title={t.fees > 0 ? `Gross: ${fmt2Signed(t.realizedPnl)}$ · Комиссии: -${fmt2(t.fees)}$` : undefined}>
@@ -379,18 +379,18 @@ export default function TradesTable({
                     </span>
                   )}
                 </td>
-                <td className="py-3 px-2 text-center"><TradeStatusBadge status={t.status} pnl={t.realizedPnl} /></td>
-                <td className="py-3 px-2 text-right">
+                <td className="px-3 py-2 text-center"><TradeStatusBadge status={t.status} pnl={t.realizedPnl} /></td>
+                <td className="px-3 py-2 text-right">
                   {t.status === 'PENDING_ENTRY' && (
                     <button onClick={e => { e.stopPropagation(); onCancelTrade(t) }}
-                      className="p-1.5 bg-short/10 text-short rounded hover:bg-short/20 transition" title="Отменить">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                      className="p-1 bg-short/10 text-short rounded hover:bg-short/20 transition" title="Отменить">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
                   )}
                   {(t.status === 'OPEN' || t.status === 'PARTIALLY_CLOSED') && (
                     <button onClick={e => { e.stopPropagation(); onCloseTrade(t) }}
-                      className="p-1.5 bg-accent/10 text-accent rounded hover:bg-accent/20 transition" title="Закрыть">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                      className="p-1 bg-accent/10 text-accent rounded hover:bg-accent/20 transition" title="Закрыть">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
                   )}
                 </td>

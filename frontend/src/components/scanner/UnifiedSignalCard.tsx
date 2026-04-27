@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { takeSignalAsTrade, takeSignalAsRealTrade, takeSignal, skipSignal, RealOrderInfo } from '../../api/client'
+import { takeSignalAsTrade, takeSignalAsRealTrade, takeSignal, skipSignal } from '../../api/client'
 import {
   CardData, SavedProps, ScanProps, Props, TakeMode,
   normalizeFromSaved, normalizeFromScan,
@@ -64,12 +64,8 @@ export default function UnifiedSignalCard(props: Props) {
   const [orderType, setOrderType] = useState<'market' | 'limit'>('market')
   const [loading, setLoading] = useState(false)
 
-  // Real-order result modal state
-  const [realModal, setRealModal] = useState<
-    | { kind: 'success'; info: RealOrderInfo; demoSkippedReason?: string | null }
-    | { kind: 'error'; message: string }
-    | null
-  >(null)
+  // Inline error inside take-form (real order failed → show, keep form open, let user fix)
+  const [formError, setFormError] = useState<string | null>(null)
 
   const models = data.entryModels
   const active = models[selectedModel] || models[0]
@@ -91,6 +87,7 @@ export default function UnifiedSignalCard(props: Props) {
   function openTakeForm(nextMode: TakeMode) {
     setTakeMode(nextMode)
     setCustomLeverage('')
+    setFormError(null)
     // calc amount using next-mode balance directly
     const baseBalance = nextMode === 'real' ? (realBalance ?? 0) : balance
     if (baseBalance && riskPct) {
@@ -110,19 +107,20 @@ export default function UnifiedSignalCard(props: Props) {
   async function handleTakeSaved() {
     if (!amount || mode !== 'saved') return
     setLoading(true)
+    setFormError(null)
     try {
       const lev = customLeverage ? Number(customLeverage) : undefined
       if (takeMode === 'real') {
-        const res = await takeSignalAsRealTrade(data.id!, Number(amount), active?.type, lev, orderType)
+        // realRequired: при ошибке реала бэк не создаёт демо и не меняет статус сигнала
+        const res = await takeSignalAsRealTrade(data.id!, Number(amount), active?.type, lev, orderType, true)
         if (res.real) {
-          setRealModal({ kind: 'success', info: res.real, demoSkippedReason: res.demoSkippedReason })
+          // Успех: показать модал через родителя (переживёт refetch карточки)
+          ;(props as SavedProps).onRealOrderSuccess?.({ kind: 'success', info: res.real, demoSkippedReason: res.demoSkippedReason })
           setShowTakeForm(false)
           ;(props as SavedProps).onStatusChange()
         } else {
-          // Error path: alert survives even if card remounts after parent refetch
-          alert(`⚠ Реальная сделка не создана на Bybit\n\n${formatRealError(res.realError)}\n\n(Демо сделка создана в журнале)`)
-          setShowTakeForm(false)
-          ;(props as SavedProps).onStatusChange()
+          // Ошибка: показать в форме, форма остаётся открытой, юзер правит и жмёт снова
+          setFormError(formatRealError(res.realError))
         }
       } else {
         await takeSignalAsTrade(data.id!, Number(amount), active?.type, lev, orderType)
@@ -130,7 +128,7 @@ export default function UnifiedSignalCard(props: Props) {
         ;(props as SavedProps).onStatusChange()
       }
     } catch (err: any) {
-      alert(err.message || 'Failed to take signal')
+      setFormError(err?.message || 'Failed to take signal')
     } finally { setLoading(false) }
   }
 
@@ -155,23 +153,21 @@ export default function UnifiedSignalCard(props: Props) {
     const lev = customLeverage ? Number(customLeverage) : undefined
     if (takeMode === 'real') {
       setLoading(true)
+      setFormError(null)
       try {
-        const res = await takeSignalAsRealTrade(data.id, Number(amount), active?.type, lev, orderType)
+        // realRequired: бэк не создаст демо и не сменит статус, если реал упал
+        const res = await takeSignalAsRealTrade(data.id, Number(amount), active?.type, lev, orderType, true)
         if (res.real) {
-          setRealModal({ kind: 'success', info: res.real, demoSkippedReason: res.demoSkippedReason })
+          ;(props as ScanProps).onRealOrderSuccess?.({ kind: 'success', info: res.real, demoSkippedReason: res.demoSkippedReason })
           setShowTakeForm(false)
-          // onTake remounts card → modal would vanish; skip for success path,
-          // parent will refetch on next natural trigger
+          // parent refresh пометит карточку как _taken — но модал уже у Scanner.tsx
+          ;(props as ScanProps).onTake(data.id, Number(amount), active?.type, lev, orderType)
         } else {
-          // Error path: alert survives card remount caused by onTake
-          alert(`⚠ Реальная сделка не создана на Bybit\n\n${formatRealError(res.realError)}\n\n(Демо сделка создана в журнале)`)
-          setShowTakeForm(false)
-          if (res.trade) {
-            ;(props as ScanProps).onTake(data.id, Number(amount), active?.type, lev, orderType)
-          }
+          // Ошибка реала — форма остаётся открытой, демо НЕ создано
+          setFormError(formatRealError(res.realError))
         }
       } catch (err: any) {
-        alert(err.message || 'Failed to take signal')
+        setFormError(err?.message || 'Failed to take signal')
       } finally { setLoading(false) }
     } else {
       ;(props as ScanProps).onTake(data.id, Number(amount), active?.type, lev, orderType)
@@ -218,17 +214,18 @@ export default function UnifiedSignalCard(props: Props) {
             data={data}
             active={active}
             amount={amount}
-            onAmountChange={setAmount}
+            onAmountChange={(v) => { setAmount(v); if (formError) setFormError(null) }}
             customLeverage={customLeverage}
-            onCustomLeverageChange={setCustomLeverage}
+            onCustomLeverageChange={(v) => { setCustomLeverage(v); if (formError) setFormError(null) }}
             orderType={orderType}
             onOrderTypeChange={setOrderType}
             onConfirm={mode === 'saved' ? handleTakeSaved : handleTakeScan}
-            onCancel={() => setShowTakeForm(false)}
+            onCancel={() => { setShowTakeForm(false); setFormError(null) }}
             loading={loading}
             balance={effectiveBalance}
             riskPct={riskPct}
             calcRiskAmount={calcRiskAmount}
+            errorMessage={formError}
           />
         </>
       )}
@@ -245,92 +242,71 @@ export default function UnifiedSignalCard(props: Props) {
         onMarkSaved={handleMarkSaved}
         onDelete={() => props.onDelete(data.id!)}
       />
-
-      {realModal && (
-        <RealOrderModal modal={realModal} onClose={() => setRealModal(null)} />
-      )}
     </div>
   )
 }
 
-function RealOrderModal({
-  modal,
+/**
+ * Модал результата успешной реал-сделки.
+ * Рендерится в Scanner.tsx чтобы пережить refetch карточек после take.
+ */
+export function RealOrderSuccessModal({
+  info,
+  demoSkippedReason,
   onClose,
 }: {
-  modal:
-    | { kind: 'success'; info: RealOrderInfo; demoSkippedReason?: string | null }
-    | { kind: 'error'; message: string }
+  info: import('../../api/client').RealOrderInfo
+  demoSkippedReason?: string | null
   onClose: () => void
 }) {
-  const isError = modal.kind === 'error'
-  const demoSkipped = modal.kind === 'success' ? modal.demoSkippedReason : null
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div
-        className={`bg-card rounded-xl p-5 max-w-md w-full border ${isError ? 'border-short/40' : 'border-long/40'}`}
+        className="bg-card rounded-xl p-5 max-w-md w-full border border-long/40"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-3">
-          <h3 className={`text-lg font-semibold ${isError ? 'text-short' : 'text-long'}`}>
-            {isError ? '⚠ Реальная сделка не создана' : '✓ Реальная сделка создана на Bybit'}
-          </h3>
+          <h3 className="text-lg font-semibold text-long">✓ Реальная сделка создана на Bybit</h3>
           <button onClick={onClose} className="text-text-secondary hover:text-text-primary text-xl leading-none">×</button>
         </div>
 
-        {isError ? (
-          <>
-            <div className="text-sm text-text-primary mb-3">
-              Демо сделка создана успешно, но реальный ордер на Bybit не прошёл:
-            </div>
-            <div className="bg-input rounded p-3 text-sm text-short font-mono break-words">
-              {modal.message}
-            </div>
-            <div className="text-xs text-text-secondary mt-3">
-              Проверьте: подключен ли mainnet (не testnet), валидны ли API-ключи, есть ли баланс,
-              торгуется ли символ на Bybit.
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="text-sm text-text-primary mb-3">
-              {demoSkipped ? 'Реальная сделка создана на Bybit. Демо пропущено — не хватает виртуального баланса.' : 'Демо + реальная сделка успешно созданы.'}
-            </div>
-            {demoSkipped && (
-              <div className="bg-input rounded p-2 text-xs text-accent font-mono break-words mb-3">
-                {demoSkipped}
-              </div>
-            )}
-            <div className="space-y-1.5 text-sm font-mono bg-input rounded p-3">
-              <div><span className="text-text-secondary">Символ: </span><span className="text-text-primary">{modal.info.symbol}</span></div>
-              <div><span className="text-text-secondary">Position ID: </span><span className="text-text-primary">#{modal.info.positionId}</span></div>
-              <div><span className="text-text-secondary">Тип ордера: </span><span className="text-text-primary">{modal.info.orderType}</span></div>
-              <div><span className="text-text-secondary">Кол-во: </span><span className="text-text-primary">{modal.info.qty}</span></div>
-              {modal.info.entryPrice && (
-                <div><span className="text-text-secondary">Лимит-цена: </span><span className="text-text-primary">${modal.info.entryPrice}</span></div>
-              )}
-              <div><span className="text-text-secondary">Stop Loss: </span><span className="text-short">${modal.info.stopLoss}</span></div>
-              <div className="pt-1">
-                <span className="text-text-secondary">Take Profits:</span>
-                <div className="mt-1 space-y-0.5 pl-2">
-                  {modal.info.takeProfits.map((tp, i) => (
-                    <div key={i} className="text-xs">
-                      <span className="text-text-secondary">TP{i + 1} ({tp.percent}%): </span>
-                      <span className={tp.orderId ? 'text-long' : 'text-short'}>${tp.price}</span>
-                      <span className="text-text-secondary"> · {tp.qty}</span>
-                      {!tp.orderId && tp.error && (
-                        <span className="text-short ml-1">✕ {tp.error}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </>
+        <div className="text-sm text-text-primary mb-3">
+          {demoSkippedReason ? 'Реальная сделка создана на Bybit. Демо пропущено — не хватает виртуального баланса.' : 'Демо + реальная сделка успешно созданы.'}
+        </div>
+        {demoSkippedReason && (
+          <div className="bg-input rounded p-2 text-xs text-accent font-mono break-words mb-3">
+            {demoSkippedReason}
+          </div>
         )}
+        <div className="space-y-1.5 text-sm font-mono bg-input rounded p-3">
+          <div><span className="text-text-secondary">Символ: </span><span className="text-text-primary">{info.symbol}</span></div>
+          <div><span className="text-text-secondary">Position ID: </span><span className="text-text-primary">#{info.positionId}</span></div>
+          <div><span className="text-text-secondary">Тип ордера: </span><span className="text-text-primary">{info.orderType}</span></div>
+          <div><span className="text-text-secondary">Кол-во: </span><span className="text-text-primary">{info.qty}</span></div>
+          {info.entryPrice && (
+            <div><span className="text-text-secondary">Лимит-цена: </span><span className="text-text-primary">${info.entryPrice}</span></div>
+          )}
+          <div><span className="text-text-secondary">Stop Loss: </span><span className="text-short">${info.stopLoss}</span></div>
+          <div className="pt-1">
+            <span className="text-text-secondary">Take Profits:</span>
+            <div className="mt-1 space-y-0.5 pl-2">
+              {info.takeProfits.map((tp, i) => (
+                <div key={i} className="text-xs">
+                  <span className="text-text-secondary">TP{i + 1} ({tp.percent}%): </span>
+                  <span className={tp.orderId ? 'text-long' : 'text-short'}>${tp.price}</span>
+                  <span className="text-text-secondary"> · {tp.qty}</span>
+                  {!tp.orderId && tp.error && (
+                    <span className="text-short ml-1">✕ {tp.error}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
 
         <button
           onClick={onClose}
-          className={`mt-4 w-full py-2 rounded font-medium ${isError ? 'bg-short/15 text-short hover:bg-short/25' : 'bg-long/15 text-long hover:bg-long/25'}`}
+          className="mt-4 w-full py-2 rounded font-medium bg-long/15 text-long hover:bg-long/25"
         >
           Закрыть
         </button>

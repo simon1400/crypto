@@ -18,6 +18,7 @@ interface SignalCardTakeFormProps {
   balance: number
   riskPct?: number
   calcRiskAmount: (lev?: number) => string
+  errorMessage?: string | null  // показывается над кнопками; не закрывает форму
 }
 
 // Real-risk sizing: amount = targetRisk / (realSlPct/100 × leverage)
@@ -29,6 +30,7 @@ function calcAmountForRealRisk(balance: number, riskPct: number, realSlPct: numb
 export default function SignalCardTakeForm({
   data, active, amount, onAmountChange, customLeverage, onCustomLeverageChange,
   orderType, onOrderTypeChange, onConfirm, onCancel, loading, balance, riskPct, calcRiskAmount,
+  errorMessage,
 }: SignalCardTakeFormProps) {
   const [livePrice, setLivePrice] = useState<number | null>(null)
   const [priceLoading, setPriceLoading] = useState(false)
@@ -175,6 +177,13 @@ export default function SignalCardTakeForm({
           </div>
         )
       })()}
+      {errorMessage && (
+        <div className="bg-short/10 border border-short/30 rounded p-2.5 text-xs text-short space-y-1">
+          <div className="font-semibold">⚠ Реальная сделка не создана</div>
+          <div className="text-text-primary leading-snug">{errorMessage}</div>
+          <div className="text-text-secondary">Поправь параметры (плечо/размер) и нажми «Подтвердить» снова. Демо не списано, сигнал остался в «Новых».</div>
+        </div>
+      )}
       <div className="flex gap-2">
         <button
           onClick={onConfirm}
@@ -182,7 +191,7 @@ export default function SignalCardTakeForm({
           className="px-3 py-1.5 text-sm rounded bg-long/20 text-long hover:bg-long/30 disabled:opacity-50"
           title={orderType === 'market' && !livePrice ? 'Ждём актуальную цену...' : ''}
         >
-          {loading ? '...' : 'Подтвердить'}
+          {loading ? '...' : errorMessage ? 'Попробовать снова' : 'Подтвердить'}
         </button>
         <button onClick={onCancel} className="px-3 py-1.5 text-sm rounded bg-neutral/10 text-neutral">Отмена</button>
       </div>

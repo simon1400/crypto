@@ -115,6 +115,7 @@ export async function resetSimulation(balance: number): Promise<{ deletedTrades:
 export interface Mt5BalanceInfo {
   balance: number | null
   riskPct: number
+  commissionPerLot: number
 }
 
 export async function getMt5Balance(): Promise<Mt5BalanceInfo> {
@@ -123,7 +124,7 @@ export async function getMt5Balance(): Promise<Mt5BalanceInfo> {
   return res.json()
 }
 
-export async function setMt5Balance(data: { balance?: number | null; riskPct?: number }): Promise<Mt5BalanceInfo> {
+export async function setMt5Balance(data: { balance?: number | null; riskPct?: number; commissionPerLot?: number }): Promise<Mt5BalanceInfo> {
   const res = await fetch(`${BASE}/api/settings/mt5-balance`, {
     method: 'PUT',
     headers: getHeaders(),

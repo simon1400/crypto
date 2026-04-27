@@ -120,9 +120,16 @@ export function rsi(closes: number[], period = 14): number {
 
 function round2(v: number): number {
   if (v === 0) return 0
-  // For very small values (cheap coins), preserve more precision
-  if (Math.abs(v) < 0.01) return Math.round(v * 1000000) / 1000000
-  if (Math.abs(v) < 1) return Math.round(v * 10000) / 10000
+  const a = Math.abs(v)
+  // Very small values (cheap coins like SHIB/PEPE) — 6 decimals
+  if (a < 0.01) return Math.round(v * 1000000) / 1000000
+  // Sub-1 (e.g. ADA, DOGE, XRP) — 4 decimals
+  if (a < 1) return Math.round(v * 10000) / 10000
+  // Forex/metals/mid-cap range (EURUSD ~1.1, USDJPY ~155, XAUUSD ~2400, SOL ~150) — 5 decimals.
+  // Без этой ветки форекс-цена 1.17042 округлялась до 1.17 → entry в сигналах был "ровным"
+  // и скоринг сравнивал price > ema20 на одинаковых округлённых значениях.
+  if (a < 1000) return Math.round(v * 100000) / 100000
+  // Large values (BTC, ETH, NAS100, GER40) — 2 decimals достаточно, никто не торгует с большей точностью
   return Math.round(v * 100) / 100
 }
 

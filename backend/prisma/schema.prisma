@@ -247,6 +247,7 @@ model BotConfig {
   // === MT5 calculator deposit (forex/gold position sizing) ===
   mt5Balance              Float?                   // MT5 account balance in USD for lot size calculator
   mt5RiskPct              Float    @default(2)     // default risk % per trade on MT5
+  mt5CommissionPerLot     Float    @default(0)     // round-turn commission per 1 lot in USD (open+close), used for break-even calc
   // === Forex Scanner ===
   forexScanEnabled        Boolean  @default(false) // включить авто-сканер форекс-инструментов
   forexScanMinScore       Int      @default(70)    // минимальный score для уведомления в Telegram

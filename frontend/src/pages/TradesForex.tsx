@@ -13,7 +13,7 @@ import {
   type ForexTradeStatus,
 } from '../api/client'
 
-type Filter = 'ALL' | 'OPEN' | 'PARTIALLY_CLOSED' | 'CLOSED' | 'SL_HIT' | 'CANCELLED'
+type Filter = 'ALL' | 'OPEN' | 'CLOSED' | 'SL_HIT' | 'CANCELLED'
 
 export default function TradesForex() {
   const [trades, setTrades] = useState<ForexTrade[]>([])
@@ -96,7 +96,17 @@ export default function TradesForex() {
   }
 
   const handleDelete = async (trade: ForexTrade) => {
-    if (!confirm(`Удалить сделку ${trade.instrument} ${trade.type}?`)) return
+    const isActive = trade.status === 'OPEN' || trade.status === 'PARTIALLY_CLOSED'
+    const hasPnl = trade.realizedUsdPnl !== 0
+    let msg = `Удалить сделку #${trade.id} (${trade.instrument} ${trade.type} ${trade.lots} лот)?`
+    if (isActive) {
+      msg += `\n\n⚠ Статус: ${trade.status}.`
+    }
+    if (hasPnl) {
+      msg += `\n⚠ Реализованный P&L: ${trade.realizedUsdPnl >= 0 ? '+' : ''}$${trade.realizedUsdPnl.toFixed(2)} — будет вычеркнут из статистики.`
+    }
+    msg += `\n\nЗапись удалится из журнала. На MT5/Bybit это никак не повлияет.`
+    if (!confirm(msg)) return
     try {
       await deleteForexTrade(trade.id)
       setTrades((prev) => prev.filter((t) => t.id !== trade.id))
@@ -133,7 +143,7 @@ export default function TradesForex() {
       {stats && <StatsCard stats={stats} />}
 
       <div className="flex items-center gap-2 flex-wrap">
-        {(['ALL', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSED', 'SL_HIT', 'CANCELLED'] as Filter[]).map((f) => (
+        {(['ALL', 'OPEN', 'CLOSED', 'SL_HIT', 'CANCELLED'] as Filter[]).map((f) => (
           <button
             key={f}
             onClick={() => {
@@ -263,7 +273,7 @@ function TradesTable({ trades, onClick }: { trades: ForexTrade[]; onClick: (t: F
               <th className="text-right px-3 py-2">Лоты</th>
               <th className="text-right px-3 py-2">Вход</th>
               <th className="text-right px-3 py-2">SL</th>
-              <th className="text-right px-3 py-2">Закрыто %</th>
+              <th className="text-right px-3 py-2">TP</th>
               <th className="text-right px-3 py-2">P&L (пипсы)</th>
               <th className="text-right px-3 py-2">P&L ($)</th>
               <th className="text-left px-3 py-2">Статус</th>
@@ -290,14 +300,33 @@ function TradesTable({ trades, onClick }: { trades: ForexTrade[]; onClick: (t: F
                 <td className="px-3 py-2 text-right font-mono text-short">
                   {formatPrice(t.instrument, t.currentStop ?? t.stopLoss)}
                 </td>
-                <td className="px-3 py-2 text-right font-mono text-text-primary">{t.closedPct}%</td>
-                <td className={`px-3 py-2 text-right font-mono ${pnlColor(t.realizedPipsPnl)}`}>
-                  {t.realizedPipsPnl > 0 ? '+' : ''}
-                  {t.realizedPipsPnl.toFixed(1)}
+                <td className="px-3 py-2 text-right font-mono text-long">
+                  {(() => {
+                    const tps = t.takeProfits as { price: number }[]
+                    if (!tps?.length) return '—'
+                    if (tps.length === 1) return formatPrice(t.instrument, tps[0].price)
+                    // Старые multi-TP сделки (до варианта А) — показываем диапазон
+                    return `${formatPrice(t.instrument, tps[0].price)}…${formatPrice(t.instrument, tps[tps.length - 1].price)}`
+                  })()}
                 </td>
-                <td className={`px-3 py-2 text-right font-mono ${pnlColor(t.realizedUsdPnl)}`}>
-                  {t.realizedUsdPnl > 0 ? '+' : ''}${t.realizedUsdPnl.toFixed(2)}
-                </td>
+                {/* P&L показываем только когда сделка реально что-то закрыла.
+                    Для OPEN тут всегда 0 — система не подтягивает live-цену, юзер не должен думать что это unrealized. */}
+                {t.status === 'OPEN' ? (
+                  <>
+                    <td className="px-3 py-2 text-right font-mono text-text-secondary">—</td>
+                    <td className="px-3 py-2 text-right font-mono text-text-secondary">—</td>
+                  </>
+                ) : (
+                  <>
+                    <td className={`px-3 py-2 text-right font-mono ${pnlColor(t.realizedPipsPnl)}`}>
+                      {t.realizedPipsPnl > 0 ? '+' : ''}
+                      {t.realizedPipsPnl.toFixed(1)}
+                    </td>
+                    <td className={`px-3 py-2 text-right font-mono ${pnlColor(t.realizedUsdPnl)}`}>
+                      {t.realizedUsdPnl > 0 ? '+' : ''}${t.realizedUsdPnl.toFixed(2)}
+                    </td>
+                  </>
+                )}
                 <td className="px-3 py-2">
                   <span className={`px-1.5 py-0.5 text-[10px] font-semibold rounded ${statusColor(t.status)}`}>
                     {t.status}
@@ -344,6 +373,10 @@ function TradeModal({
 
   const canClose = trade.status === 'OPEN' || trade.status === 'PARTIALLY_CLOSED'
   const remaining = 100 - trade.closedPct
+  // Сделки из multi-take имеют один TP с percent=100. Для них нет смысла закрывать "часть":
+  // вся позиция = одна нога MT5, либо закрыта целиком, либо по SL.
+  const isSingleTp = (trade.takeProfits as { price: number; percent: number }[]).length === 1
+  const tp1Price = (trade.takeProfits as { price: number }[])[0]?.price
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -432,36 +465,77 @@ function TradeModal({
         {canClose && (
           <>
             <div className="bg-card rounded p-3 space-y-2">
-              <p className="text-xs text-text-secondary">Закрыть часть (осталось {remaining}%)</p>
-              <div className="grid grid-cols-3 gap-2">
-                <input
-                  type="number"
-                  value={closePrice}
-                  onChange={(e) => setClosePrice(e.target.value)}
-                  placeholder="Цена"
-                  className="bg-input text-text-primary font-mono text-xs rounded px-2 py-1.5 outline-none"
-                />
-                <input
-                  type="number"
-                  value={closePct}
-                  onChange={(e) => setClosePct(e.target.value)}
-                  placeholder="% от позиции"
-                  max={remaining}
-                  className="bg-input text-text-primary font-mono text-xs rounded px-2 py-1.5 outline-none"
-                />
-                <button
-                  onClick={() => {
-                    const p = Number(closePrice)
-                    const pct = Number(closePct)
-                    if (!p || !pct) return alert('Нужны цена и %')
-                    onCloseTrade(trade, p, pct)
-                    setClosePrice('')
-                  }}
-                  className="px-3 py-1.5 bg-long/20 text-long text-xs rounded hover:bg-long/30"
-                >
-                  Закрыть
-                </button>
-              </div>
+              {isSingleTp ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-text-secondary">
+                      Закрыть позицию ({trade.lots.toFixed(2)} лот)
+                    </p>
+                    {tp1Price != null && (
+                      <button
+                        type="button"
+                        onClick={() => setClosePrice(String(tp1Price))}
+                        className="text-[10px] text-accent hover:text-accent/80"
+                      >
+                        Подставить TP1 ({formatPrice(trade.instrument, tp1Price)})
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-[1fr_auto] gap-2">
+                    <input
+                      type="number"
+                      value={closePrice}
+                      onChange={(e) => setClosePrice(e.target.value)}
+                      placeholder="Цена закрытия"
+                      className="bg-input text-text-primary font-mono text-xs rounded px-2 py-1.5 outline-none"
+                    />
+                    <button
+                      onClick={() => {
+                        const p = Number(closePrice)
+                        if (!p) return alert('Введи цену закрытия')
+                        onCloseTrade(trade, p, 100)
+                        setClosePrice('')
+                      }}
+                      className="px-3 py-1.5 bg-long/20 text-long text-xs rounded hover:bg-long/30"
+                    >
+                      Закрыть всю
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-text-secondary">Закрыть часть (осталось {remaining}%)</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    <input
+                      type="number"
+                      value={closePrice}
+                      onChange={(e) => setClosePrice(e.target.value)}
+                      placeholder="Цена"
+                      className="bg-input text-text-primary font-mono text-xs rounded px-2 py-1.5 outline-none"
+                    />
+                    <input
+                      type="number"
+                      value={closePct}
+                      onChange={(e) => setClosePct(e.target.value)}
+                      placeholder="% от позиции"
+                      max={remaining}
+                      className="bg-input text-text-primary font-mono text-xs rounded px-2 py-1.5 outline-none"
+                    />
+                    <button
+                      onClick={() => {
+                        const p = Number(closePrice)
+                        const pct = Number(closePct)
+                        if (!p || !pct) return alert('Нужны цена и %')
+                        onCloseTrade(trade, p, pct)
+                        setClosePrice('')
+                      }}
+                      className="px-3 py-1.5 bg-long/20 text-long text-xs rounded hover:bg-long/30"
+                    >
+                      Закрыть
+                    </button>
+                  </div>
+                </>
+              )}
 
               <div className="flex gap-2 flex-wrap pt-1 border-t border-input">
                 <button
@@ -551,14 +625,12 @@ function TradeModal({
           )}
         </div>
 
-        {trade.status !== 'OPEN' && trade.status !== 'PARTIALLY_CLOSED' && (
-          <button
-            onClick={() => onDelete(trade)}
-            className="text-xs text-short hover:text-short/80"
-          >
-            Удалить сделку
-          </button>
-        )}
+        <button
+          onClick={() => onDelete(trade)}
+          className="text-xs text-short hover:text-short/80"
+        >
+          Удалить сделку
+        </button>
       </div>
     </div>
   )

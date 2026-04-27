@@ -8,11 +8,12 @@ import {
   closeForexSignal,
   slHitForexSignal,
   deleteForexSignal,
-  takeForexSignalAsTrade,
+  takeForexSignalAsMultiTrade,
+  getMt5Balance,
   type ForexSignal,
   type ForexScannerStatus,
 } from '../api/client'
-import Mt5PositionCalc from '../components/Mt5PositionCalc'
+import Mt5PositionCalc, { findInstrument, computeMt5Position } from '../components/Mt5PositionCalc'
 import { Link } from 'react-router-dom'
 
 type StatusFilter = 'ALL' | 'NEW' | 'TAKEN' | 'CLOSED' | 'SL_HIT' | 'EXPIRED'
@@ -107,14 +108,24 @@ export default function ScannerForex() {
     }
   }
 
-  const handleTakeAsTrade = async (signal: ForexSignal, lots: number) => {
+  const handleTakeAsTrade = async (signal: ForexSignal, lotsPerLeg: number) => {
     try {
-      const { trade } = await takeForexSignalAsTrade(signal.id, { lots })
+      const { trades, fallback } = await takeForexSignalAsMultiTrade(signal.id, { lotsPerLeg })
+      const totalLots = trades.reduce((s, t) => s + t.lots, 0)
       setSignals((prev) =>
-        prev.map((s) => (s.id === signal.id ? { ...s, status: 'TAKEN', takenAt: new Date().toISOString(), amount: lots } : s)),
+        prev.map((s) =>
+          s.id === signal.id
+            ? { ...s, status: 'TAKEN', takenAt: new Date().toISOString(), amount: totalLots }
+            : s,
+        ),
       )
       setSelected(null)
-      alert(`Сделка #${trade.id} создана (${trade.instrument} ${trade.type} ${lots} лот). Смотри Forex Trades.`)
+      const baseMsg = `Создано ${trades.length} сделок (${signal.coin} ${signal.type} итого ${totalLots.toFixed(2)} лот). Смотри Forex Trades.`
+      alert(
+        fallback
+          ? `⚠ Под целевой риск выходило меньше 0.01 лота на ногу — открыта 1 сделка 0.01 с TP${fallback.chosenTpIdx + 1} (ближайший к entry).\n\n${baseMsg}`
+          : baseMsg,
+      )
     } catch (e: any) {
       alert(e.message || 'Ошибка take-as-trade')
     }
@@ -414,14 +425,48 @@ function SignalModal({
   signal: ForexSignal
   onClose: () => void
   onTake: (signal: ForexSignal, lots?: number) => void
-  onTakeAsTrade: (signal: ForexSignal, lots: number) => void
+  onTakeAsTrade: (signal: ForexSignal, lotsPerLeg: number) => void
   onCloseSignal: (signal: ForexSignal, price: number, pct: number) => void
   onSlHit: (signal: ForexSignal) => void
   onDelete: (signal: ForexSignal) => void
 }) {
   const [closePrice, setClosePrice] = useState('')
-  const [lotsInput, setLotsInput] = useState('0.01')
+  const [lotsInput, setLotsInput] = useState('')
   const [closePct, setClosePct] = useState('50')
+  const tpCount = signal.takeProfits?.length || 1
+  // Сырое значение perSplitLots из MT5 калькулятора. Может быть < 0.01 (тогда backend применит fallback в single-leg).
+  const [rawLotsPerLeg, setRawLotsPerLeg] = useState<number | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    getMt5Balance()
+      .then(({ balance, riskPct }) => {
+        if (cancelled) return
+        const instr = findInstrument(signal.coin)
+        if (!instr || !balance || balance <= 0) {
+          setRawLotsPerLeg(null)
+          setLotsInput('0.01')
+          return
+        }
+        const calc = computeMt5Position(instr, signal.entry, signal.stopLoss, balance, riskPct, tpCount)
+        if (!calc) {
+          setRawLotsPerLeg(null)
+          setLotsInput('0.01')
+          return
+        }
+        setRawLotsPerLeg(calc.perSplitLots)
+        // В input показываем округлённое до 0.01 (минимум брокера) — юзер видит то, что реально откроется.
+        // Но при отправке мы шлём raw значение, чтобы backend сам решил fallback vs split.
+        const rounded = Math.floor(calc.perSplitLots * 100) / 100
+        setLotsInput(String(Math.max(0.01, rounded)))
+      })
+      .catch(() => setLotsInput('0.01'))
+    return () => { cancelled = true }
+  }, [signal.id, signal.coin, signal.entry, signal.stopLoss, tpCount])
+
+  // Будет ли сейчас fallback в single-leg? (перерисовывает UI и подсказку)
+  const willFallback = rawLotsPerLeg != null && rawLotsPerLeg < 0.01
+  const effectiveLegs = willFallback ? 1 : tpCount
 
   const reasons = signal.marketContext?.reasons || []
   const breakdown = signal.marketContext?.scoreBreakdown
@@ -526,11 +571,26 @@ function SignalModal({
         {signal.status === 'NEW' && (
           <div className="bg-card rounded p-3 space-y-2">
             <p className="text-xs text-text-secondary">
-              Взять в сделку — запись попадёт в журнал <Link to="/trades-forex" className="text-accent hover:underline">Forex Trades</Link>
+              {willFallback ? (
+                <>
+                  ⚠ Под целевой риск выходит <span className="font-mono text-short">{rawLotsPerLeg!.toFixed(4)}</span> лота на ногу — это меньше минимума 0.01.
+                  Будет открыта <span className="text-text-primary">1 сделка 0.01 лот</span> с ближайшим к entry TP (TP1).
+                </>
+              ) : (
+                <>
+                  Взять в сделку — будет создано <span className="text-text-primary">{effectiveLegs}</span> отдельных позиций (по одной на каждый TP), как в MT5.
+                </>
+              )}
+              {' '}Записи попадут в журнал <Link to="/trades-forex" className="text-accent hover:underline">Forex Trades</Link>.
             </p>
             <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-end">
               <div>
-                <label className="text-[10px] text-text-secondary block mb-0.5">Лоты (из калькулятора выше)</label>
+                <label className="text-[10px] text-text-secondary block mb-0.5">
+                  {willFallback
+                    ? <>Лоты (single-leg fallback)</>
+                    : <>Лоты на 1 позицию (всего: <span className="text-accent font-mono">{(Number(lotsInput) * tpCount || 0).toFixed(2)}</span> × {tpCount} TP)</>
+                  }
+                </label>
                 <input
                   type="number"
                   value={lotsInput}
@@ -542,13 +602,18 @@ function SignalModal({
               </div>
               <button
                 onClick={() => {
-                  const lots = Number(lotsInput)
-                  if (!(lots > 0)) return alert('Введи количество лотов')
-                  onTakeAsTrade(signal, lots)
+                  const lotsFromInput = Number(lotsInput)
+                  if (!(lotsFromInput > 0)) return alert('Введи количество лотов на одну позицию')
+                  // Если калькулятор насчитал raw < 0.01, а юзер input не правил (input = 0.01),
+                  // шлём raw — backend увидит < 0.01 и применит fallback в single-leg.
+                  // Если юзер сам поставил 0.01 — это override, шлём 0.01 (3 ноги).
+                  const inputLooksAuto = Math.abs(lotsFromInput - Math.max(0.01, Math.floor((rawLotsPerLeg ?? 0) * 100) / 100)) < 1e-9
+                  const lotsToSend = (rawLotsPerLeg != null && inputLooksAuto) ? rawLotsPerLeg : lotsFromInput
+                  onTakeAsTrade(signal, lotsToSend)
                 }}
                 className="px-3 py-1.5 bg-accent text-primary text-xs font-medium rounded hover:bg-accent/90"
               >
-                Взять в сделку
+                {willFallback ? 'Взять 1 сделку' : `Взять ${effectiveLegs} ${effectiveLegs === 1 ? 'сделку' : effectiveLegs < 5 ? 'сделки' : 'сделок'}`}
               </button>
               <button
                 onClick={() => onTake(signal)}

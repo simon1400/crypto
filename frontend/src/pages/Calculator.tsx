@@ -24,68 +24,70 @@ interface Mt5Instrument {
   pipSize: number                // price increment considered "1 pip" — used only for display / stop in pips
   quoteKind: 'usd_quote' | 'usd_base' | 'jpy_quote' | 'other'
   decimals: number               // price decimals
+  typicalSpreadPips: number      // typical Vantage Standard STP spread in pips (round-turn cost — paid once at open)
 }
 
+// Typical spreads — Vantage Standard STP (April 2026). При новостях/азиатской сессии спред может быть в 2-3 раза шире.
 const INSTRUMENTS: Mt5Instrument[] = [
   // Metals
-  { symbol: 'XAUUSD', name: 'Gold vs USD',   group: 'Metals', contractSize: 100,    pipSize: 0.01,   quoteKind: 'usd_quote', decimals: 2 },
-  { symbol: 'XAGUSD', name: 'Silver vs USD', group: 'Metals', contractSize: 5000,   pipSize: 0.001,  quoteKind: 'usd_quote', decimals: 3 },
-  { symbol: 'XPTUSD', name: 'Platinum',      group: 'Metals', contractSize: 100,    pipSize: 0.01,   quoteKind: 'usd_quote', decimals: 2 },
-  { symbol: 'XPDUSD', name: 'Palladium',     group: 'Metals', contractSize: 100,    pipSize: 0.01,   quoteKind: 'usd_quote', decimals: 2 },
+  { symbol: 'XAUUSD', name: 'Gold vs USD',   group: 'Metals', contractSize: 100,    pipSize: 0.01,   quoteKind: 'usd_quote', decimals: 2, typicalSpreadPips: 25 },
+  { symbol: 'XAGUSD', name: 'Silver vs USD', group: 'Metals', contractSize: 5000,   pipSize: 0.001,  quoteKind: 'usd_quote', decimals: 3, typicalSpreadPips: 25 },
+  { symbol: 'XPTUSD', name: 'Platinum',      group: 'Metals', contractSize: 100,    pipSize: 0.01,   quoteKind: 'usd_quote', decimals: 2, typicalSpreadPips: 400 },
+  { symbol: 'XPDUSD', name: 'Palladium',     group: 'Metals', contractSize: 100,    pipSize: 0.01,   quoteKind: 'usd_quote', decimals: 2, typicalSpreadPips: 800 },
 
   // Majors (USD quoted)
-  { symbol: 'EURUSD', name: 'Euro / USD',       group: 'Majors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_quote', decimals: 5 },
-  { symbol: 'GBPUSD', name: 'Pound / USD',      group: 'Majors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_quote', decimals: 5 },
-  { symbol: 'AUDUSD', name: 'Aussie / USD',     group: 'Majors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_quote', decimals: 5 },
-  { symbol: 'NZDUSD', name: 'Kiwi / USD',       group: 'Majors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_quote', decimals: 5 },
+  { symbol: 'EURUSD', name: 'Euro / USD',       group: 'Majors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_quote', decimals: 5, typicalSpreadPips: 1.2 },
+  { symbol: 'GBPUSD', name: 'Pound / USD',      group: 'Majors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_quote', decimals: 5, typicalSpreadPips: 1.6 },
+  { symbol: 'AUDUSD', name: 'Aussie / USD',     group: 'Majors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_quote', decimals: 5, typicalSpreadPips: 1.4 },
+  { symbol: 'NZDUSD', name: 'Kiwi / USD',       group: 'Majors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_quote', decimals: 5, typicalSpreadPips: 1.8 },
 
   // USD-base pairs
-  { symbol: 'USDJPY', name: 'USD / Yen',   group: 'Majors', contractSize: 100000, pipSize: 0.01,   quoteKind: 'usd_base',  decimals: 3 },
-  { symbol: 'USDCHF', name: 'USD / Franc', group: 'Majors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5 },
-  { symbol: 'USDCAD', name: 'USD / CAD',   group: 'Majors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5 },
+  { symbol: 'USDJPY', name: 'USD / Yen',   group: 'Majors', contractSize: 100000, pipSize: 0.01,   quoteKind: 'usd_base',  decimals: 3, typicalSpreadPips: 1.4 },
+  { symbol: 'USDCHF', name: 'USD / Franc', group: 'Majors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5, typicalSpreadPips: 1.8 },
+  { symbol: 'USDCAD', name: 'USD / CAD',   group: 'Majors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5, typicalSpreadPips: 1.7 },
 
   // JPY crosses
-  { symbol: 'EURJPY', name: 'EUR / JPY', group: 'JPY pairs', contractSize: 100000, pipSize: 0.01, quoteKind: 'jpy_quote', decimals: 3 },
-  { symbol: 'GBPJPY', name: 'GBP / JPY', group: 'JPY pairs', contractSize: 100000, pipSize: 0.01, quoteKind: 'jpy_quote', decimals: 3 },
-  { symbol: 'AUDJPY', name: 'AUD / JPY', group: 'JPY pairs', contractSize: 100000, pipSize: 0.01, quoteKind: 'jpy_quote', decimals: 3 },
-  { symbol: 'CADJPY', name: 'CAD / JPY', group: 'JPY pairs', contractSize: 100000, pipSize: 0.01, quoteKind: 'jpy_quote', decimals: 3 },
-  { symbol: 'CHFJPY', name: 'CHF / JPY', group: 'JPY pairs', contractSize: 100000, pipSize: 0.01, quoteKind: 'jpy_quote', decimals: 3 },
-  { symbol: 'NZDJPY', name: 'NZD / JPY', group: 'JPY pairs', contractSize: 100000, pipSize: 0.01, quoteKind: 'jpy_quote', decimals: 3 },
+  { symbol: 'EURJPY', name: 'EUR / JPY', group: 'JPY pairs', contractSize: 100000, pipSize: 0.01, quoteKind: 'jpy_quote', decimals: 3, typicalSpreadPips: 2.0 },
+  { symbol: 'GBPJPY', name: 'GBP / JPY', group: 'JPY pairs', contractSize: 100000, pipSize: 0.01, quoteKind: 'jpy_quote', decimals: 3, typicalSpreadPips: 2.8 },
+  { symbol: 'AUDJPY', name: 'AUD / JPY', group: 'JPY pairs', contractSize: 100000, pipSize: 0.01, quoteKind: 'jpy_quote', decimals: 3, typicalSpreadPips: 2.2 },
+  { symbol: 'CADJPY', name: 'CAD / JPY', group: 'JPY pairs', contractSize: 100000, pipSize: 0.01, quoteKind: 'jpy_quote', decimals: 3, typicalSpreadPips: 2.5 },
+  { symbol: 'CHFJPY', name: 'CHF / JPY', group: 'JPY pairs', contractSize: 100000, pipSize: 0.01, quoteKind: 'jpy_quote', decimals: 3, typicalSpreadPips: 2.8 },
+  { symbol: 'NZDJPY', name: 'NZD / JPY', group: 'JPY pairs', contractSize: 100000, pipSize: 0.01, quoteKind: 'jpy_quote', decimals: 3, typicalSpreadPips: 2.8 },
 
   // Other crosses (approximation)
-  { symbol: 'EURGBP', name: 'EUR / GBP', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'EURAUD', name: 'EUR / AUD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'EURCHF', name: 'EUR / CHF', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'EURCAD', name: 'EUR / CAD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'EURNZD', name: 'EUR / NZD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'GBPAUD', name: 'GBP / AUD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'GBPCHF', name: 'GBP / CHF', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'GBPCAD', name: 'GBP / CAD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'GBPNZD', name: 'GBP / NZD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'AUDCAD', name: 'AUD / CAD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'AUDCHF', name: 'AUD / CHF', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'AUDNZD', name: 'AUD / NZD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'NZDCAD', name: 'NZD / CAD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'NZDCHF', name: 'NZD / CHF', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
-  { symbol: 'CADCHF', name: 'CAD / CHF', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5 },
+  { symbol: 'EURGBP', name: 'EUR / GBP', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 1.6 },
+  { symbol: 'EURAUD', name: 'EUR / AUD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 2.5 },
+  { symbol: 'EURCHF', name: 'EUR / CHF', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 2.0 },
+  { symbol: 'EURCAD', name: 'EUR / CAD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 2.5 },
+  { symbol: 'EURNZD', name: 'EUR / NZD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 3.5 },
+  { symbol: 'GBPAUD', name: 'GBP / AUD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 3.0 },
+  { symbol: 'GBPCHF', name: 'GBP / CHF', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 3.0 },
+  { symbol: 'GBPCAD', name: 'GBP / CAD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 3.5 },
+  { symbol: 'GBPNZD', name: 'GBP / NZD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 4.5 },
+  { symbol: 'AUDCAD', name: 'AUD / CAD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 2.5 },
+  { symbol: 'AUDCHF', name: 'AUD / CHF', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 2.5 },
+  { symbol: 'AUDNZD', name: 'AUD / NZD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 3.0 },
+  { symbol: 'NZDCAD', name: 'NZD / CAD', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 3.5 },
+  { symbol: 'NZDCHF', name: 'NZD / CHF', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 3.5 },
+  { symbol: 'CADCHF', name: 'CAD / CHF', group: 'Crosses', contractSize: 100000, pipSize: 0.0001, quoteKind: 'other', decimals: 5, typicalSpreadPips: 2.5 },
 
   // Exotic majors
-  { symbol: 'USDSEK', name: 'USD / SEK', group: 'Minors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5 },
-  { symbol: 'USDNOK', name: 'USD / NOK', group: 'Minors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5 },
-  { symbol: 'USDZAR', name: 'USD / ZAR', group: 'Minors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5 },
-  { symbol: 'USDMXN', name: 'USD / MXN', group: 'Minors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5 },
-  { symbol: 'USDTRY', name: 'USD / TRY', group: 'Minors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5 },
+  { symbol: 'USDSEK', name: 'USD / SEK', group: 'Minors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5, typicalSpreadPips: 50 },
+  { symbol: 'USDNOK', name: 'USD / NOK', group: 'Minors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5, typicalSpreadPips: 60 },
+  { symbol: 'USDZAR', name: 'USD / ZAR', group: 'Minors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5, typicalSpreadPips: 200 },
+  { symbol: 'USDMXN', name: 'USD / MXN', group: 'Minors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5, typicalSpreadPips: 250 },
+  { symbol: 'USDTRY', name: 'USD / TRY', group: 'Minors', contractSize: 100000, pipSize: 0.0001, quoteKind: 'usd_base',  decimals: 5, typicalSpreadPips: 500 },
 
   // Indices (approximate — typically 1 contract = 1 index point)
-  { symbol: 'US30',    name: 'Dow Jones 30',    group: 'Indices', contractSize: 1, pipSize: 1,    quoteKind: 'usd_quote', decimals: 2 },
-  { symbol: 'NAS100',  name: 'Nasdaq 100',      group: 'Indices', contractSize: 1, pipSize: 1,    quoteKind: 'usd_quote', decimals: 2 },
-  { symbol: 'SPX500',  name: 'S&P 500',         group: 'Indices', contractSize: 1, pipSize: 0.1,  quoteKind: 'usd_quote', decimals: 2 },
-  { symbol: 'GER40',   name: 'DAX 40',          group: 'Indices', contractSize: 1, pipSize: 0.1,  quoteKind: 'usd_quote', decimals: 2 },
-  { symbol: 'UK100',   name: 'FTSE 100',        group: 'Indices', contractSize: 1, pipSize: 0.1,  quoteKind: 'usd_quote', decimals: 2 },
+  { symbol: 'US30',    name: 'Dow Jones 30',    group: 'Indices', contractSize: 1, pipSize: 1,    quoteKind: 'usd_quote', decimals: 2, typicalSpreadPips: 2 },
+  { symbol: 'NAS100',  name: 'Nasdaq 100',      group: 'Indices', contractSize: 1, pipSize: 1,    quoteKind: 'usd_quote', decimals: 2, typicalSpreadPips: 2 },
+  { symbol: 'SPX500',  name: 'S&P 500',         group: 'Indices', contractSize: 1, pipSize: 0.1,  quoteKind: 'usd_quote', decimals: 2, typicalSpreadPips: 6 },
+  { symbol: 'GER40',   name: 'DAX 40',          group: 'Indices', contractSize: 1, pipSize: 0.1,  quoteKind: 'usd_quote', decimals: 2, typicalSpreadPips: 15 },
+  { symbol: 'UK100',   name: 'FTSE 100',        group: 'Indices', contractSize: 1, pipSize: 0.1,  quoteKind: 'usd_quote', decimals: 2, typicalSpreadPips: 15 },
 
   // Crypto (via MT5 brokers)
-  { symbol: 'BTCUSD', name: 'Bitcoin',  group: 'Crypto', contractSize: 1,  pipSize: 1,    quoteKind: 'usd_quote', decimals: 2 },
-  { symbol: 'ETHUSD', name: 'Ethereum', group: 'Crypto', contractSize: 1,  pipSize: 0.1,  quoteKind: 'usd_quote', decimals: 2 },
+  { symbol: 'BTCUSD', name: 'Bitcoin',  group: 'Crypto', contractSize: 1,  pipSize: 1,    quoteKind: 'usd_quote', decimals: 2, typicalSpreadPips: 35 },
+  { symbol: 'ETHUSD', name: 'Ethereum', group: 'Crypto', contractSize: 1,  pipSize: 0.1,  quoteKind: 'usd_quote', decimals: 2, typicalSpreadPips: 30 },
 ]
 
 function lossPerLotUsd(instr: Mt5Instrument, entry: number, stopPrice: number): number {
@@ -95,6 +97,29 @@ function lossPerLotUsd(instr: Mt5Instrument, entry: number, stopPrice: number): 
   // For usd_base / jpy_quote / other we approximate by dividing by entry.
   // Exact for USD-base pairs. For JPY-crosses and other crosses this is a close approximation
   // when USD is not directly involved — sufficient for position sizing.
+  return raw / entry
+}
+
+// Цена-сдвиг для break-even от комиссии (round-turn $/лот).
+// USD-quote: priceShift = commission / contractSize
+// USD-base / cross: priceShift = commission * entry / contractSize (обратная формула к lossPerLotUsd)
+function commissionPriceShift(instr: Mt5Instrument, entry: number, commissionPerLot: number): number {
+  if (commissionPerLot <= 0 || instr.contractSize <= 0) return 0
+  if (instr.quoteKind === 'usd_quote') return commissionPerLot / instr.contractSize
+  return (commissionPerLot * entry) / instr.contractSize
+}
+
+// Цена-сдвиг от спреда: при открытии входишь по Ask, выйти можешь только по Bid → теряешь спред сразу.
+// Поэтому шаг по цене = spread в пипсах × pipSize (НЕ умножаем на 2).
+function spreadPriceShift(instr: Mt5Instrument): number {
+  return instr.typicalSpreadPips * instr.pipSize
+}
+
+// USD-стоимость спреда на N лотов — для отображения в результате.
+function spreadCostUsd(instr: Mt5Instrument, entry: number, lots: number): number {
+  const priceShift = spreadPriceShift(instr)
+  const raw = priceShift * instr.contractSize * lots
+  if (instr.quoteKind === 'usd_quote') return raw
   return raw / entry
 }
 
@@ -146,8 +171,10 @@ export default function Calculator() {
 function Mt5Calculator() {
   const [balance, setBalance] = useState<string>('')
   const [riskPct, setRiskPct] = useState<string>('2')
+  const [commission, setCommission] = useState<string>('0')
   const [savedBalance, setSavedBalance] = useState<number | null>(null)
   const [savedRisk, setSavedRisk] = useState<number>(2)
+  const [savedCommission, setSavedCommission] = useState<number>(0)
   const [saving, setSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
   const [errorMsg, setErrorMsg] = useState<string>('')
@@ -172,25 +199,29 @@ function Mt5Calculator() {
       }
       setRiskPct(String(r.riskPct))
       setSavedRisk(r.riskPct)
+      setCommission(String(r.commissionPerLot ?? 0))
+      setSavedCommission(r.commissionPerLot ?? 0)
     }).catch(() => {})
   }, [])
 
   const balanceNum = Number(balance)
   const riskNum = Number(riskPct)
+  const commissionNum = Math.max(0, Number(commission) || 0)
   const splitsNum = Math.max(1, Math.floor(Number(splits) || 1))
   const instr = useMemo(() => INSTRUMENTS.find(i => i.symbol === instrument) || INSTRUMENTS[0], [instrument])
 
-  const isDirty = (balanceNum !== savedBalance) || (riskNum !== savedRisk)
-  const canSave = balanceNum > 0 && riskNum > 0 && riskNum <= 100 && isDirty
+  const isDirty = (balanceNum !== savedBalance) || (riskNum !== savedRisk) || (commissionNum !== savedCommission)
+  const canSave = balanceNum > 0 && riskNum > 0 && riskNum <= 100 && commissionNum >= 0 && commissionNum <= 200 && isDirty
 
   const handleSave = async () => {
     if (!canSave) return
     setSaving(true)
     setErrorMsg('')
     try {
-      const r = await apiSetMt5Balance({ balance: balanceNum, riskPct: riskNum })
+      const r = await apiSetMt5Balance({ balance: balanceNum, riskPct: riskNum, commissionPerLot: commissionNum })
       setSavedBalance(r.balance)
       setSavedRisk(r.riskPct)
+      setSavedCommission(r.commissionPerLot ?? 0)
       setSaveStatus('saved')
       setTimeout(() => setSaveStatus('idle'), 2000)
     } catch (err: any) {
@@ -258,7 +289,7 @@ function Mt5Calculator() {
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <div>
             <label className="text-xs text-text-secondary block mb-1">Депозит ($)</label>
             <input
@@ -280,12 +311,26 @@ function Mt5Calculator() {
               className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
             />
           </div>
+          <div>
+            <label className="text-xs text-text-secondary block mb-1" title="Round-turn = open + close. Vantage Standard STP = 0, Raw ECN ≈ 6.">
+              Комиссия ($/лот)
+            </label>
+            <input
+              type="number"
+              value={commission}
+              onChange={e => setCommission(e.target.value)}
+              placeholder="0"
+              step="0.5"
+              min={0}
+              className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+            />
+          </div>
         </div>
 
         <div className="flex items-center justify-between gap-3">
           <p className="text-text-secondary text-xs">
             {savedBalance !== null
-              ? <>Сохранено: <span className="text-text-primary font-mono">${savedBalance}</span> / <span className="text-text-primary font-mono">{savedRisk}%</span></>
+              ? <>Сохранено: <span className="text-text-primary font-mono">${savedBalance}</span> / <span className="text-text-primary font-mono">{savedRisk}%</span> / комиссия <span className="text-text-primary font-mono">${savedCommission}</span>/лот</>
               : <span className="text-short">Депо не сохранено</span>
             }
             {balanceNum > 0 && riskNum > 0 && (
@@ -413,6 +458,62 @@ function Mt5Calculator() {
               </div>
             </div>
           )}
+
+          {(() => {
+            const commShift = commissionPriceShift(instr, entryNum, commissionNum)
+            const sprShift = spreadPriceShift(instr)
+            const totalShift = commShift + sprShift
+            if (totalShift <= 0) return null
+
+            const bePrice = result.direction === 'BUY' ? entryNum + totalShift : entryNum - totalShift
+            const beInPips = totalShift / instr.pipSize
+            const totalCommissionUsd = commissionNum * result.totalLots
+            const totalSpreadUsd = spreadCostUsd(instr, entryNum, result.totalLots)
+            const totalCostUsd = totalCommissionUsd + totalSpreadUsd
+
+            return (
+              <div className="border-t border-input pt-3 mt-2 space-y-2">
+                <p className="text-xs text-text-secondary">
+                  Безубыток (с учётом издержек)
+                </p>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                  {commissionNum > 0 && (
+                    <>
+                      <div className="text-text-secondary">Комиссия (round-turn)</div>
+                      <div className="font-mono text-text-primary">
+                        ${round(totalCommissionUsd, 2)}
+                        <span className="text-text-secondary text-xs ml-2">
+                          (${commissionNum}/лот × {round(result.totalLots, 2)})
+                        </span>
+                      </div>
+                    </>
+                  )}
+
+                  <div className="text-text-secondary">Спред ({instr.typicalSpreadPips} пипс)</div>
+                  <div className="font-mono text-text-primary">
+                    ${round(totalSpreadUsd, 2)}
+                  </div>
+
+                  <div className="text-text-secondary">Итого издержки</div>
+                  <div className="font-mono text-short">
+                    ${round(totalCostUsd, 2)}
+                  </div>
+
+                  <div className="text-text-secondary">SL в безубыток</div>
+                  <div className="font-mono text-accent">
+                    {bePrice.toFixed(instr.decimals)}
+                    <span className="text-text-secondary text-xs ml-2">
+                      ({round(beInPips, 1)} пипс от входа)
+                    </span>
+                  </div>
+                </div>
+                <p className="text-[10px] text-text-secondary">
+                  💡 После TP1 переноси SL не на цену входа, а сюда — иначе закрытие "в ноль" даст реальный минус ${round(totalCostUsd, 2)}.
+                  Спред — типичный для Vantage Standard STP, при новостях/азиате может быть в 2-3 раза шире.
+                </p>
+              </div>
+            )
+          })()}
 
           {(() => {
             const MIN_LOT = 0.01

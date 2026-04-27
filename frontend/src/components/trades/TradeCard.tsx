@@ -64,16 +64,16 @@ export default function TradeCard({ trade: t, live, statusFilter, onSelect, onCl
   const showClosed = !['PENDING_ENTRY', 'CANCELLED'].includes(statusFilter)
 
   return (
-    <div className="bg-card rounded-xl p-3 space-y-2" onClick={onSelect}>
+    <div className="border border-input rounded-lg p-3 space-y-2 hover:bg-input/30 transition-colors cursor-pointer" onClick={onSelect}>
       {/* Row 1: coin + type + chart */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="font-mono font-bold text-lg text-text-primary">{t.coin.replace('USDT', '')}</span>
-          <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${t.type === 'LONG' ? 'bg-long/10 text-long' : 'bg-short/10 text-short'}`}>
+          <span className="font-mono font-semibold text-sm text-text-primary">{t.coin.replace('USDT', '')}</span>
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${t.type === 'LONG' ? 'bg-long/10 text-long' : 'bg-short/10 text-short'}`}>
             {t.type} {t.leverage}x
           </span>
-          <button onClick={e => { e.stopPropagation(); onChart() }} className="text-text-secondary hover:text-accent transition-colors p-1">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+          <button onClick={e => { e.stopPropagation(); onChart() }} className="text-text-secondary hover:text-accent transition-colors p-0.5">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
           </button>
         </div>
         <TradeStatusBadge status={t.status} pnl={t.realizedPnl} />
@@ -81,7 +81,7 @@ export default function TradeCard({ trade: t, live, statusFilter, onSelect, onCl
 
       {/* Row 2: badges + date */}
       <div className="flex items-center gap-1.5">
-        {scoreMatch && <span className="font-mono text-xs text-accent">{scoreMatch[1]}</span>}
+        {scoreMatch && <span className="font-mono text-[10px] text-accent">{scoreMatch[1]}</span>}
         {sourceBadge && <span className={`px-1 py-0.5 rounded text-[10px] font-bold ${sourceBadge.cls}`}>{sourceBadge.label}</span>}
         {t.notes?.includes('Model: aggressive') && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-long/15 text-long">A</span>}
         {t.notes?.includes('Model: confirmation') && <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent">C</span>}
@@ -93,22 +93,22 @@ export default function TradeCard({ trade: t, live, statusFilter, onSelect, onCl
       </div>
 
       {/* Body: price grid */}
-      <div className="border-t border-input/50 pt-2.5"></div>
+      <div className="border-t border-input pt-2"></div>
       <div className="grid grid-cols-3 gap-2 text-xs">
         <div>
-          <div className="text-text-secondary">Вход</div>
+          <div className="text-text-secondary text-[10px]">Вход</div>
           <div className="font-mono text-text-primary">${t.entryPrice}</div>
         </div>
         <div>
-          <div className="text-text-secondary">Цена</div>
+          <div className="text-text-secondary text-[10px]">Цена</div>
           <div className="font-mono">
             {live?.currentPrice ? (
               <span className={pnlColor(live.unrealizedPnl)}>${live.currentPrice}</span>
             ) : <span className="text-text-secondary">—</span>}
           </div>
         </div>
-        <div>
-          <div className="text-text-secondary">Размер</div>
+        <div className="leading-tight">
+          <div className="text-text-secondary text-[10px]">Размер</div>
           <div className="font-mono text-text-primary">${fmt2(remaining)}</div>
           {t.leverage > 1 && <div className="font-mono text-text-secondary text-[10px]">${fmt2(remaining * t.leverage)}</div>}
         </div>
@@ -117,18 +117,18 @@ export default function TradeCard({ trade: t, live, statusFilter, onSelect, onCl
       {/* Row 3: SL + TP */}
       <div className="grid grid-cols-2 gap-2 text-xs">
         <div>
-          <div className="text-text-secondary">Stop Loss</div>
+          <div className="text-text-secondary text-[10px]">Stop Loss</div>
           <div className="font-mono">
             <span className="text-short">${t.stopLoss}</span>
-            <span className="text-short/70 ml-1">{fmt2(slPct)}%</span>
+            <span className="text-short/70 ml-1 text-[10px]">{fmt2(slPct)}%</span>
           </div>
         </div>
         <div>
-          <div className="text-text-secondary">Take Profit</div>
+          <div className="text-text-secondary text-[10px]">Take Profit</div>
           {maxTp ? (
             <div className="font-mono">
               <span className="text-long">${maxTp.price}</span>
-              <span className="text-long/70 ml-1">+{fmt2(tpPct!)}%</span>
+              <span className="text-long/70 ml-1 text-[10px]">+{fmt2(tpPct!)}%</span>
             </div>
           ) : <div className="text-text-secondary">—</div>}
         </div>
@@ -136,36 +136,36 @@ export default function TradeCard({ trade: t, live, statusFilter, onSelect, onCl
 
       {/* Row 4: closed % */}
       {showClosed && t.closedPct > 0 && (
-        <div className="text-xs text-text-secondary">Закрыто: {t.closedPct}%</div>
+        <div className="text-[10px] text-text-secondary">Закрыто: {t.closedPct}%</div>
       )}
 
       {/* Footer: P&L + action */}
-      <div className="flex items-center justify-between pt-2.5 mt-0.5 border-t border-input/50">
+      <div className="flex items-center justify-between pt-2 border-t border-input">
         <div>
           {isCancelled ? (
             <span className="text-text-secondary text-xs">{CANCEL_REASONS[t.exitReason || ''] || t.exitReason || '—'}</span>
           ) : isActive && live ? (
             <div>
-              <span className={`font-mono font-bold text-base ${pnlColor(live.unrealizedPnl)}`}>
+              <span className={`font-mono font-semibold text-sm ${pnlColor(live.unrealizedPnl)}`}>
                 {fmt2Signed(live.unrealizedPnl)}$
               </span>
-              <span className={`font-mono text-xs ml-1.5 ${pnlColor(live.unrealizedPnlPct)}`}>
+              <span className={`font-mono text-[10px] ml-1.5 ${pnlColor(live.unrealizedPnlPct)}`}>
                 {fmt2Signed(live.unrealizedPnlPct)}%
               </span>
             </div>
           ) : netPnl !== 0 ? (
-            <span className={`font-mono font-bold text-base ${pnlColor(netPnl)}`}>{fmt2Signed(netPnl)}$</span>
+            <span className={`font-mono font-semibold text-sm ${pnlColor(netPnl)}`}>{fmt2Signed(netPnl)}$</span>
           ) : null}
         </div>
         {isPending && (
           <button onClick={e => { e.stopPropagation(); onCancel() }}
-            className="px-3 py-1.5 bg-short/10 text-short rounded text-xs font-medium hover:bg-short/20 transition">
+            className="px-2.5 py-1 bg-short/10 text-short rounded text-[11px] font-medium hover:bg-short/20 transition">
             Отменить
           </button>
         )}
         {isActive && (
           <button onClick={e => { e.stopPropagation(); onClose() }}
-            className="px-3 py-1.5 bg-accent/10 text-accent rounded text-xs font-medium hover:bg-accent/20 transition">
+            className="px-2.5 py-1 bg-accent/10 text-accent rounded text-[11px] font-medium hover:bg-accent/20 transition">
             Закрыть
           </button>
         )}

@@ -201,3 +201,27 @@ export async function takeForexSignalAsTrade(
     }),
   )
 }
+
+// Take signal as N independent ForexTrades — одна на каждый TP (1:1 как в MT5).
+// Backend применяет fallback: если lotsPerLeg < 0.01 → создаётся ОДНА сделка 0.01 с ближайшим TP.
+export async function takeForexSignalAsMultiTrade(
+  signalId: number,
+  data: {
+    lotsPerLeg: number       // RAW значение из калькулятора (может быть < 0.01 — backend сам решит)
+    entryPrice?: number
+    stopLoss?: number
+    notes?: string
+  },
+): Promise<{
+  trades: ForexTrade[]
+  signal: { id: number; status: string }
+  fallback: { reason: string; chosenTpIdx: number } | null
+}> {
+  return handle(
+    await fetch(`${BASE}/api/scanner-forex/signals/${signalId}/take-trade-multi`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify(data),
+    }),
+  )
+}

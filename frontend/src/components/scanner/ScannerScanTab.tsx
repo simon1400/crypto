@@ -1,6 +1,7 @@
 import { ScanResponse, ScanSignal } from '../../api/scanner'
 import UnifiedSignalCard from './UnifiedSignalCard'
 import { SETUP_CATEGORY_STYLES, EXECUTION_TYPE_STYLES } from './constants'
+import type { RealOrderModalState } from './types'
 
 interface ScannerScanTabProps {
   scanResults: ScanResponse | null
@@ -10,9 +11,10 @@ interface ScannerScanTabProps {
   onTake: (id: number, amount: number, modelType?: string, leverage?: number, orderType?: 'market' | 'limit') => void
   onSkip: (id: number) => void
   onDelete: (id: number) => void
+  onRealOrderSuccess?: (modal: RealOrderModalState) => void
 }
 
-export default function ScannerScanTab({ scanResults, balance, riskPct, realBalance, onTake, onSkip, onDelete }: ScannerScanTabProps) {
+export default function ScannerScanTab({ scanResults, balance, riskPct, realBalance, onTake, onSkip, onDelete, onRealOrderSuccess }: ScannerScanTabProps) {
   if (!scanResults) return null
 
   return (
@@ -58,7 +60,7 @@ export default function ScannerScanTab({ scanResults, balance, riskPct, realBala
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {scanResults.signals.map((s: ScanSignal, i: number) => (
-            <UnifiedSignalCard key={i} mode="scan" signal={s} onTake={onTake} onSkip={onSkip} onDelete={onDelete} balance={balance} riskPct={riskPct} realBalance={realBalance} />
+            <UnifiedSignalCard key={i} mode="scan" signal={s} onTake={onTake} onSkip={onSkip} onDelete={onDelete} balance={balance} riskPct={riskPct} realBalance={realBalance} onRealOrderSuccess={onRealOrderSuccess} />
           ))}
         </div>
       )}

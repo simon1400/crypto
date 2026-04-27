@@ -1,4 +1,9 @@
-import { ScannerSignal, ScanSignal, SignalClose, CandidateSetInfo } from '../../api/client'
+import { ScannerSignal, ScanSignal, SignalClose, CandidateSetInfo, RealOrderInfo } from '../../api/client'
+
+// Состояние модала результата реал-сделки. Хранится в Scanner.tsx, чтобы пережить refetch карточек.
+export type RealOrderModalState =
+  | { kind: 'success'; info: RealOrderInfo; demoSkippedReason?: string | null }
+  | null
 
 export interface EntryModelData {
   type: string
@@ -233,6 +238,7 @@ export interface SavedProps {
   riskPct: number
   realBalance?: number | null
   onShowChart?: (signal: ScannerSignal) => void
+  onRealOrderSuccess?: (modal: RealOrderModalState) => void  // показать модал с уровня страницы
 }
 
 // === Scan result props ===
@@ -245,6 +251,7 @@ export interface ScanProps {
   balance: number
   riskPct: number
   realBalance?: number | null
+  onRealOrderSuccess?: (modal: RealOrderModalState) => void
 }
 
 export type Props = SavedProps | ScanProps

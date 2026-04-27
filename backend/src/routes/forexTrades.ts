@@ -432,13 +432,51 @@ router.patch(
 )
 
 // DELETE /api/forex-trades/:id
+// Удаляет сделку любого статуса. P&L "возвращается" автоматически —
+// stats считается из ForexTrade.realizedUsdPnl, удалённой записи в выборке нет.
+// Виртуальный баланс не трогаем — форекс-сделки изолированы от него (живут в MT5).
+// Если это была последняя сделка привязанная к сигналу — сбрасываем сигнал в NEW.
 router.delete(
   '/:id',
   asyncHandler(async (req, res) => {
     const id = parseIdParam(req, res)
     if (id == null) return
+
+    const trade = await prisma.forexTrade.findUnique({ where: { id } })
+    if (!trade) {
+      res.status(404).json({ error: 'Forex trade not found' })
+      return
+    }
+
     await prisma.forexTrade.delete({ where: { id } })
-    res.json({ ok: true })
+
+    let signalReverted = false
+    if (trade.signalId) {
+      const remaining = await prisma.forexTrade.count({ where: { signalId: trade.signalId } })
+      if (remaining === 0) {
+        await prisma.generatedSignal
+          .update({
+            where: { id: trade.signalId },
+            data: {
+              status: 'NEW',
+              takenAt: null,
+              closedAt: null,
+              closedPct: 0,
+              amount: 0,
+            },
+          })
+          .then(() => { signalReverted = true })
+          .catch((err) => {
+            console.warn(`[ForexTrades] Failed to revert signal #${trade.signalId} to NEW:`, err.message)
+          })
+      }
+    }
+
+    console.log(
+      `[ForexTrades] Deleted #${id} (${trade.instrument} ${trade.type} ${trade.lots} lot, status=${trade.status})` +
+      (signalReverted ? ` → signal #${trade.signalId} reverted to NEW` : ''),
+    )
+    res.json({ ok: true, signalReverted })
   }, 'ForexTrades'),
 )
 

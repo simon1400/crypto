@@ -189,6 +189,141 @@ router.post(
   }, 'ForexScanner'),
 )
 
+// POST /api/scanner-forex/signals/:id/take-trade-multi — split signal into N independent ForexTrades
+// (одна нога на каждый TP, 1:1 как в MT5 где каждая позиция — отдельный ордер)
+router.post(
+  '/signals/:id/take-trade-multi',
+  asyncHandler(async (req, res) => {
+    const id = parseIdParam(req, res)
+    if (id == null) return
+
+    const { lotsPerLeg, entryPrice, stopLoss, notes } = req.body as {
+      lotsPerLeg: number       // лоты на одну ногу (например 0.01)
+      entryPrice?: number      // override для всех ног
+      stopLoss?: number        // общий SL для всех ног
+      notes?: string
+    }
+
+    if (!lotsPerLeg || lotsPerLeg <= 0) {
+      res.status(400).json({ error: 'lotsPerLeg required (must be > 0)' })
+      return
+    }
+
+    const signal = await prisma.generatedSignal.findUnique({ where: { id } })
+    if (!signal || signal.market !== 'FOREX') {
+      res.status(404).json({ error: 'Forex signal not found' })
+      return
+    }
+    if (signal.status !== 'NEW') {
+      res.status(400).json({ error: 'Signal already taken or closed' })
+      return
+    }
+
+    const sigTps = (signal.takeProfits as any[]) || []
+    if (!sigTps.length) {
+      res.status(400).json({ error: 'Signal has no take profits' })
+      return
+    }
+
+    const finalEntry = entryPrice ?? signal.entry
+    const finalSl = stopLoss ?? signal.stopLoss
+    const now = new Date()
+    const MIN_LOT = 0.01
+
+    // Решение split-vs-single fallback:
+    // Фронт шлёт raw perSplitLots из MT5 калькулятора (может быть 0.0033 если риск/N < мин лота).
+    // Если хотя бы 0.01 на ногу — открываем N ног как обычно.
+    // Иначе — открываем ОДНУ сделку 0.01 лота с ближайшим к entry TP. Это сохраняет
+    // целевой риск (примерно), но превышает его не более чем на N×, и юзер получает реальную позицию.
+    const roundedLots = Math.floor(lotsPerLeg * 100) / 100
+    const useSingleLeg = roundedLots < MIN_LOT
+
+    let created: Awaited<ReturnType<typeof prisma.forexTrade.create>>[]
+    let fallbackInfo: { reason: string; chosenTpIdx: number } | null = null
+
+    if (useSingleLeg) {
+      // Ближайший к entry TP — с минимальным |tp.price - entry|.
+      // Для нормально упорядоченных сигналов это TP1, но считаем честно.
+      let nearestIdx = 0
+      let nearestDist = Infinity
+      sigTps.forEach((tp: any, i: number) => {
+        const d = Math.abs(tp.price - finalEntry)
+        if (d < nearestDist) { nearestDist = d; nearestIdx = i }
+      })
+      const nearestTp = sigTps[nearestIdx]
+
+      fallbackInfo = {
+        reason: `perSplitLots ${lotsPerLeg.toFixed(4)} < min lot ${MIN_LOT}`,
+        chosenTpIdx: nearestIdx,
+      }
+
+      const trade = await prisma.forexTrade.create({
+        data: {
+          instrument: signal.coin,
+          type: signal.type,
+          lots: MIN_LOT,
+          entryPrice: finalEntry,
+          stopLoss: finalSl,
+          initialStop: finalSl,
+          currentStop: finalSl,
+          takeProfits: [{ price: nearestTp.price, percent: 100, rr: nearestTp.rr }] as any,
+          status: 'OPEN',
+          source: 'SCANNER',
+          signalId: signal.id,
+          session: signal.session,
+          openedAt: now,
+          notes:
+            notes ||
+            `Scanner forex #${signal.id} | TP${nearestIdx + 1} (single-leg fallback, риск/${sigTps.length} < мин лота) | Score: ${signal.score}`,
+        },
+      })
+      created = [trade]
+    } else {
+      created = await prisma.$transaction(
+        sigTps.map((tp: any, i: number) =>
+          prisma.forexTrade.create({
+            data: {
+              instrument: signal.coin,
+              type: signal.type,
+              lots: roundedLots,
+              entryPrice: finalEntry,
+              stopLoss: finalSl,
+              initialStop: finalSl,
+              currentStop: finalSl,
+              takeProfits: [{ price: tp.price, percent: 100, rr: tp.rr }] as any,
+              status: 'OPEN',
+              source: 'SCANNER',
+              signalId: signal.id,
+              session: signal.session,
+              openedAt: now,
+              notes:
+                notes ||
+                `Scanner forex #${signal.id} | TP${i + 1}/${sigTps.length} | Score: ${signal.score}`,
+            },
+          }),
+        ),
+      )
+    }
+
+    const totalLotsActual = created.reduce((s, t) => s + t.lots, 0)
+    await prisma.generatedSignal.update({
+      where: { id },
+      data: {
+        status: 'TAKEN',
+        amount: totalLotsActual,
+        takenAt: now,
+      },
+    })
+
+    console.log(
+      `[ForexScanner] Signal #${id} → ${created.length} leg(s) ` +
+      `(${signal.coin} ${signal.type} total ${totalLotsActual} lots @ ${finalEntry})` +
+      (fallbackInfo ? ` [FALLBACK: ${fallbackInfo.reason}, chose TP${fallbackInfo.chosenTpIdx + 1}]` : ''),
+    )
+    res.json({ trades: created, signal: { id, status: 'TAKEN' }, fallback: fallbackInfo })
+  }, 'ForexScanner'),
+)
+
 // POST /api/scanner-forex/signals/:id/take — mark as TAKEN (no Trade record, MT5 executed manually)
 router.post(
   '/signals/:id/take',

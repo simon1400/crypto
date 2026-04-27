@@ -248,11 +248,12 @@ router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
   const id = parseIdParam(req, res)
   if (id == null) return
 
-  const { amount, modelType, leverage: customLeverage, orderType } = req.body as {
+  const { amount, modelType, leverage: customLeverage, orderType, realRequired } = req.body as {
     amount: number
     modelType?: string
     leverage?: number
     orderType?: OrderType
+    realRequired?: boolean  // если true и реал упал — не создаём демо, отдаём 400 с realError
   }
 
   if (!amount || amount <= 0) {
@@ -314,6 +315,19 @@ router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
       realError = err?.message || 'Не удалось разместить ордер на Bybit'
       console.warn(`[Scanner] Real order failed for signal #${id}: ${realError}`)
     }
+  }
+
+  // Если фронт явно требовал реал (takeMode === 'real') и он упал —
+  // НЕ создаём демо, НЕ переводим сигнал в TAKEN. Юзер поправит параметры и попробует снова.
+  if (realRequired && !realResult) {
+    res.status(400).json({
+      trade: null,
+      signal: { id, status: signal.status },
+      real: null,
+      realError: realError || 'Не удалось разместить ордер на Bybit',
+      demoSkippedReason: null,
+    })
+    return
   }
 
   // === Step 2: try to create demo Trade — skip if demo budget insufficient ===

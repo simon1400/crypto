@@ -253,12 +253,20 @@ router.post('/reset-simulation', asyncHandler(async (req, res) => {
 // GET /api/settings/mt5-balance — депозит МТ5 для калькулятора лотов
 router.get('/mt5-balance', asyncHandler(async (_req, res) => {
   const config = await prisma.botConfig.upsert({ where: { id: 1 }, update: {}, create: { id: 1 } })
-  res.json({ balance: config.mt5Balance, riskPct: config.mt5RiskPct })
+  res.json({
+    balance: config.mt5Balance,
+    riskPct: config.mt5RiskPct,
+    commissionPerLot: config.mt5CommissionPerLot,
+  })
 }, 'Settings'))
 
 // PUT /api/settings/mt5-balance — сохранить депозит МТ5
 router.put('/mt5-balance', asyncHandler(async (req, res) => {
-  const { balance, riskPct } = req.body as { balance?: number | null; riskPct?: number }
+  const { balance, riskPct, commissionPerLot } = req.body as {
+    balance?: number | null
+    riskPct?: number
+    commissionPerLot?: number
+  }
 
   const updateData: any = {}
   if (balance === null) {
@@ -277,13 +285,24 @@ router.put('/mt5-balance', asyncHandler(async (req, res) => {
     }
     updateData.mt5RiskPct = riskPct
   }
+  if (commissionPerLot !== undefined) {
+    if (typeof commissionPerLot !== 'number' || commissionPerLot < 0 || commissionPerLot > 200) {
+      res.status(400).json({ error: 'commissionPerLot must be between 0 and 200' })
+      return
+    }
+    updateData.mt5CommissionPerLot = commissionPerLot
+  }
 
   const config = await prisma.botConfig.upsert({
     where: { id: 1 },
     update: updateData,
     create: { id: 1, ...updateData },
   })
-  res.json({ balance: config.mt5Balance, riskPct: config.mt5RiskPct })
+  res.json({
+    balance: config.mt5Balance,
+    riskPct: config.mt5RiskPct,
+    commissionPerLot: config.mt5CommissionPerLot,
+  })
 }, 'Settings'))
 
 // GET /api/settings/balance — реальный баланс с Bybit
