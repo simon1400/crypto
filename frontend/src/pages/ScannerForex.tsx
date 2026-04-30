@@ -78,16 +78,6 @@ export default function ScannerForex() {
     }
   }
 
-  const handleToggleEnabled = async () => {
-    if (!status) return
-    try {
-      const r = await updateForexScannerSettings({ enabled: !status.enabled })
-      setStatus({ ...status, ...r })
-    } catch (e: any) {
-      setError(e.message || 'Ошибка сохранения настроек')
-    }
-  }
-
   const handleMinScoreChange = async (v: number) => {
     if (!status) return
     try {
@@ -169,7 +159,7 @@ export default function ScannerForex() {
         <div>
           <h1 className="text-xl font-semibold text-text-primary">Forex Scanner</h1>
           <p className="text-xs text-text-secondary mt-1">
-            Авто-сканирование форекс, металлов и индексов через Twelve Data. Сигналы каждый час, 24/5.
+            Сканирование форекс, металлов и индексов по запросу. Жми «Запустить сейчас» когда хочешь увидеть текущие сетапы.
           </p>
         </div>
 
@@ -190,7 +180,7 @@ export default function ScannerForex() {
         </div>
       )}
 
-      {status && <StatusCard status={status} onToggle={handleToggleEnabled} onMinScoreChange={handleMinScoreChange} />}
+      {status && <StatusCard status={status} onMinScoreChange={handleMinScoreChange} />}
 
       <div className="flex items-center gap-2 flex-wrap">
         {(['ALL', 'NEW', 'TAKEN', 'CLOSED', 'SL_HIT', 'EXPIRED'] as StatusFilter[]).map((f) => (
@@ -243,11 +233,9 @@ export default function ScannerForex() {
 
 function StatusCard({
   status,
-  onToggle,
   onMinScoreChange,
 }: {
   status: ForexScannerStatus
-  onToggle: () => void
   onMinScoreChange: (v: number) => void
 }) {
   const [minScore, setMinScore] = useState(status.minScore)
@@ -268,30 +256,15 @@ function StatusCard({
         <div className="flex items-center gap-3">
           <span
             className={`px-2 py-0.5 text-xs font-semibold rounded ${
-              status.enabled
-                ? status.state.isRunning
-                  ? 'bg-accent/20 text-accent'
-                  : 'bg-long/20 text-long'
-                : 'bg-neutral/20 text-neutral'
+              status.state.isRunning ? 'bg-accent/20 text-accent' : 'bg-neutral/20 text-neutral'
             }`}
           >
-            {status.state.isRunning ? 'Сканирую' : status.enabled ? 'Включён' : 'Выключен'}
+            {status.state.isRunning ? 'Сканирую' : 'Готов к скану'}
           </span>
           <span className="text-xs text-text-secondary">
             Инструменты: {status.instruments.length} · Последний скан: {lastRunLabel}
           </span>
         </div>
-
-        <button
-          onClick={onToggle}
-          className={`text-xs px-3 py-1.5 rounded transition-colors ${
-            status.enabled
-              ? 'bg-short/20 text-short hover:bg-short/30'
-              : 'bg-long/20 text-long hover:bg-long/30'
-          }`}
-        >
-          {status.enabled ? 'Выключить авто-скан' : 'Включить авто-скан'}
-        </button>
       </div>
 
       <div className="flex items-center gap-3 flex-wrap">
