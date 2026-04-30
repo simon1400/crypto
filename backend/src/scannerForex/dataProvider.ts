@@ -19,6 +19,7 @@ const SYMBOL_MAP: Record<string, string> = {
 }
 
 const INTERVAL_MAP: Record<string, string> = {
+  '15m': '15min',
   '30m': '30min',
   '1h': '1h',
   '4h': '4h',
@@ -56,7 +57,7 @@ export function mapForexSymbol(symbol: string): string {
 
 export async function fetchForexOHLCV(
   symbol: string,
-  interval: '30m' | '1h' | '4h',
+  interval: '15m' | '30m' | '1h' | '4h',
   outputsize = 200,
 ): Promise<OHLCV[]> {
   if (!API_KEY) {

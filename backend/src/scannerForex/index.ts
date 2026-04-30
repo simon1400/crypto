@@ -2,7 +2,7 @@ import { prisma } from '../db/prisma'
 import { computeIndicators } from '../services/indicators'
 import { sendNotification } from '../services/notifier'
 import { fetchForexOHLCV, isForexProviderConfigured } from './dataProvider'
-import { currentSession, isForexMarketOpen } from './sessions'
+import { currentSession } from './sessions'
 import { scoreForexSetup, computeForexLevels } from './scoring'
 
 export const FOREX_INSTRUMENTS = [
@@ -51,7 +51,7 @@ export interface ForexScanResult {
 // Expire forex signals older than 1.5 hours (intraday setups go stale fast)
 const SIGNAL_EXPIRY_MS = 90 * 60 * 1000
 
-export async function runForexScan(opts: { force?: boolean } = {}): Promise<ForexScanResult> {
+export async function runForexScan(): Promise<ForexScanResult> {
   if (state.isRunning) {
     return {
       instrumentsScanned: 0,
@@ -62,21 +62,6 @@ export async function runForexScan(opts: { force?: boolean } = {}): Promise<Fore
     }
   }
 
-  // Honor auto-scan toggle (manual /run sends force=true and bypasses)
-  if (!opts.force) {
-    const cfg = await prisma.botConfig.findUnique({ where: { id: 1 } })
-    if (cfg && cfg.forexScanEnabled === false) {
-      return {
-        instrumentsScanned: 0,
-        signalsCreated: 0,
-        errors: [],
-        skipped: true,
-        skipReason: 'Auto-scan disabled in settings',
-      }
-    }
-    // cfg=null (первый бут до сидинга BotConfig) — не блокируем (default behaviour)
-  }
-
   if (!isForexProviderConfigured()) {
     return {
       instrumentsScanned: 0,
@@ -84,16 +69,6 @@ export async function runForexScan(opts: { force?: boolean } = {}): Promise<Fore
       errors: [],
       skipped: true,
       skipReason: 'TWELVE_DATA_API_KEY not configured',
-    }
-  }
-
-  if (!opts.force && !isForexMarketOpen()) {
-    return {
-      instrumentsScanned: 0,
-      signalsCreated: 0,
-      errors: [],
-      skipped: true,
-      skipReason: 'Forex market closed (weekend)',
     }
   }
 
@@ -111,29 +86,29 @@ export async function runForexScan(opts: { force?: boolean } = {}): Promise<Fore
 
     for (const instrument of FOREX_INSTRUMENTS) {
       try {
-        // Fetch all 3 TFs for this instrument
-        const [m30Candles, h1Candles, h4Candles] = await Promise.all([
-          fetchForexOHLCV(instrument, '30m', 100),
+        // Fetch all 3 TFs for this instrument (intraday: m15+m30+h1)
+        const [m15Candles, m30Candles, h1Candles] = await Promise.all([
+          fetchForexOHLCV(instrument, '15m', 100),
+          fetchForexOHLCV(instrument, '30m', 150),
           fetchForexOHLCV(instrument, '1h', 200),
-          fetchForexOHLCV(instrument, '4h', 200),
         ])
 
-        if (m30Candles.length < 50 || h1Candles.length < 50 || h4Candles.length < 50) {
+        if (m15Candles.length < 50 || m30Candles.length < 50 || h1Candles.length < 50) {
           errors.push({ instrument, message: 'Недостаточно свечей для анализа' })
           continue
         }
 
+        const m15 = computeIndicators(m15Candles)
         const m30 = computeIndicators(m30Candles)
         const h1 = computeIndicators(h1Candles)
-        const h4 = computeIndicators(h4Candles)
 
-        const score = scoreForexSetup({ m30, h1, h4 })
+        const score = scoreForexSetup({ m15, m30, h1 })
 
         if (score.setupType === null || score.total < minScore) {
           continue
         }
 
-        const levels = computeForexLevels(score.setupType, { m30, h1, h4 })
+        const levels = computeForexLevels(score.setupType, { m15, m30, h1 })
 
         // Validate R:R and price sanity
         if (!Number.isFinite(levels.entry) || !Number.isFinite(levels.stopLoss)) {
@@ -169,25 +144,25 @@ export async function runForexScan(opts: { force?: boolean } = {}): Promise<Fore
             positionPct: 0,
             amount: 0,
             indicators: {
-              m30: { trendDetail: m30.trendDetail, rsi: m30.rsi, adx: m30.adx },
-              h1: {
-                trendDetail: h1.trendDetail,
-                rsi: h1.rsi,
-                adx: h1.adx,
-                atr: h1.atr,
-                macd: h1.macd,
-                macdSignal: h1.macdSignal,
-                stochK: h1.stochK,
-                stochD: h1.stochD,
-                ema20: h1.ema20,
-                ema50: h1.ema50,
-                ema200: h1.ema200,
-                support: h1.support,
-                resistance: h1.resistance,
-                pivot: h1.pivot,
-                marketStructure: h1.marketStructure,
+              m15: { trendDetail: m15.trendDetail, rsi: m15.rsi, adx: m15.adx },
+              m30: {
+                trendDetail: m30.trendDetail,
+                rsi: m30.rsi,
+                adx: m30.adx,
+                atr: m30.atr,
+                macd: m30.macd,
+                macdSignal: m30.macdSignal,
+                stochK: m30.stochK,
+                stochD: m30.stochD,
+                ema20: m30.ema20,
+                ema50: m30.ema50,
+                ema200: m30.ema200,
+                support: m30.support,
+                resistance: m30.resistance,
+                pivot: m30.pivot,
+                marketStructure: m30.marketStructure,
               },
-              h4: { trendDetail: h4.trendDetail, rsi: h4.rsi, ema200: h4.ema200 },
+              h1: { trendDetail: h1.trendDetail, rsi: h1.rsi, ema200: h1.ema200 },
             } as any,
             marketContext: {
               session,
@@ -219,7 +194,7 @@ export async function runForexScan(opts: { force?: boolean } = {}): Promise<Fore
             rr: levels.rr,
             session,
             reasons: score.reasons,
-            atr: h1.atr,
+            atr: m30.atr,
             signalId: signal.id,
           })
         } catch (notifyErr: any) {
@@ -281,41 +256,3 @@ export async function expireForexSignals() {
   }
 }
 
-let scanInterval: NodeJS.Timeout | null = null
-let expireInterval: NodeJS.Timeout | null = null
-
-// Called from backend/src/index.ts on boot
-export function startForexScanner() {
-  if (!isForexProviderConfigured()) {
-    console.warn('[ForexScanner] TWELVE_DATA_API_KEY not set — scanner disabled')
-    return
-  }
-
-  // Run once on boot (async, don't block)
-  runForexScan().catch((err) => console.error('[ForexScanner] Boot scan failed:', err))
-
-  // Hourly scans
-  scanInterval = setInterval(
-    () => {
-      runForexScan().catch((err) => console.error('[ForexScanner] Interval scan failed:', err))
-    },
-    60 * 60 * 1000,
-  )
-
-  // Expire old signals every 30 min
-  expireInterval = setInterval(
-    () => {
-      expireForexSignals().catch((err) => console.error('[ForexScanner] Expire failed:', err))
-    },
-    30 * 60 * 1000,
-  )
-
-  console.log('[ForexScanner] Started: hourly scans + 30min expiration check')
-}
-
-export function stopForexScanner() {
-  if (scanInterval) clearInterval(scanInterval)
-  if (expireInterval) clearInterval(expireInterval)
-  scanInterval = null
-  expireInterval = null
-}

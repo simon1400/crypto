@@ -30,7 +30,7 @@ router.get(
 router.post(
   '/run',
   asyncHandler(async (_req, res) => {
-    const result = await runForexScan({ force: true })
+    const result = await runForexScan()
     res.json(result)
   }, 'ForexScanner'),
 )
