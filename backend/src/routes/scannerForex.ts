@@ -7,7 +7,7 @@ import {
   runForexScan,
   expireForexSignals,
 } from '../scannerForex'
-import { computePortionPnlFromEntry } from '../services/tradeClose'
+import { computeUsdPnl, getInstrument } from '../scannerForex/instruments'
 
 const router = Router()
 
@@ -382,17 +382,34 @@ router.post(
     const closePct = Number(percent)
     const newClosedPct = Math.min(100, signal.closedPct + closePct)
 
-    const { pnlPercent, pnlUsdt } = computePortionPnlFromEntry(signal, closePrice, closePct)
+    // === FIX: компьютим USD P&L через инструмент-специфичную формулу ===
+    const instr = getInstrument(signal.coin)
+    if (!instr) {
+      res.status(400).json({ error: `Unknown forex instrument: ${signal.coin}` })
+      return
+    }
+
+    // signal.amount хранит ОБЩИЕ лоты после take. Если 0 (юзер "Только отметить" без lots) —
+    // P&L посчитать нельзя; пишем нули и не трогаем realizedPnl.
+    let pipsPnl = 0
+    let usdPnl = 0
+    if (signal.amount > 0) {
+      const portionLots = (signal.amount * closePct) / 100
+      const r = computeUsdPnl(instr, signal.type as 'LONG' | 'SHORT', signal.entry, closePrice, portionLots)
+      pipsPnl = r.pipsPnl
+      usdPnl = r.usdPnl
+    }
+
     const closes = Array.isArray(signal.closes) ? [...(signal.closes as any[])] : []
     closes.push({
       price: closePrice,
       percent: closePct,
-      pnl: Math.round(pnlUsdt * 100) / 100,
-      pnlPercent: Math.round(pnlPercent * 100) / 100,
+      pipsPnl,
+      usdPnl,
       closedAt: new Date().toISOString(),
     })
 
-    const newRealizedPnl = Math.round((signal.realizedPnl + pnlUsdt) * 100) / 100
+    const newRealizedPnl = Math.round((signal.realizedPnl + usdPnl) * 100) / 100
     const isFull = newClosedPct >= 100
 
     const updated = await prisma.generatedSignal.update({
@@ -423,14 +440,34 @@ router.post(
     }
 
     const remainingPct = 100 - signal.closedPct
-    const { pnlPercent, pnlUsdt } = computePortionPnlFromEntry(signal, signal.stopLoss, remainingPct)
+
+    const instr = getInstrument(signal.coin)
+    if (!instr) {
+      res.status(400).json({ error: `Unknown forex instrument: ${signal.coin}` })
+      return
+    }
+
+    let pipsPnl = 0
+    let usdPnl = 0
+    if (signal.amount > 0 && remainingPct > 0) {
+      const portionLots = (signal.amount * remainingPct) / 100
+      const r = computeUsdPnl(
+        instr,
+        signal.type as 'LONG' | 'SHORT',
+        signal.entry,
+        signal.stopLoss,
+        portionLots,
+      )
+      pipsPnl = r.pipsPnl
+      usdPnl = r.usdPnl
+    }
 
     const closes = Array.isArray(signal.closes) ? [...(signal.closes as any[])] : []
     closes.push({
       price: signal.stopLoss,
       percent: remainingPct,
-      pnl: Math.round(pnlUsdt * 100) / 100,
-      pnlPercent: Math.round(pnlPercent * 100) / 100,
+      pipsPnl,
+      usdPnl,
       closedAt: new Date().toISOString(),
       isSL: true,
     })
@@ -440,7 +477,7 @@ router.post(
       data: {
         closes,
         closedPct: 100,
-        realizedPnl: Math.round((signal.realizedPnl + pnlUsdt) * 100) / 100,
+        realizedPnl: Math.round((signal.realizedPnl + usdPnl) * 100) / 100,
         status: 'SL_HIT',
         closedAt: new Date(),
       },

@@ -29,10 +29,22 @@ export function scoreForexSetup(tf: TF): ForexScoreBreakdown {
   let setupType: ForexSetupType = null
   let trendScore = 0
 
-  if (bullishCount >= 2 && bearishCount === 0) {
+  if (bullishCount >= 2 && bearishCount <= 1) {
     setupType = 'LONG'
-    trendScore = bullishCount === 3 ? 30 : 20
-    reasons.push(`Тренд: ${bullishCount}/3 ТФ bullish`)
+    trendScore = bullishCount === 3 ? 30 : 22  // было 30/20
+    reasons.push(`Тренд: ${bullishCount}/3 ТФ bullish (mixed=${bearishCount})`)
+
+    // H1 как primary signal TF — если 2/3 и H1 в bull-наборе, маленький бонус
+    if (bullishCount === 2 && (tf.h1.trendDetail === 'BULLISH' || tf.h1.trendDetail === 'BULLISH_PULLBACK')) {
+      trendScore += 3
+      reasons.push('H1 в bull-наборе')
+    }
+
+    // Bonus: все 3 ТФ "чистые" BULLISH (не PULLBACK)
+    if (bullishCount === 3 && trends.every((t) => t === 'BULLISH')) {
+      trendScore += 3
+      reasons.push('Чистый bullish без pullback')
+    }
 
     // Bonus: H4 above EMA200 (higher-TF bias strong)
     if (tf.h4.price > tf.h4.ema200) {
@@ -44,10 +56,21 @@ export function scoreForexSetup(tf: TF): ForexScoreBreakdown {
       trendScore += 5
       reasons.push('H1 EMA20 > EMA50')
     }
-  } else if (bearishCount >= 2 && bullishCount === 0) {
+  } else if (bearishCount >= 2 && bullishCount <= 1) {
     setupType = 'SHORT'
-    trendScore = bearishCount === 3 ? 30 : 20
-    reasons.push(`Тренд: ${bearishCount}/3 ТФ bearish`)
+    trendScore = bearishCount === 3 ? 30 : 22
+
+    reasons.push(`Тренд: ${bearishCount}/3 ТФ bearish (mixed=${bullishCount})`)
+
+    if (bearishCount === 2 && (tf.h1.trendDetail === 'BEARISH' || tf.h1.trendDetail === 'BEARISH_PULLBACK')) {
+      trendScore += 3
+      reasons.push('H1 в bear-наборе')
+    }
+
+    if (bearishCount === 3 && trends.every((t) => t === 'BEARISH')) {
+      trendScore += 3
+      reasons.push('Чистый bearish без pullback')
+    }
 
     if (tf.h4.price < tf.h4.ema200) {
       trendScore += 5
@@ -58,7 +81,6 @@ export function scoreForexSetup(tf: TF): ForexScoreBreakdown {
       reasons.push('H1 EMA20 < EMA50')
     }
   } else {
-    // Mixed — no setup
     return {
       total: 0,
       trend: 0,
@@ -153,11 +175,12 @@ export function scoreForexSetup(tf: TF): ForexScoreBreakdown {
     }
   }
 
-  const total = Math.min(100, trendScore + momentumScore + structureScore)
+  const trendScoreCapped = Math.min(40, trendScore)
+  const total = Math.min(100, trendScoreCapped + momentumScore + structureScore)
 
   return {
     total,
-    trend: trendScore,
+    trend: trendScoreCapped,
     momentum: momentumScore,
     structure: structureScore,
     setupType,
@@ -178,29 +201,39 @@ export function computeForexLevels(
   tf: TF,
 ): ForexLevels {
   const price = tf.h1.price
-  const atr = tf.h1.atr || 0.0001 // avoid div-by-zero for synthetic edge cases
+  const atr = tf.h1.atr || 0.0001 // avoid div-by-zero
 
-  // Entry at current H1 close
   const entry = price
 
-  // SL: 1.5 * H1 ATR beyond price, respecting structure
-  // LONG: below min(H1 support, price - 1.5*ATR)
-  // SHORT: above max(H1 resistance, price + 1.5*ATR)
+  // Band-clamped structure stop:
+  //   far  = max risk (1.5 * ATR)
+  //   near = min risk (1.0 * ATR)
+  //   structure-based stop with ATR-relative buffer (0.2 * ATR), then clamped into [near, far].
   let stopLoss: number
   if (setupType === 'LONG') {
-    const atrStop = entry - atr * 1.5
-    const structStop = tf.h1.support * 0.999 // tiny buffer below support
-    stopLoss = Math.min(atrStop, structStop)
+    const atrStopFar = entry - atr * 1.5  // максимально допустимый риск (дальняя точка)
+    const atrStopNear = entry - atr * 1.0 // минимальный риск (ближняя точка)
+    const structStop = tf.h1.support - atr * 0.2 // structure-based с ATR-relative буфером
+
+    let sl = structStop
+    if (sl > atrStopNear) sl = atrStopNear // структура слишком близко — отодвинуть к near
+    if (sl < atrStopFar) sl = atrStopFar   // структура слишком далеко — клампить к far
+    stopLoss = sl
   } else {
-    const atrStop = entry + atr * 1.5
-    const structStop = tf.h1.resistance * 1.001
-    stopLoss = Math.max(atrStop, structStop)
+    const atrStopFar = entry + atr * 1.5
+    const atrStopNear = entry + atr * 1.0
+    const structStop = tf.h1.resistance + atr * 0.2
+
+    let sl = structStop
+    if (sl < atrStopNear) sl = atrStopNear
+    if (sl > atrStopFar) sl = atrStopFar
+    stopLoss = sl
   }
 
   const risk = Math.abs(entry - stopLoss)
 
-  // TPs: 1R, 2R, 3R
-  const takeProfits = [1.5, 2.5, 4].map((rr) => ({
+  // TPs: rr 1.2 / 2.0 / 3.0 (было 1.5 / 2.5 / 4)
+  const takeProfits = [1.2, 2.0, 3.0].map((rr) => ({
     price: setupType === 'LONG' ? entry + risk * rr : entry - risk * rr,
     rr,
   }))

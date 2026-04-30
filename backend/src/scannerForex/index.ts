@@ -48,8 +48,8 @@ export interface ForexScanResult {
   skipReason?: string
 }
 
-// Expire forex signals older than 4 hours (intraday setups go stale fast)
-const SIGNAL_EXPIRY_MS = 4 * 60 * 60 * 1000
+// Expire forex signals older than 1.5 hours (intraday setups go stale fast)
+const SIGNAL_EXPIRY_MS = 90 * 60 * 1000
 
 export async function runForexScan(opts: { force?: boolean } = {}): Promise<ForexScanResult> {
   if (state.isRunning) {
@@ -60,6 +60,21 @@ export async function runForexScan(opts: { force?: boolean } = {}): Promise<Fore
       skipped: true,
       skipReason: 'Scan already running',
     }
+  }
+
+  // Honor auto-scan toggle (manual /run sends force=true and bypasses)
+  if (!opts.force) {
+    const cfg = await prisma.botConfig.findUnique({ where: { id: 1 } })
+    if (cfg && cfg.forexScanEnabled === false) {
+      return {
+        instrumentsScanned: 0,
+        signalsCreated: 0,
+        errors: [],
+        skipped: true,
+        skipReason: 'Auto-scan disabled in settings',
+      }
+    }
+    // cfg=null (первый бут до сидинга BotConfig) — не блокируем (default behaviour)
   }
 
   if (!isForexProviderConfigured()) {
