@@ -639,8 +639,7 @@ function SignalModal({
               {signal.realizedPnl !== 0 && (
                 <span className={signal.realizedPnl >= 0 ? ' text-long' : ' text-short'}>
                   {' · P&L: '}
-                  {signal.realizedPnl >= 0 ? '+' : ''}
-                  {signal.realizedPnl}%
+                  {signal.realizedPnl >= 0 ? '+' : ''}${signal.realizedPnl.toFixed(2)}
                 </span>
               )}
             </p>
@@ -684,19 +683,32 @@ function SignalModal({
         {signal.closes.length > 0 && (
           <div className="bg-card rounded p-3 text-xs space-y-1">
             <p className="text-text-secondary font-medium">История закрытий:</p>
-            {signal.closes.map((c, i) => (
-              <div key={i} className="grid grid-cols-4 gap-2 font-mono">
-                <span>{c.percent}%</span>
-                <span>{formatPrice(signal.coin, c.price)}</span>
-                <span className={c.pnl >= 0 ? 'text-long' : 'text-short'}>
-                  {c.pnlPercent >= 0 ? '+' : ''}
-                  {c.pnlPercent.toFixed(2)}%
-                </span>
-                <span className="text-text-secondary text-[10px]">
-                  {new Date(c.closedAt).toLocaleString('ru-RU')}
-                </span>
-              </div>
-            ))}
+            {signal.closes.map((c, i) => {
+              // Defensive: новая форма имеет usdPnl/pipsPnl, легаси — pnl/pnlPercent.
+              // Для легаси отрисуем pnl как USD (best-effort) и не покажем пипсы.
+              const usd = (c as any).usdPnl ?? (c as any).pnl ?? 0
+              const pips = (c as any).pipsPnl
+              const isSL = (c as any).isSL === true
+              return (
+                <div key={i} className="grid grid-cols-[auto_auto_1fr_auto_auto] gap-2 font-mono items-baseline">
+                  <span>{c.percent}%</span>
+                  <span>{formatPrice(signal.coin, c.price)}</span>
+                  <span className={usd >= 0 ? 'text-long' : 'text-short'}>
+                    {usd >= 0 ? '+' : ''}${Number(usd).toFixed(2)}
+                    {typeof pips === 'number' && (
+                      <span className="text-text-secondary text-[10px] ml-2">
+                        ({pips >= 0 ? '+' : ''}{pips.toFixed(1)} пипс)
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-text-secondary text-[10px]">
+                    {isSL && <span className="text-short mr-1">SL</span>}
+                    {new Date(c.closedAt).toLocaleString('ru-RU')}
+                  </span>
+                  <span /> {/* spacer для grid выравнивания */}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>
