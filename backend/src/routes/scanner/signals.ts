@@ -6,6 +6,7 @@ import { OrderType } from '../../services/fees'
 import { computePortionPnlFromEntry } from '../../services/tradeClose'
 import { fetchCurrentPrice } from '../../services/market'
 import { executeRealOrderForGenSignal } from '../../trading/realOrderForGenSignal'
+import { validateEntryGeometry, EntryGeometryError } from '../../services/entryValidation'
 import { asyncHandler, handleBudgetError, parseIdParam, parsePagination } from '../_helpers'
 
 const router = Router()
@@ -202,8 +203,6 @@ router.post('/signals/:id/take-trade', asyncHandler(async (req, res) => {
     percent: tpPercents[i] || Math.floor(100 / tpCount),
   }))
 
-  await adjustVirtualBalance(-entryFee, `entry fee ${signal.coin} scanner ${orderTypeNorm}`)
-
   const isMarket = orderTypeNorm === 'market'
 
   // For market orders, use current price instead of limit entry
@@ -214,6 +213,25 @@ router.post('/signals/:id/take-trade', asyncHandler(async (req, res) => {
     if (currentPrice) actualEntry = currentPrice
   }
 
+  try {
+    validateEntryGeometry({
+      type: signal.type as 'LONG' | 'SHORT',
+      plannedEntry: entry,
+      actualEntry,
+      stopLoss,
+      takeProfits,
+      isMarket,
+    })
+  } catch (err) {
+    if (err instanceof EntryGeometryError) {
+      res.status(400).json({ error: err.message })
+      return
+    }
+    throw err
+  }
+
+  await adjustVirtualBalance(-entryFee, `entry fee ${signal.coin} scanner ${orderTypeNorm}`)
+
   const trade = await prisma.trade.create({
     data: {
       coin: signal.coin.toUpperCase().replace('USDT', '') + 'USDT',
@@ -222,8 +240,8 @@ router.post('/signals/:id/take-trade', asyncHandler(async (req, res) => {
       entryPrice: actualEntry,
       amount,
       stopLoss,
-      initialStop: isMarket ? stopLoss : undefined,
-      currentStop: isMarket ? stopLoss : undefined,
+      initialStop: stopLoss,
+      currentStop: stopLoss,
       takeProfits,
       status: isMarket ? 'OPEN' : 'PENDING_ENTRY',
       openedAt: isMarket ? new Date() : undefined,
@@ -294,6 +312,35 @@ router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
     percent: tpPercents[i] || Math.floor(100 / tpCount),
   }))
 
+  // === Step 0: validate entry geometry BEFORE sending real order ===
+  // Для market — берём текущую цену; для limit — плановую (по ней размещается ордер).
+  const isMarketReal = orderTypeNorm === 'market'
+  let actualEntryReal = entry
+  if (isMarketReal) {
+    const coinSymbol = signal.coin.toUpperCase().replace('USDT', '') + 'USDT'
+    const currentPrice = await fetchCurrentPrice(coinSymbol)
+    if (currentPrice) actualEntryReal = currentPrice
+  }
+
+  if (takeProfits.length) {
+    try {
+      validateEntryGeometry({
+        type: signal.type as 'LONG' | 'SHORT',
+        plannedEntry: entry,
+        actualEntry: actualEntryReal,
+        stopLoss,
+        takeProfits,
+        isMarket: isMarketReal,
+      })
+    } catch (err) {
+      if (err instanceof EntryGeometryError) {
+        res.status(400).json({ error: err.message })
+        return
+      }
+      throw err
+    }
+  }
+
   // === Step 1: place real order on Bybit FIRST — independent of demo budget ===
   let realResult: Awaited<ReturnType<typeof executeRealOrderForGenSignal>> | null = null
   let realError: string | null = null
@@ -351,28 +398,19 @@ router.post('/signals/:id/take-trade-real', asyncHandler(async (req, res) => {
   if (!demoSkippedReason) {
     await adjustVirtualBalance(-entryFee, `entry fee ${signal.coin} scanner ${orderTypeNorm}`)
 
-    const isMarket = orderTypeNorm === 'market'
-
-    let actualEntry = entry
-    if (isMarket) {
-      const coinSymbol = signal.coin.toUpperCase().replace('USDT', '') + 'USDT'
-      const currentPrice = await fetchCurrentPrice(coinSymbol)
-      if (currentPrice) actualEntry = currentPrice
-    }
-
     trade = await prisma.trade.create({
       data: {
         coin: signal.coin.toUpperCase().replace('USDT', '') + 'USDT',
         type: signal.type,
         leverage,
-        entryPrice: actualEntry,
+        entryPrice: actualEntryReal,
         amount,
         stopLoss,
-        initialStop: isMarket ? stopLoss : undefined,
-        currentStop: isMarket ? stopLoss : undefined,
+        initialStop: stopLoss,
+        currentStop: stopLoss,
         takeProfits,
-        status: isMarket ? 'OPEN' : 'PENDING_ENTRY',
-        openedAt: isMarket ? new Date() : undefined,
+        status: isMarketReal ? 'OPEN' : 'PENDING_ENTRY',
+        openedAt: isMarketReal ? new Date() : undefined,
         source: 'SCANNER',
         entryOrderType: orderTypeNorm,
         fees: entryFee,
