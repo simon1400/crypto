@@ -55,7 +55,7 @@ export function computePortionPnlFromEntry(
 }
 
 /**
- * Trailing SL: после TP1 → SL = entry, после TPn → SL = TP(n-1).
+ * Trailing SL: после TP1 → SL = entry (BE). Дальше SL не двигается.
  * Returns: { newStopLoss, stopMovedToBe, trailingActivated, stopMoveReason }
  */
 function computeTrailingSl(trade: Trade, tpNumber: number | undefined, newClosedPct: number): {
@@ -74,20 +74,14 @@ function computeTrailingSl(trade: Trade, tpNumber: number | undefined, newClosed
     tpHitIndex = Math.round(newClosedPct / (100 / tps.length)) - 1
   }
 
-  if (tpHitIndex === 0) {
+  // After TP1 → SL goes to BE once. After TP2/TP3+ — SL stays where it was
+  // (no chasing each TP up). stopMovedToBe guards against re-applying BE.
+  if (tpHitIndex === 0 && !trade.stopMovedToBe) {
     return {
       newStopLoss: trade.entryPrice,
       stopMovedToBe: true,
       trailingActivated: false,
       stopMoveReason: `TP1 hit → SL moved to BE ($${trade.entryPrice})`,
-    }
-  }
-  if (tpHitIndex > 0) {
-    return {
-      newStopLoss: tps[tpHitIndex - 1],
-      stopMovedToBe: true,
-      trailingActivated: true,
-      stopMoveReason: `TP${tpHitIndex + 1} hit → SL trailing to TP${tpHitIndex} ($${tps[tpHitIndex - 1]})`,
     }
   }
   return {

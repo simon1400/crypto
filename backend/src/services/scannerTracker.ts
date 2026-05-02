@@ -126,11 +126,10 @@ export async function trackScannerTrades() {
         else break
       }
 
+      // Trailing rule: после TP1 → SL = entry (BE). Дальше SL не двигается.
       let effectiveSL = trade.stopLoss
-      if (tpsHitCount === 1) {
+      if (tpsHitCount >= 1) {
         effectiveSL = trade.entryPrice
-      } else if (tpsHitCount >= 2) {
-        effectiveSL = tpsSortedByPrice[tpsHitCount - 2].price
       }
 
       // --- Time-stop check ---

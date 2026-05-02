@@ -163,19 +163,9 @@ async function updateSignalStatus(signal: {
 
     // Trailing SL logic:
     // Before any TP → original SL
-    // After TP1 → SL moves to entry (breakeven)
-    // After TP2 → SL moves to TP1
-    // After TPn → SL moves to TP(n-1)
+    // After TP1 → SL moves to entry (breakeven), and stays there.
     for (const candle of postEntryCandles) {
-      // Determine current effective SL based on TPs already hit
-      let effectiveSL: number
-      if (maxTpHit === 0) {
-        effectiveSL = signal.stopLoss
-      } else if (maxTpHit === 1) {
-        effectiveSL = avgEntry // breakeven after TP1
-      } else {
-        effectiveSL = takeProfits[maxTpHit - 2] // after TPn, SL = TP(n-1)
-      }
+      const effectiveSL = maxTpHit === 0 ? signal.stopLoss : avgEntry
 
       // Check SL (or trailing SL) hit
       const slTriggered = signal.type === 'LONG'
