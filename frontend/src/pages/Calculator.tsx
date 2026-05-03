@@ -7,8 +7,11 @@ const LS_RISK = 'calc_risk'
 const LS_ACTIVE_TAB = 'calc_active_tab'
 const LS_MT5_INSTRUMENT = 'calc_mt5_instrument'
 const LS_MT5_SPLITS = 'calc_mt5_splits'
+const LS_SLCALC_CRYPTO_DIR = 'slcalc_crypto_dir'
+const LS_SLCALC_MT5_INSTR = 'slcalc_mt5_instr'
+const LS_SLCALC_MT5_DIR = 'slcalc_mt5_dir'
 
-type CalcTab = 'mt5' | 'crypto'
+type CalcTab = 'mt5' | 'crypto' | 'sl-crypto' | 'sl-mt5'
 
 // ===================== MT5 instruments catalog =====================
 // quoteKind:
@@ -134,34 +137,35 @@ export default function Calculator() {
   )
   useEffect(() => { localStorage.setItem(LS_ACTIVE_TAB, activeTab) }, [activeTab])
 
+  const tabBtn = (key: CalcTab, label: string) => (
+    <button
+      key={key}
+      onClick={() => setActiveTab(key)}
+      className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap ${
+        activeTab === key
+          ? 'border-accent text-accent'
+          : 'border-transparent text-text-secondary hover:text-text-primary'
+      }`}
+    >
+      {label}
+    </button>
+  )
+
   return (
     <div className="max-w-2xl space-y-4">
       <h1 className="text-xl font-semibold text-text-primary">Калькулятор позиции</h1>
 
-      <div className="flex gap-2 border-b border-input">
-        <button
-          onClick={() => setActiveTab('mt5')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            activeTab === 'mt5'
-              ? 'border-accent text-accent'
-              : 'border-transparent text-text-secondary hover:text-text-primary'
-          }`}
-        >
-          MT5 (Forex / Gold)
-        </button>
-        <button
-          onClick={() => setActiveTab('crypto')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            activeTab === 'crypto'
-              ? 'border-accent text-accent'
-              : 'border-transparent text-text-secondary hover:text-text-primary'
-          }`}
-        >
-          Crypto (Futures)
-        </button>
+      <div className="flex gap-2 border-b border-input overflow-x-auto">
+        {tabBtn('mt5', 'MT5 (Forex / Gold)')}
+        {tabBtn('crypto', 'Crypto (Futures)')}
+        {tabBtn('sl-crypto', 'SL Crypto')}
+        {tabBtn('sl-mt5', 'SL MT5')}
       </div>
 
-      {activeTab === 'mt5' ? <Mt5Calculator /> : <CryptoCalculator />}
+      {activeTab === 'mt5' && <Mt5Calculator />}
+      {activeTab === 'crypto' && <CryptoCalculator />}
+      {activeTab === 'sl-crypto' && <SlCryptoCalculator />}
+      {activeTab === 'sl-mt5' && <SlMt5Calculator />}
     </div>
   )
 }
@@ -767,6 +771,444 @@ function CryptoCalculator() {
           </div>
         )
       })()}
+    </div>
+  )
+}
+
+// ===================== SL Crypto Calculator =====================
+// Задача: задаёшь вход + размер позиции (маржа × плечо) + риск% → калькулятор говорит,
+// на какой цене ставить SL чтобы потерять ровно X% депо.
+//
+// Формула:
+//   risk_$       = balance * riskPct/100
+//   notional     = margin * leverage
+//   slPct        = risk_$ / notional             (доля от цены входа)
+//   slDist       = entry * slPct
+//   slPrice      = LONG  → entry - slDist
+//                  SHORT → entry + slDist
+
+function SlCryptoCalculator() {
+  const [balance, setBalance] = useState<string>(() => localStorage.getItem(LS_BALANCE) || '')
+  const [riskPct, setRiskPct] = useState<string>(() => localStorage.getItem(LS_RISK) || '2')
+  const [entry, setEntry] = useState('')
+  const [margin, setMargin] = useState('')
+  const [leverage, setLeverage] = useState('10')
+  const [direction, setDirection] = useState<'LONG' | 'SHORT'>(
+    () => (localStorage.getItem(LS_SLCALC_CRYPTO_DIR) as 'LONG' | 'SHORT') || 'LONG',
+  )
+
+  useEffect(() => {
+    if (!localStorage.getItem(LS_BALANCE)) {
+      getBudget().then(r => {
+        if (r.balance) setBalance(String(Math.floor(r.balance)))
+      }).catch(() => {})
+    }
+  }, [])
+
+  useEffect(() => { localStorage.setItem(LS_BALANCE, balance) }, [balance])
+  useEffect(() => { localStorage.setItem(LS_RISK, riskPct) }, [riskPct])
+  useEffect(() => { localStorage.setItem(LS_SLCALC_CRYPTO_DIR, direction) }, [direction])
+
+  const balanceNum = Number(balance)
+  const riskNum = Number(riskPct)
+  const entryNum = Number(entry)
+  const marginNum = Number(margin)
+  const levNum = Number(leverage)
+
+  const haveTrade = balanceNum > 0 && riskNum > 0 && entryNum > 0 && marginNum > 0 && levNum > 0
+
+  let result: {
+    riskAmount: number
+    notional: number
+    slPct: number
+    slDist: number
+    slPrice: number
+    liqPct: number
+    liqPrice: number
+    slBeforeLiq: boolean
+  } | null = null
+
+  if (haveTrade) {
+    const riskAmount = balanceNum * riskNum / 100
+    const notional = marginNum * levNum
+    const slPct = (riskAmount / notional) * 100   // % от цены входа
+    const slDist = entryNum * slPct / 100
+    const slPrice = direction === 'LONG' ? entryNum - slDist : entryNum + slDist
+    // Грубая ликвидация (без учёта maintenance margin) — 100% / leverage
+    const liqPct = 100 / levNum
+    const liqPrice = direction === 'LONG'
+      ? entryNum * (1 - liqPct / 100)
+      : entryNum * (1 + liqPct / 100)
+    const slBeforeLiq = slPct < liqPct
+    result = { riskAmount, notional, slPct, slDist, slPrice, liqPct, liqPrice, slBeforeLiq }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs text-text-secondary block mb-1">Депозит ($)</label>
+          <input
+            type="number"
+            value={balance}
+            onChange={e => setBalance(e.target.value)}
+            placeholder="1000"
+            className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-text-secondary block mb-1">Риск (%)</label>
+          <input
+            type="number"
+            value={riskPct}
+            onChange={e => setRiskPct(e.target.value)}
+            placeholder="2"
+            step="0.1"
+            className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+      </div>
+
+      <p className="text-text-secondary text-sm">
+        Депо: <span className="text-text-primary font-mono">${balanceNum || '—'}</span> | Риск: <span className="text-text-primary font-mono">{riskNum || '—'}%</span> = <span className="text-accent font-mono">${balanceNum && riskNum ? Math.floor(balanceNum * riskNum / 100) : '—'}</span>
+      </p>
+
+      <div>
+        <label className="text-xs text-text-secondary block mb-1">Направление</label>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setDirection('LONG')}
+            className={`flex-1 px-3 py-2 text-sm font-medium rounded transition-colors ${
+              direction === 'LONG' ? 'bg-long/20 text-long ring-1 ring-long' : 'bg-input text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            LONG
+          </button>
+          <button
+            onClick={() => setDirection('SHORT')}
+            className={`flex-1 px-3 py-2 text-sm font-medium rounded transition-colors ${
+              direction === 'SHORT' ? 'bg-short/20 text-short ring-1 ring-short' : 'bg-input text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            SHORT
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <div>
+          <label className="text-xs text-text-secondary block mb-1">Вход</label>
+          <input
+            type="number"
+            value={entry}
+            onChange={e => setEntry(e.target.value)}
+            placeholder="0.00"
+            className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-text-secondary block mb-1">Маржа ($)</label>
+          <input
+            type="number"
+            value={margin}
+            onChange={e => setMargin(e.target.value)}
+            placeholder="100"
+            className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-text-secondary block mb-1">Leverage</label>
+          <input
+            type="number"
+            value={leverage}
+            onChange={e => setLeverage(e.target.value)}
+            placeholder="10"
+            min={1}
+            className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+      </div>
+
+      {result && (
+        <div className="bg-card rounded-lg p-4 space-y-3">
+          <div className="flex items-center gap-3">
+            <span className={`text-xs font-semibold px-2 py-0.5 rounded ${direction === 'LONG' ? 'bg-long/20 text-long' : 'bg-short/20 text-short'}`}>
+              {direction}
+            </span>
+            <span className="text-text-secondary text-xs">
+              SL: <span className="text-text-primary font-mono">{result.slPct.toFixed(2)}%</span> от входа
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+            <div className="text-text-secondary">Риск (потеря при SL)</div>
+            <div className="font-mono text-short">${round(result.riskAmount, 2)}</div>
+
+            <div className="text-text-secondary">Размер позиции</div>
+            <div className="font-mono text-text-primary">${round(result.notional, 2)}</div>
+
+            <div className="text-text-secondary">Цена SL</div>
+            <div className="font-mono text-accent text-lg">
+              {result.slPrice > 0 ? round(result.slPrice, 6) : '—'}
+            </div>
+
+            <div className="text-text-secondary">Дистанция до SL</div>
+            <div className="font-mono text-text-primary">
+              {round(result.slDist, 6)} ({result.slPct.toFixed(2)}%)
+            </div>
+          </div>
+
+          <div className="border-t border-input pt-3 mt-2 space-y-2">
+            <p className="text-xs text-text-secondary">Ликвидация (без maintenance margin)</p>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+              <div className="text-text-secondary">Цена ликвидации</div>
+              <div className="font-mono text-short">{round(result.liqPrice, 6)}</div>
+              <div className="text-text-secondary">Дистанция до ликвидации</div>
+              <div className="font-mono text-text-primary">{result.liqPct.toFixed(2)}%</div>
+            </div>
+            {!result.slBeforeLiq && (
+              <p className="text-xs text-short">
+                ⚠️ SL ({result.slPct.toFixed(2)}%) дальше ликвидации ({result.liqPct.toFixed(2)}%) —
+                позицию вынесет ликвой раньше. Уменьши плечо или маржу.
+              </p>
+            )}
+            {result.slBeforeLiq && result.slPct > result.liqPct * 0.7 && (
+              <p className="text-xs text-accent">
+                ⚠️ SL близко к ликвидации ({(result.slPct / result.liqPct * 100).toFixed(0)}% от ликвы) —
+                любое проскальзывание может задеть ликву.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ===================== SL MT5 Calculator =====================
+// Задача: задаёшь вход + лоты + инструмент + риск% → калькулятор говорит цену SL.
+//
+// Формула:
+//   risk_$       = balance * riskPct/100
+//   loss_per_lot_at_unit_dist:
+//     usd_quote → contractSize
+//     usd_base / cross → contractSize / entry
+//   slDist       = risk_$ / (lots * loss_per_lot_at_unit_dist)
+//   slPrice      = BUY  → entry - slDist
+//                  SELL → entry + slDist
+
+function SlMt5Calculator() {
+  const [balance, setBalance] = useState<string>('')
+  const [riskPct, setRiskPct] = useState<string>('2')
+  const [savedLoaded, setSavedLoaded] = useState(false)
+
+  const [instrument, setInstrument] = useState<string>(
+    () => localStorage.getItem(LS_SLCALC_MT5_INSTR) || 'XAUUSD',
+  )
+  const [direction, setDirection] = useState<'BUY' | 'SELL'>(
+    () => (localStorage.getItem(LS_SLCALC_MT5_DIR) as 'BUY' | 'SELL') || 'BUY',
+  )
+  const [entry, setEntry] = useState('')
+  const [lots, setLots] = useState('')
+
+  useEffect(() => { localStorage.setItem(LS_SLCALC_MT5_INSTR, instrument) }, [instrument])
+  useEffect(() => { localStorage.setItem(LS_SLCALC_MT5_DIR, direction) }, [direction])
+
+  useEffect(() => {
+    getMt5Balance().then(r => {
+      if (r.balance !== null && r.balance !== undefined) setBalance(String(r.balance))
+      setRiskPct(String(r.riskPct))
+      setSavedLoaded(true)
+    }).catch(() => { setSavedLoaded(true) })
+  }, [])
+
+  const balanceNum = Number(balance)
+  const riskNum = Number(riskPct)
+  const entryNum = Number(entry)
+  const lotsNum = Number(lots)
+  const instr = useMemo(() => INSTRUMENTS.find(i => i.symbol === instrument) || INSTRUMENTS[0], [instrument])
+
+  const grouped = useMemo(() => {
+    const groups: Record<string, Mt5Instrument[]> = {}
+    for (const i of INSTRUMENTS) {
+      if (!groups[i.group]) groups[i.group] = []
+      groups[i.group].push(i)
+    }
+    return groups
+  }, [])
+
+  const haveTrade = balanceNum > 0 && riskNum > 0 && entryNum > 0 && lotsNum > 0
+
+  let result: {
+    riskAmount: number
+    lossPerLotAtUnitDist: number
+    slDist: number
+    slPips: number
+    slPrice: number
+    notional: number
+  } | null = null
+
+  if (haveTrade) {
+    const riskAmount = balanceNum * riskNum / 100
+    // loss per 1 lot for 1.0 unit price move
+    const lossPerLotAtUnitDist = instr.quoteKind === 'usd_quote'
+      ? instr.contractSize
+      : instr.contractSize / entryNum
+    const slDist = riskAmount / (lotsNum * lossPerLotAtUnitDist)
+    const slPips = slDist / instr.pipSize
+    const slPrice = direction === 'BUY' ? entryNum - slDist : entryNum + slDist
+    const notional = instr.quoteKind === 'usd_quote'
+      ? entryNum * instr.contractSize * lotsNum
+      : instr.contractSize * lotsNum
+    result = { riskAmount, lossPerLotAtUnitDist, slDist, slPips, slPrice, notional }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs text-text-secondary block mb-1">Депозит ($)</label>
+          <input
+            type="number"
+            value={balance}
+            onChange={e => setBalance(e.target.value)}
+            placeholder="1000"
+            className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-text-secondary block mb-1">Риск (%)</label>
+          <input
+            type="number"
+            value={riskPct}
+            onChange={e => setRiskPct(e.target.value)}
+            placeholder="2"
+            step="0.1"
+            className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+      </div>
+
+      <p className="text-text-secondary text-xs">
+        {savedLoaded
+          ? <>Депо/риск подгружены из MT5-настроек. Изменения здесь не сохраняются — правь во вкладке MT5.</>
+          : <>Загрузка...</>
+        }
+        {balanceNum > 0 && riskNum > 0 && (
+          <> • Риск: <span className="text-accent font-mono">${round(balanceNum * riskNum / 100, 2)}</span></>
+        )}
+      </p>
+
+      <div>
+        <label className="text-xs text-text-secondary block mb-1">Инструмент</label>
+        <select
+          value={instrument}
+          onChange={e => setInstrument(e.target.value)}
+          className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+        >
+          {Object.entries(grouped).map(([group, items]) => (
+            <optgroup key={group} label={group}>
+              {items.map(i => (
+                <option key={i.symbol} value={i.symbol}>
+                  {i.symbol} — {i.name}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="text-xs text-text-secondary block mb-1">Направление</label>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setDirection('BUY')}
+            className={`flex-1 px-3 py-2 text-sm font-medium rounded transition-colors ${
+              direction === 'BUY' ? 'bg-long/20 text-long ring-1 ring-long' : 'bg-input text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            BUY
+          </button>
+          <button
+            onClick={() => setDirection('SELL')}
+            className={`flex-1 px-3 py-2 text-sm font-medium rounded transition-colors ${
+              direction === 'SELL' ? 'bg-short/20 text-short ring-1 ring-short' : 'bg-input text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            SELL
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs text-text-secondary block mb-1">Вход</label>
+          <input
+            type="number"
+            value={entry}
+            onChange={e => setEntry(e.target.value)}
+            placeholder="0.00"
+            step={instr.pipSize}
+            className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-text-secondary block mb-1">Объём (лоты)</label>
+          <input
+            type="number"
+            value={lots}
+            onChange={e => setLots(e.target.value)}
+            placeholder="0.10"
+            step="0.01"
+            min="0.01"
+            className="w-full bg-input text-text-primary font-mono text-sm rounded px-3 py-2 outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+      </div>
+
+      {result && (
+        <div className="bg-card rounded-lg p-4 space-y-3">
+          <div className="flex items-center gap-3">
+            <span className={`text-xs font-semibold px-2 py-0.5 rounded ${direction === 'BUY' ? 'bg-long/20 text-long' : 'bg-short/20 text-short'}`}>
+              {direction}
+            </span>
+            <span className="text-text-secondary text-xs">
+              {instr.symbol} • {round(lotsNum, 2)} лот
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+            <div className="text-text-secondary">Риск (потеря при SL)</div>
+            <div className="font-mono text-short">${round(result.riskAmount, 2)}</div>
+
+            <div className="text-text-secondary">Цена SL</div>
+            <div className="font-mono text-accent text-lg">
+              {result.slPrice > 0 ? result.slPrice.toFixed(instr.decimals) : '—'}
+            </div>
+
+            <div className="text-text-secondary">Дистанция до SL</div>
+            <div className="font-mono text-text-primary">
+              {round(result.slDist, instr.decimals)} ({round(result.slPips, 1)} пипс)
+            </div>
+
+            <div className="text-text-secondary">Размер позиции (notional)</div>
+            <div className="font-mono text-text-primary">${round(result.notional, 0)}</div>
+          </div>
+
+          {result.slPrice <= 0 && (
+            <p className="text-xs text-short pt-2 border-t border-input">
+              ⚠️ Расчётный SL ушёл ниже нуля — слишком большой объём для заданного риска.
+              Уменьши лоты или подними риск%.
+            </p>
+          )}
+
+          {instr.quoteKind !== 'usd_quote' && (
+            <p className="text-xs text-text-secondary pt-2 border-t border-input">
+              ⚠️ Для {instr.symbol} расчёт через курс входа — точность ±1–3%.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }
