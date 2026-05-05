@@ -48,13 +48,22 @@ interface CloseRecord {
   reason: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED'
 }
 
-async function getOrCreateConfig(): Promise<PaperConfig> {
-  const c = await prisma.levelsPaperConfig.upsert({
-    where: { id: 1 },
-    update: {},
-    create: { id: 1 },
-  })
-  return c as PaperConfig
+async function getOrCreateConfig(): Promise<PaperConfig | null> {
+  try {
+    const c = await prisma.levelsPaperConfig.upsert({
+      where: { id: 1 },
+      update: {},
+      create: { id: 1 },
+    })
+    return c as PaperConfig
+  } catch (e: any) {
+    // Table doesn't exist yet (migration not applied) — just return null,
+    // paper service will skip until DB is ready.
+    if (e?.message?.includes('does not exist')) {
+      return null
+    }
+    throw e
+  }
 }
 
 async function loadRecent5m(symbol: string, market: 'FOREX' | 'CRYPTO'): Promise<OHLCV[]> {
@@ -397,22 +406,20 @@ async function applyDepositDelta(cfg: PaperConfig, delta: number): Promise<void>
 
 export async function runPaperCycle(): Promise<{ opened: number; updated: number; depositDelta: number; deposit: number }> {
   const cfg = await getOrCreateConfig()
+  if (!cfg) return { opened: 0, updated: 0, depositDelta: 0, deposit: 0 }
   if (!cfg.enabled) return { opened: 0, updated: 0, depositDelta: 0, deposit: cfg.currentDepositUsd }
 
-  // 1) Open virtual trades for new signals (and backfill any signals from before paper was enabled)
   const opened = await openNewPaperTrades(cfg)
-
-  // 2) Track open trades — this also processes the just-opened ones, replaying candles
-  //    from each trade's openedAt (which we set to signal's createdAt for backfills).
   const updated = await trackOpenPaperTrades(cfg)
   if (updated.depositDelta !== 0) await applyDepositDelta(cfg, updated.depositDelta)
 
   const final = await getOrCreateConfig()
-  return { opened, updated: updated.updated, depositDelta: updated.depositDelta, deposit: final.currentDepositUsd }
+  return { opened, updated: updated.updated, depositDelta: updated.depositDelta, deposit: final?.currentDepositUsd ?? 0 }
 }
 
 export async function resetPaperAccount(newStartingDeposit?: number): Promise<PaperConfig> {
   const cfg = await getOrCreateConfig()
+  if (!cfg) throw new Error('Paper config table missing — migration not applied yet')
   const start = newStartingDeposit ?? cfg.startingDepositUsd
   // Mark all open trades as cancelled
   await prisma.levelsPaperTrade.updateMany({

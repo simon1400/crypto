@@ -23,6 +23,7 @@ const NOTIFY_ACTIONS: Set<OrderAction> = new Set([
   'LEVELS_TP3_HIT' as any,
   'LEVELS_SL_HIT' as any,
   'LEVELS_EXPIRED' as any,
+  'LEVELS_DAILY_SUMMARY' as any,
 ])
 
 function fmt(p: number | undefined): string {
@@ -188,6 +189,33 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
       const slPctVal = d.entryPrice ? (((d.stopLoss - d.entryPrice) / d.entryPrice) * 100 * (d.side === 'BUY' ? 1 : -1)).toFixed(2) : '?'
       const fiboTag = d.isFibo ? ' 🌀<i>Fibo</i>' : ''
       const eventTag = d.event === 'BREAKOUT_RETEST' ? '🚀 Pierce&Retest' : '🎯 Reaction'
+
+      // Position sizing block — only if scanner provided deposit + riskPct
+      let sizingBlock = ''
+      if (typeof d.depositUsd === 'number' && typeof d.riskPctPerTrade === 'number' && d.depositUsd > 0) {
+        const riskUsd = (d.depositUsd * d.riskPctPerTrade) / 100
+        const slDist = Math.abs(d.entryPrice - d.stopLoss)
+        const positionUnits = slDist > 0 ? riskUsd / slDist : 0
+        const positionSizeUsd = d.entryPrice * positionUnits
+        // Recommended leverage: positionSize / depositUsd, capped at 100x
+        const leverage = positionSizeUsd > 0 && d.depositUsd > 0
+          ? Math.min(100, Math.max(1, positionSizeUsd / d.depositUsd))
+          : 1
+        // Lot conversion for forex (1 lot = 100,000 units of base currency for FX, 100 oz for XAU)
+        let lotsLine = ''
+        if (d.market === 'FOREX') {
+          const lotSize = /^XAU|^XAG/.test(sym) ? 100 : 100_000
+          const lots = positionUnits / lotSize
+          lotsLine = `\n📦 Лоты      <code>${lots.toFixed(3)}</code>  (1 лот = ${lotSize})`
+        }
+        sizingBlock = [
+          ``,
+          `💰 Депо:    <code>$${d.depositUsd.toFixed(2)}</code>  · Риск ${d.riskPctPerTrade}% (<code>$${riskUsd.toFixed(2)}</code>)`,
+          `📐 Размер   <code>$${positionSizeUsd.toFixed(2)}</code>  · ${positionUnits.toFixed(d.market === 'CRYPTO' ? 6 : 2)} ${d.market === 'CRYPTO' ? sym.replace('USDT', '') : 'units'}${lotsLine}`,
+          `⚡ Плечо    <code>${leverage.toFixed(1)}x</code>  (рекомендуемое для риска ${d.riskPctPerTrade}%)`,
+        ].join('\n')
+      }
+
       return [
         `${sideEmoji} <b>${sym}</b> <b>${sideText}</b>  · ${eventTag}${fiboTag}`,
         `━━━━━━━━━━━━━━━━━━`,
@@ -197,6 +225,7 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
         ``,
         `🎯 Тейки:`,
         tpLines,
+        sizingBlock,
         ``,
         `<i>${d.reason ?? ''}</i>`,
       ].filter((l) => l !== '').join('\n')
@@ -209,13 +238,19 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
       const sym = d.symbol
       const dec = sym.includes('USDT') ? 2 : 5
       const beNote = n === '1' ? '\n🛡 SL → BE' : `\n🛡 SL → TP${parseInt(n) - 1}`
+      const pnlUsdLine = typeof d.pnlUsd === 'number'
+        ? `\n💵 $        <b>${d.pnlUsd >= 0 ? '+' : ''}$${d.pnlUsd.toFixed(2)}</b>` : ''
+      const totalUsdLine = typeof d.realizedPnlUsd === 'number'
+        ? `\nΣ $       ${d.realizedPnlUsd >= 0 ? '+' : ''}$${d.realizedPnlUsd.toFixed(2)}` : ''
+      const depoLine = typeof d.depositUsd === 'number'
+        ? `\n💼 Депо    <code>$${d.depositUsd.toFixed(2)}</code>` : ''
       return [
         `✅ <b>${sym}</b>  TP${n} сработал`,
         `━━━━━━━━━━━━━━━━━━`,
         `💰 Цена   <code>${(d.tpPrice as number).toFixed(dec)}</code>`,
         `📊 Закрыто  ${(d.percent as number).toFixed(0)}%`,
-        `📈 P&L      <b>${d.pnlR >= 0 ? '+' : ''}${(d.pnlR as number).toFixed(2)}R</b>`,
-        `Σ Total   ${d.realizedR >= 0 ? '+' : ''}${(d.realizedR as number).toFixed(2)}R${beNote}`,
+        `📈 R        <b>${d.pnlR >= 0 ? '+' : ''}${(d.pnlR as number).toFixed(2)}R</b>${pnlUsdLine}`,
+        `Σ R       ${d.realizedR >= 0 ? '+' : ''}${(d.realizedR as number).toFixed(2)}R${totalUsdLine}${depoLine}${beNote}`,
       ].join('\n')
     }
 
@@ -223,21 +258,62 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
       const sym = d.symbol
       const dec = sym.includes('USDT') ? 2 : 5
       const isBE = d.realizedR >= 0
+      const totalUsdLine = typeof d.realizedPnlUsd === 'number'
+        ? `\n💵 Σ $    <b>${d.realizedPnlUsd >= 0 ? '+' : ''}$${d.realizedPnlUsd.toFixed(2)}</b>` : ''
+      const depoLine = typeof d.depositUsd === 'number'
+        ? `\n💼 Депо   <code>$${d.depositUsd.toFixed(2)}</code>` : ''
       return [
         `${isBE ? '🟡' : '🔴'} <b>${sym}</b>  ${d.reasonText ?? 'SL'}`,
         `━━━━━━━━━━━━━━━━━━`,
         `📍 Цена   <code>${(d.slPrice as number).toFixed(dec)}</code>`,
-        `📊 Total  <b>${d.realizedR >= 0 ? '+' : ''}${(d.realizedR as number).toFixed(2)}R</b>`,
+        `📊 Σ R    <b>${d.realizedR >= 0 ? '+' : ''}${(d.realizedR as number).toFixed(2)}R</b>${totalUsdLine}${depoLine}`,
       ].join('\n')
     }
 
     case 'LEVELS_EXPIRED' as any: {
       const sym = d.symbol
+      const totalUsdLine = typeof d.realizedPnlUsd === 'number'
+        ? `\n💵 Σ $    ${d.realizedPnlUsd >= 0 ? '+' : ''}$${d.realizedPnlUsd.toFixed(2)}` : ''
       return [
         `⏱ <b>${sym}</b>  истёк`,
         `━━━━━━━━━━━━━━━━━━`,
-        `📊 Total  <b>${d.realizedR >= 0 ? '+' : ''}${(d.realizedR as number).toFixed(2)}R</b>`,
+        `📊 Σ R    <b>${d.realizedR >= 0 ? '+' : ''}${(d.realizedR as number).toFixed(2)}R</b>${totalUsdLine}`,
       ].join('\n')
+    }
+
+    case 'LEVELS_DAILY_SUMMARY' as any: {
+      const date = (d.date as string) || new Date().toISOString().slice(0, 10)
+      const opened = d.opened as number
+      const closed = d.closed as number
+      const wins = d.wins as number
+      const losses = d.losses as number
+      const totalR = d.totalR as number
+      const totalUsd = d.totalUsd as number | undefined
+      const startUsd = d.startUsd as number | undefined
+      const endUsd = d.endUsd as number | undefined
+      const peakUsd = d.peakUsd as number | undefined
+      const symbolList = (d.bySymbol as Array<{ symbol: string; pnlR: number; pnlUsd: number; trades: number }>) ?? []
+      const symLines = symbolList.length > 0
+        ? '\n\n📈 По инструментам:\n' + symbolList.map(s =>
+            `   ${s.symbol}: ${s.trades}тр · ${s.pnlR >= 0 ? '+' : ''}${s.pnlR.toFixed(2)}R${typeof s.pnlUsd === 'number' ? ` · ${s.pnlUsd >= 0 ? '+' : ''}$${s.pnlUsd.toFixed(2)}` : ''}`
+          ).join('\n')
+        : ''
+      const usdBlock = typeof totalUsd === 'number' ? [
+        ``,
+        `💵 Net P&L    <b>${totalUsd >= 0 ? '+' : ''}$${totalUsd.toFixed(2)}</b>`,
+        typeof startUsd === 'number' && typeof endUsd === 'number'
+          ? `💼 Депо       <code>$${startUsd.toFixed(2)}</code> → <code>$${endUsd.toFixed(2)}</code>` : '',
+        typeof peakUsd === 'number' ? `🏔 Peak       <code>$${peakUsd.toFixed(2)}</code>` : '',
+      ].filter(l => l).join('\n') : ''
+      return [
+        `📊 <b>Итоги дня</b> · ${date}`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `🆕 Открыто    ${opened}`,
+        `🏁 Закрыто    ${closed}  (✅ ${wins} / ❌ ${losses})`,
+        `📈 Σ R        <b>${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)}R</b>`,
+        usdBlock,
+        symLines,
+      ].filter((l) => l !== '').join('\n')
     }
 
     default:

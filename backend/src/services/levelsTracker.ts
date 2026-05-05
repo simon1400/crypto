@@ -36,6 +36,31 @@ async function loadRecent5m(symbol: string, market: 'FOREX' | 'CRYPTO'): Promise
   return loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
 }
 
+/**
+ * Look up the paper trade for a signal (if any) to enrich Telegram notifications
+ * with USD P&L. Returns null if paper mode is off or trade not found.
+ */
+async function getUsdContext(signalId: number): Promise<{
+  pnlUsdForR: (rValue: number) => number
+  realizedPnlUsd: number
+  depositUsd: number
+} | null> {
+  try {
+    const paperCfg = await prisma.levelsPaperConfig.findUnique({ where: { id: 1 } })
+    if (!paperCfg) return null
+    const trade = await prisma.levelsPaperTrade.findFirst({ where: { signalId } })
+    if (!trade) return null
+    // To convert R → USD: 1R = riskUsd. So pnlUsd = pnlR * riskUsd.
+    return {
+      pnlUsdForR: (rValue: number) => rValue * trade.riskUsd,
+      realizedPnlUsd: trade.netPnlUsd,
+      depositUsd: paperCfg.currentDepositUsd,
+    }
+  } catch {
+    return null
+  }
+}
+
 async function trackOne(sig: any, recentCandles: OHLCV[]): Promise<void> {
   // Walk every candle that's NEWER than the signal's lastPriceCheckAt (or createdAt if first time)
   const sinceMs = sig.lastPriceCheckAt
@@ -78,9 +103,11 @@ async function trackOne(sig: any, recentCandles: OHLCV[]): Promise<void> {
       })
       remainingFrac = 0
       status = nextTpIdx === 0 ? 'SL_HIT' : 'CLOSED'
+      const usdCtxSL = await getUsdContext(sig.id)
       await sendNotification('LEVELS_SL_HIT' as any, {
         id: sig.id, symbol: sig.symbol, side: sig.side, level: sig.level,
         slPrice: currentStop, realizedR, reasonText: nextTpIdx === 0 ? 'Initial SL' : `Trailing SL after TP${nextTpIdx}`,
+        ...(usdCtxSL ? { realizedPnlUsd: usdCtxSL.pnlUsdForR(realizedR), depositUsd: usdCtxSL.depositUsd } : {}),
       })
       break
     }
@@ -108,9 +135,11 @@ async function trackOne(sig: any, recentCandles: OHLCV[]): Promise<void> {
       // Status step
       status = (nextTpIdx === 0 ? 'TP1_HIT' : nextTpIdx === 1 ? 'TP2_HIT' : 'TP3_HIT')
       // Telegram
+      const usdCtxTP = await getUsdContext(sig.id)
       await sendNotification(`LEVELS_${tpName}_HIT` as any, {
         id: sig.id, symbol: sig.symbol, side: sig.side, level: sig.level,
         tpPrice: tp, percent: fillFrac * 100, pnlR, realizedR,
+        ...(usdCtxTP ? { pnlUsd: usdCtxTP.pnlUsdForR(pnlR), realizedPnlUsd: usdCtxTP.pnlUsdForR(realizedR), depositUsd: usdCtxTP.depositUsd } : {}),
       })
       nextTpIdx++
 
@@ -136,8 +165,10 @@ async function trackOne(sig: any, recentCandles: OHLCV[]): Promise<void> {
       })
     }
     status = 'EXPIRED'
+    const usdCtxExp = await getUsdContext(sig.id)
     await sendNotification('LEVELS_EXPIRED' as any, {
       id: sig.id, symbol: sig.symbol, side: sig.side, level: sig.level, realizedR,
+      ...(usdCtxExp ? { realizedPnlUsd: usdCtxExp.pnlUsdForR(realizedR) } : {}),
     })
   }
 

@@ -116,7 +116,19 @@ async function saveAndNotify(setup: SymbolSetup, sig: SignalV2, expiryHours: num
     },
   })
 
-  // Telegram notification
+  // Telegram notification — include position sizing if paper trading is configured
+  let depositUsd: number | undefined
+  let riskPctPerTrade: number | undefined
+  try {
+    const paperCfg = await prisma.levelsPaperConfig.findUnique({ where: { id: 1 } })
+    if (paperCfg) {
+      depositUsd = paperCfg.currentDepositUsd
+      riskPctPerTrade = paperCfg.riskPctPerTrade
+    }
+  } catch {
+    // Paper config table may not exist yet — that's ok, just skip sizing block
+  }
+
   try {
     await sendNotification('LEVELS_NEW' as any, {
       id: created.id,
@@ -131,6 +143,8 @@ async function saveAndNotify(setup: SymbolSetup, sig: SignalV2, expiryHours: num
       tpLadder: sig.tpLadder,
       isFibo: sig.isFiboConfluence,
       reason: sig.reason,
+      depositUsd,
+      riskPctPerTrade,
     })
     await prisma.levelsSignal.update({
       where: { id: created.id },
