@@ -27,6 +27,9 @@ import { stopHealthCheck } from './services/telegram'
 import { SCAN_COINS } from './scanner/coinScanner'
 import { prisma } from './db/prisma'
 import klinesRouter from './routes/klines'
+import levelsRouter from './routes/levels'
+import { startLevelsScanner, stopLevelsScanner } from './services/levelsLiveScanner'
+import { startLevelsTracker, stopLevelsTracker } from './services/levelsTracker'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -55,6 +58,7 @@ app.use('/api/forex-trades', forexTradesRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/api/trading', tradingRouter)
 app.use('/api/klines', klinesRouter)
+app.use('/api/levels', levelsRouter)
 
 // Module-level interval references for graceful shutdown
 let signalTrackerInterval: NodeJS.Timeout
@@ -124,6 +128,10 @@ const server = app.listen(PORT, () => {
 
   // Background auto-scanner — runs on interval when enabled in settings
   startAutoScanner()
+
+  // === Levels strategy live scanner & tracker (V2 + Fibo) ===
+  startLevelsScanner()
+  startLevelsTracker()
 })
 
 async function gracefulShutdown(signal: string) {
@@ -141,6 +149,8 @@ async function gracefulShutdown(signal: string) {
   stopTtlChecker(ttlInterval)
   stopFundingTracker()
   stopAutoScanner()
+  stopLevelsScanner()
+  stopLevelsTracker()
   stopHealthCheck()
 
   // 3. Close WebSocket connections

@@ -16,6 +16,13 @@ const NOTIFY_ACTIONS: Set<OrderAction> = new Set([
   'MARKET_ENTRY',
   'ERROR',
   'FOREX_SIGNAL_NEW',
+  // === Levels strategy live signals ===
+  'LEVELS_NEW' as any,
+  'LEVELS_TP1_HIT' as any,
+  'LEVELS_TP2_HIT' as any,
+  'LEVELS_TP3_HIT' as any,
+  'LEVELS_SL_HIT' as any,
+  'LEVELS_EXPIRED' as any,
 ])
 
 function fmt(p: number | undefined): string {
@@ -165,6 +172,72 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
       ]
         .filter((l) => l !== '')
         .join('\n')
+    }
+
+    case 'LEVELS_NEW' as any: {
+      const sideEmoji = d.side === 'BUY' ? '🟢' : '🔴'
+      const sideText = d.side === 'BUY' ? 'LONG' : 'SHORT'
+      const sym = d.symbol
+      const dec = d.market === 'FOREX' ? forexDecimals(sym) : (sym.includes('USDT') ? 2 : 5)
+      const tps: number[] = (d.tpLadder as number[] || []).slice(0, 3)
+      const tpLines = tps.map((tp, i) => {
+        const pct = d.entryPrice ? (((tp - d.entryPrice) / d.entryPrice) * 100 * (d.side === 'BUY' ? 1 : -1)).toFixed(2) : '?'
+        const pctClose = i === 0 ? '50%' : i === 1 ? '30%' : '20%'
+        return `   ├ TP${i + 1}  <code>${tp.toFixed(dec)}</code>  (+${pct}%)  [${pctClose}]`
+      }).join('\n')
+      const slPctVal = d.entryPrice ? (((d.stopLoss - d.entryPrice) / d.entryPrice) * 100 * (d.side === 'BUY' ? 1 : -1)).toFixed(2) : '?'
+      const fiboTag = d.isFibo ? ' 🌀<i>Fibo</i>' : ''
+      const eventTag = d.event === 'BREAKOUT_RETEST' ? '🚀 Pierce&Retest' : '🎯 Reaction'
+      return [
+        `${sideEmoji} <b>${sym}</b> <b>${sideText}</b>  · ${eventTag}${fiboTag}`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `📐 Уровень  <code>${(d.level as number).toFixed(dec)}</code>  (${d.source})`,
+        `📍 Вход     <code>${(d.entryPrice as number).toFixed(dec)}</code>`,
+        `🛑 SL       <code>${(d.stopLoss as number).toFixed(dec)}</code>  (${slPctVal}%)`,
+        ``,
+        `🎯 Тейки:`,
+        tpLines,
+        ``,
+        `<i>${d.reason ?? ''}</i>`,
+      ].filter((l) => l !== '').join('\n')
+    }
+
+    case 'LEVELS_TP1_HIT' as any:
+    case 'LEVELS_TP2_HIT' as any:
+    case 'LEVELS_TP3_HIT' as any: {
+      const n = String(action).replace('LEVELS_TP', '').replace('_HIT', '')
+      const sym = d.symbol
+      const dec = sym.includes('USDT') ? 2 : 5
+      const beNote = n === '1' ? '\n🛡 SL → BE' : `\n🛡 SL → TP${parseInt(n) - 1}`
+      return [
+        `✅ <b>${sym}</b>  TP${n} сработал`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `💰 Цена   <code>${(d.tpPrice as number).toFixed(dec)}</code>`,
+        `📊 Закрыто  ${(d.percent as number).toFixed(0)}%`,
+        `📈 P&L      <b>${d.pnlR >= 0 ? '+' : ''}${(d.pnlR as number).toFixed(2)}R</b>`,
+        `Σ Total   ${d.realizedR >= 0 ? '+' : ''}${(d.realizedR as number).toFixed(2)}R${beNote}`,
+      ].join('\n')
+    }
+
+    case 'LEVELS_SL_HIT' as any: {
+      const sym = d.symbol
+      const dec = sym.includes('USDT') ? 2 : 5
+      const isBE = d.realizedR >= 0
+      return [
+        `${isBE ? '🟡' : '🔴'} <b>${sym}</b>  ${d.reasonText ?? 'SL'}`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `📍 Цена   <code>${(d.slPrice as number).toFixed(dec)}</code>`,
+        `📊 Total  <b>${d.realizedR >= 0 ? '+' : ''}${(d.realizedR as number).toFixed(2)}R</b>`,
+      ].join('\n')
+    }
+
+    case 'LEVELS_EXPIRED' as any: {
+      const sym = d.symbol
+      return [
+        `⏱ <b>${sym}</b>  истёк`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `📊 Total  <b>${d.realizedR >= 0 ? '+' : ''}${(d.realizedR as number).toFixed(2)}R</b>`,
+      ].join('\n')
     }
 
     default:

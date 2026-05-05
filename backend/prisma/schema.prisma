@@ -256,6 +256,56 @@ model BotConfig {
   createdAt               DateTime @default(now())
 }
 
+// === Levels strategy (V2) — fractal swings + PDH/PDL/PWH/PWL + Fibo confluence ===
+// Live signals for both forex (XAUUSD/EURUSD/GBPUSD via Twelve Data)
+// and crypto (BTCUSDT/ETHUSDT/SOLUSDT via Bybit).
+model LevelsSignal {
+  id                Int       @id @default(autoincrement())
+  symbol            String                                   // XAUUSD, BTCUSDT...
+  market            String                                   // FOREX | CRYPTO
+  side              String                                   // BUY | SELL
+  event             String                                   // REACTION | BREAKOUT_RETEST
+  source            String                                   // FRACTAL_HIGH_M15 | PDH | PWL | ...
+  level             Float                                    // price of the trigger level
+  entryPrice        Float
+  stopLoss          Float
+  initialStop       Float                                    // immutable original SL
+  currentStop       Float                                    // moved on TP1 (BE), TP2 (TP1)…
+  tpLadder          Json                                     // [number, number, ...]
+  isFiboConfluence  Boolean   @default(false)
+  fiboImpulse       Json?                                    // {fromPrice, toPrice, direction, sizeAtr}
+  reason            String                                   // human-readable
+  // === Status / lifecycle ===
+  status            String    @default("NEW")                // NEW | ACTIVE | TP1_HIT | TP2_HIT | TP3_HIT | CLOSED | SL_HIT | EXPIRED
+  closes            Json      @default("[]")                 // [{price, percent, pnlR, closedAt}]
+  realizedR         Float     @default(0)
+  // === Tracking ===
+  lastPriceCheck    Float?                                   // last observed price (for live UI)
+  lastPriceCheckAt  DateTime?
+  notifiedTelegram  Boolean   @default(false)
+  expiresAt         DateTime?
+  closedAt          DateTime?
+  createdAt         DateTime  @default(now())
+
+  @@index([status, symbol])
+  @@index([market, status])
+  @@index([createdAt])
+}
+
+model LevelsConfig {
+  id                  Int      @id @default(1)
+  enabled             Boolean  @default(false)
+  symbolsEnabled      Json     @default("[]")  // ['XAUUSD:BUY', 'SOLUSDT:SELL', ...] — direction-restricted
+  cronIntervalMin     Int      @default(5)
+  expiryHours         Int      @default(24)    // how long a NEW signal stays valid
+  notifyOnNew         Boolean  @default(true)
+  notifyOnClose       Boolean  @default(true)
+  lastScanAt          DateTime?
+  lastScanResult      Json?                    // {symbol: signalsCount}
+  updatedAt           DateTime @updatedAt
+  createdAt           DateTime @default(now())
+}
+
 model TickerMapping {
   id              Int      @id @default(autoincrement())
   fromTicker      String   @unique

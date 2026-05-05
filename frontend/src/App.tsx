@@ -8,6 +8,7 @@ import ScannerForex from './pages/ScannerForex'
 import TradesForex from './pages/TradesForex'
 import Settings from './pages/Settings'
 import Calculator from './pages/Calculator'
+import Levels from './pages/Levels'
 import Login from './pages/Login'
 import { setAuthToken } from './api/client'
 import { BalanceProvider } from './contexts/BalanceContext'
@@ -26,6 +27,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
           <Route path="/trades-forex" element={<TradesForex />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/calculator" element={<Calculator />} />
+          <Route path="/levels" element={<Levels />} />
         </Routes>
       </main>
     </div>
