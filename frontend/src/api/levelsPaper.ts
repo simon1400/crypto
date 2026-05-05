@@ -113,3 +113,31 @@ export async function getPaperStats(): Promise<PaperStats> {
 export async function runPaperCycleNow(): Promise<{ opened: number; updated: number; depositDelta: number; deposit: number }> {
   return handle(await fetch(`${BASE}/api/levels-paper/cycle-now`, { method: 'POST', headers: getHeaders() }))
 }
+
+export async function editPaperTrade(id: number, patch: {
+  entryPrice?: number
+  stopLoss?: number
+  currentStop?: number
+  tpLadder?: number[]
+}): Promise<PaperTrade> {
+  return handle(await fetch(`${BASE}/api/levels-paper/trades/${id}`, {
+    method: 'PUT',
+    headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }))
+}
+
+export async function closePaperTradeMarket(id: number): Promise<PaperTrade> {
+  return handle(await fetch(`${BASE}/api/levels-paper/trades/${id}/close-market`, {
+    method: 'POST',
+    headers: getHeaders(),
+  }))
+}
+
+export async function closePaperTradeManual(id: number, price: number, percent?: number): Promise<PaperTrade> {
+  return handle(await fetch(`${BASE}/api/levels-paper/trades/${id}/close-manual`, {
+    method: 'POST',
+    headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ price, percent }),
+  }))
+}

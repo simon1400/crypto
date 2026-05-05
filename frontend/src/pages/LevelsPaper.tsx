@@ -4,6 +4,7 @@ import {
   getPaperTrades, getPaperStats, runPaperCycleNow,
   type PaperConfig, type PaperTrade, type PaperStats,
 } from '../api/levelsPaper'
+import PaperTradeModal from '../components/PaperTradeModal'
 
 type StatusFilter = 'OPEN' | 'CLOSED' | 'ALL'
 
@@ -36,6 +37,7 @@ export default function LevelsPaper() {
   const [showSettings, setShowSettings] = useState(false)
   const [resetAmount, setResetAmount] = useState(500)
   const [cycleRunning, setCycleRunning] = useState(false)
+  const [selectedTrade, setSelectedTrade] = useState<PaperTrade | null>(null)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -231,7 +233,7 @@ export default function LevelsPaper() {
                 const pnlPct = (t.netPnlUsd / t.depositAtEntryUsd) * 100
                 const pnlTone = t.netPnlUsd > 0 ? 'text-long' : t.netPnlUsd < 0 ? 'text-short' : 'text-text-secondary'
                 return (
-                  <tr key={t.id} className="border-t border-input hover:bg-input/40">
+                  <tr key={t.id} onClick={() => setSelectedTrade(t)} className="border-t border-input hover:bg-input/40 cursor-pointer">
                     <td className="px-3 py-2 text-text-secondary text-xs">
                       {new Date(t.openedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
                     </td>
@@ -302,6 +304,20 @@ export default function LevelsPaper() {
             </table>
           </div>
         </div>
+      )}
+
+      {selectedTrade && (
+        <PaperTradeModal
+          trade={selectedTrade}
+          onClose={() => setSelectedTrade(null)}
+          onUpdate={(updated) => {
+            setSelectedTrade(updated)
+            setTrades(prev => prev.map(t => t.id === updated.id ? updated : t))
+            // refresh stats since deposit may have changed
+            getPaperStats().then(setStats).catch(() => {})
+            getPaperConfig().then(setConfig).catch(() => {})
+          }}
+        />
       )}
     </div>
   )

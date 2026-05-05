@@ -1,19 +1,22 @@
 import { useState } from 'react'
 import {
-  type LevelsSignal,
-  editLevelsSignal, closeLevelsSignalMarket, closeLevelsSignalManual,
-} from '../api/levels'
+  type PaperTrade,
+  editPaperTrade, closePaperTradeMarket, closePaperTradeManual,
+} from '../api/levelsPaper'
 
 interface Props {
-  signal: LevelsSignal
+  trade: PaperTrade
   onClose: () => void
-  onUpdate?: (updated: LevelsSignal) => void
+  onUpdate?: (updated: PaperTrade) => void
 }
 
 function fmt(n: number, dec = 5): string {
   if (n == null || isNaN(n)) return '—'
   if (Math.abs(n) >= 1000) return n.toFixed(2)
   return n.toFixed(dec)
+}
+function fmtUsd(n: number): string {
+  return `${n >= 0 ? '+' : ''}$${Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2)}`
 }
 function dec(symbol: string, market: string): number {
   if (market === 'CRYPTO') return symbol.includes('USDT') ? 2 : 6
@@ -26,94 +29,65 @@ function pct(from: number, to: number, side: 'BUY' | 'SELL'): string {
   const v = ((to - from) / from) * 100 * (side === 'BUY' ? 1 : -1)
   return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
 }
-function rDist(entry: number, sl: number, target: number, side: 'BUY' | 'SELL'): string {
-  const risk = Math.abs(entry - sl)
-  if (risk === 0) return ''
-  const dist = side === 'BUY' ? target - entry : entry - target
-  const r = dist / risk
-  return `${r >= 0 ? '+' : ''}${r.toFixed(2)}R`
-}
 
-const isOpen = (status: string) => ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT'].includes(status)
+const isOpen = (status: string) => ['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(status)
 
-export default function LevelsSignalModal({ signal: initialSignal, onClose, onUpdate }: Props) {
-  const [signal, setSignal] = useState<LevelsSignal>(initialSignal)
-  const d = dec(signal.symbol, signal.market)
-  const sideText = signal.side === 'BUY' ? 'LONG' : 'SHORT'
-  const sideColor = signal.side === 'BUY' ? 'text-long' : 'text-short'
-  const sideEmoji = signal.side === 'BUY' ? '🟢' : '🔴'
-  const eventText = signal.event === 'BREAKOUT_RETEST' ? 'Pierce & Retest' : 'Reaction'
+export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate }: Props) {
+  const [trade, setTrade] = useState<PaperTrade>(initialTrade)
+  const d = dec(trade.symbol, trade.market)
+  const sideText = trade.side === 'BUY' ? 'LONG' : 'SHORT'
+  const sideColor = trade.side === 'BUY' ? 'text-long' : 'text-short'
+  const sideEmoji = trade.side === 'BUY' ? '🟢' : '🔴'
   const splits = [50, 30, 20]
 
-  // Edit state
   const [editing, setEditing] = useState(false)
-  const [editEntry, setEditEntry] = useState(signal.entryPrice)
-  const [editSL, setEditSL] = useState(signal.currentStop)
-  const [editTPs, setEditTPs] = useState<number[]>(signal.tpLadder.slice(0, 3))
+  const [editEntry, setEditEntry] = useState(trade.entryPrice)
+  const [editSL, setEditSL] = useState(trade.currentStop)
+  const [editTPs, setEditTPs] = useState<number[]>(trade.tpLadder.slice(0, 3))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  // Close UI state
   const [showCloseManual, setShowCloseManual] = useState(false)
-  const [closePrice, setClosePrice] = useState(signal.lastPriceCheck ?? signal.entryPrice)
+  const [closePrice, setClosePrice] = useState(trade.lastPriceCheck ?? trade.entryPrice)
   const [closePercent, setClosePercent] = useState(100)
 
   const enterEdit = () => {
     setEditing(true)
-    setEditEntry(signal.entryPrice)
-    setEditSL(signal.currentStop)
-    setEditTPs(signal.tpLadder.slice(0, 3))
-    setError(null)
+    setEditEntry(trade.entryPrice); setEditSL(trade.currentStop)
+    setEditTPs(trade.tpLadder.slice(0, 3)); setError(null)
   }
   const cancelEdit = () => { setEditing(false); setError(null) }
   const saveEdit = async () => {
     setBusy(true); setError(null)
     try {
       const filledTps = editTPs.filter(p => p > 0)
-      const fullLadder = [...filledTps, ...signal.tpLadder.slice(filledTps.length)]
-      const updated = await editLevelsSignal(signal.id, {
-        entryPrice: editEntry,
-        stopLoss: editSL,
-        tpLadder: fullLadder,
+      const fullLadder = [...filledTps, ...trade.tpLadder.slice(filledTps.length)]
+      const updated = await editPaperTrade(trade.id, {
+        entryPrice: editEntry, stopLoss: editSL, tpLadder: fullLadder,
       })
-      setSignal(updated)
-      setEditing(false)
-      onUpdate?.(updated)
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
-    }
+      setTrade(updated); setEditing(false); onUpdate?.(updated)
+    } catch (e: any) { setError(e.message) }
+    finally { setBusy(false) }
   }
   const closeMarket = async () => {
-    if (!confirm('Закрыть оставшуюся часть позиции по текущей рыночной цене?')) return
+    if (!confirm('Закрыть оставшуюся часть демо-сделки по текущей рыночной цене?')) return
     setBusy(true); setError(null)
     try {
-      const updated = await closeLevelsSignalMarket(signal.id)
-      setSignal(updated)
-      onUpdate?.(updated)
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
-    }
+      const updated = await closePaperTradeMarket(trade.id)
+      setTrade(updated); onUpdate?.(updated)
+    } catch (e: any) { setError(e.message) }
+    finally { setBusy(false) }
   }
   const closeAtPrice = async () => {
     if (closePrice <= 0) { setError('Укажи цену'); return }
     setBusy(true); setError(null)
     try {
-      const updated = await closeLevelsSignalManual(signal.id, closePrice, closePercent)
-      setSignal(updated)
-      setShowCloseManual(false)
-      onUpdate?.(updated)
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
-    }
+      const updated = await closePaperTradeManual(trade.id, closePrice, closePercent)
+      setTrade(updated); setShowCloseManual(false); onUpdate?.(updated)
+    } catch (e: any) { setError(e.message) }
+    finally { setBusy(false) }
   }
 
-  const canEdit = isOpen(signal.status)
+  const canEdit = isOpen(trade.status)
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -125,22 +99,18 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
           <div>
             <div className="flex items-center gap-2 mb-1">
               <span className="text-xl">{sideEmoji}</span>
-              <h2 className="text-xl font-semibold">{signal.symbol}</h2>
+              <h2 className="text-xl font-semibold">{trade.symbol}</h2>
               <span className={`text-lg font-medium ${sideColor}`}>{sideText}</span>
-              {signal.isFiboConfluence && (
-                <span className="px-2 py-0.5 bg-accent/15 text-accent text-xs rounded">🌀 Fibo</span>
-              )}
+              <span className="px-2 py-0.5 bg-accent/15 text-accent text-xs rounded">DEMO</span>
             </div>
             <p className="text-sm text-text-secondary">
-              {eventText} @ {signal.source} {fmt(signal.level, d)} · {new Date(signal.createdAt).toLocaleString('ru-RU')}
+              {trade.market} · открыто {new Date(trade.openedAt).toLocaleString('ru-RU')}
             </p>
           </div>
           <button onClick={onClose} className="text-text-secondary hover:text-text-primary text-xl">×</button>
         </div>
 
         <div className="p-4">
-          <div className="mb-4 text-sm text-text-secondary italic">{signal.reason}</div>
-
           {error && (
             <div className="bg-short/15 border border-short/30 text-short rounded p-2 text-sm mb-3">{error}</div>
           )}
@@ -178,7 +148,6 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
             </div>
           )}
 
-          {/* Manual close form */}
           {showCloseManual && canEdit && !editing && (
             <div className="bg-card border border-input rounded p-3 mb-4">
               <h4 className="font-semibold text-sm mb-2">Закрытие по конкретной цене</h4>
@@ -199,7 +168,7 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
               <div className="flex gap-2">
                 <button onClick={closeAtPrice} disabled={busy}
                   className="px-3 py-1.5 bg-accent text-bg-primary rounded text-sm font-medium">
-                  {busy ? 'Закрываю...' : 'Подтвердить закрытие'}
+                  {busy ? 'Закрываю...' : 'Подтвердить'}
                 </button>
                 <button onClick={() => setShowCloseManual(false)} disabled={busy}
                   className="px-3 py-1.5 bg-card border border-input rounded text-sm font-medium">Отмена</button>
@@ -207,42 +176,35 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
             </div>
           )}
 
-          {/* Geometry — view or edit */}
+          {/* Position info — USD-based */}
           <div className="grid grid-cols-2 gap-3 mb-4">
-            <PriceCard label="Уровень" value={fmt(signal.level, d)} sub={signal.source} />
+            <PriceCard label="Размер позиции" value={`$${trade.positionSizeUsd.toFixed(0)}`}
+              sub={`Депо при входе: $${trade.depositAtEntryUsd.toFixed(2)}`} />
+            <PriceCard label="Риск" value={`$${trade.riskUsd.toFixed(2)}`}
+              sub={`Net P&L: ${fmtUsd(trade.netPnlUsd)}`}
+              tone={trade.netPnlUsd > 0 ? 'long' : trade.netPnlUsd < 0 ? 'short' : 'neutral'} />
+          </div>
+
+          {/* Geometry */}
+          <div className="grid grid-cols-2 gap-3 mb-4">
             {editing ? (
-              <EditableCard label="Вход" dec={d}
-                value={editEntry} onChange={setEditEntry} />
+              <EditableCard label="Вход" dec={d} value={editEntry} onChange={setEditEntry} />
             ) : (
-              <PriceCard label="Вход" value={fmt(signal.entryPrice, d)} sub="" />
+              <PriceCard label="Вход" value={fmt(trade.entryPrice, d)} />
             )}
             {editing ? (
-              <EditableCard label="SL" dec={d} tone="short"
-                value={editSL} onChange={setEditSL} />
+              <EditableCard label="SL" dec={d} tone="short" value={editSL} onChange={setEditSL} />
             ) : (
-              <PriceCard
-                label="SL (current)"
-                value={fmt(signal.currentStop, d)}
-                sub={pct(signal.entryPrice, signal.currentStop, signal.side)}
-                tone="short"
-              />
-            )}
-            {!editing && (
-              <PriceCard
-                label="SL initial"
-                value={fmt(signal.initialStop, d)}
-                sub={pct(signal.entryPrice, signal.initialStop, signal.side)}
-                tone="short"
-                dim
-              />
+              <PriceCard label="SL" value={fmt(trade.currentStop, d)}
+                sub={pct(trade.entryPrice, trade.currentStop, trade.side)} tone="short" />
             )}
           </div>
 
           {/* TP ladder */}
           <h3 className="font-semibold text-sm mb-2">TP ladder</h3>
           <div className="space-y-1.5 mb-4">
-            {(editing ? editTPs : signal.tpLadder.slice(0, 3)).map((tp, i) => {
-              const fill = signal.closes.find((c) => c.reason === `TP${i + 1}`)
+            {(editing ? editTPs : trade.tpLadder.slice(0, 3)).map((tp, i) => {
+              const fill = trade.closes.find((c) => c.reason === `TP${i + 1}`)
               const isHit = !!fill
               return editing ? (
                 <div key={i} className="p-2.5 rounded border border-input bg-card flex items-center gap-3">
@@ -256,69 +218,52 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
                   <span className="text-xs text-text-secondary">{splits[i]}%</span>
                 </div>
               ) : (
-                <div
-                  key={i}
-                  className={`p-2.5 rounded border flex items-center justify-between ${
-                    isHit ? 'border-long/40 bg-long/10' : 'border-input bg-card'
-                  }`}
-                >
+                <div key={i} className={`p-2.5 rounded border flex items-center justify-between ${
+                  isHit ? 'border-long/40 bg-long/10' : 'border-input bg-card'
+                }`}>
                   <div className="flex items-center gap-3">
                     <span className={`font-mono font-semibold w-12 ${isHit ? 'text-long' : ''}`}>TP{i + 1}</span>
                     <span className="font-mono">{fmt(tp, d)}</span>
-                    <span className="text-xs text-text-secondary">{pct(signal.entryPrice, tp, signal.side)}</span>
-                    <span className="text-xs text-accent">{rDist(signal.entryPrice, signal.initialStop, tp, signal.side)}</span>
+                    <span className="text-xs text-text-secondary">{pct(trade.entryPrice, tp, trade.side)}</span>
                   </div>
                   <div className="text-xs text-text-secondary">
-                    {splits[i]}% {isHit && fill ? <span className="text-long ml-2">✓ {fill.pnlR >= 0 ? '+' : ''}{fill.pnlR.toFixed(2)}R</span> : ''}
+                    {splits[i]}% {isHit && fill ? <span className="text-long ml-2">✓ {fmtUsd(fill.pnlUsd)}</span> : ''}
                   </div>
                 </div>
               )
             })}
-            {!editing && signal.tpLadder.length > 3 && (
-              <div className="text-xs text-text-secondary px-2">
-                +{signal.tpLadder.length - 3} дальних TP не торгуются (ladder=3)
-              </div>
-            )}
           </div>
 
-          {/* Status & R */}
-          <div className="grid grid-cols-2 gap-3 mb-4">
-            <PriceCard label="Status" value={signal.status} sub="" />
-            <PriceCard
-              label="Realized R"
-              value={`${signal.realizedR >= 0 ? '+' : ''}${signal.realizedR.toFixed(2)}R`}
-              sub=""
-              tone={signal.realizedR > 0 ? 'long' : signal.realizedR < 0 ? 'short' : 'neutral'}
-            />
+          {/* Stats */}
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            <PriceCard label="Status" value={trade.status} />
+            <PriceCard label="Realized $" value={fmtUsd(trade.realizedPnlUsd)}
+              tone={trade.realizedPnlUsd > 0 ? 'long' : trade.realizedPnlUsd < 0 ? 'short' : 'neutral'} />
+            <PriceCard label="Fees $" value={`-$${trade.feesPaidUsd.toFixed(2)}`} />
           </div>
 
           {/* Closes log */}
-          {signal.closes.length > 0 && (
+          {trade.closes.length > 0 && (
             <>
               <h3 className="font-semibold text-sm mb-2">Закрытия</h3>
               <div className="space-y-1 mb-4 text-sm">
-                {signal.closes.map((c, i) => (
-                  <div key={i} className="flex justify-between bg-card border border-input rounded p-2">
+                {trade.closes.map((c, i) => (
+                  <div key={i} className="grid grid-cols-5 gap-2 bg-card border border-input rounded p-2 items-center">
                     <span className="font-mono">{c.reason} @ {fmt(c.price, d)}</span>
                     <span className="text-text-secondary">{c.percent.toFixed(0)}%</span>
-                    <span className={`font-mono ${c.pnlR > 0 ? 'text-long' : c.pnlR < 0 ? 'text-short' : ''}`}>
+                    <span className={`font-mono text-sm ${c.pnlUsd > 0 ? 'text-long' : c.pnlUsd < 0 ? 'text-short' : ''}`}>
+                      {fmtUsd(c.pnlUsd)}
+                    </span>
+                    <span className={`font-mono text-xs ${c.pnlR > 0 ? 'text-long' : c.pnlR < 0 ? 'text-short' : ''}`}>
                       {c.pnlR >= 0 ? '+' : ''}{c.pnlR.toFixed(2)}R
                     </span>
-                    <span className="text-xs text-text-secondary">{new Date(c.closedAt).toLocaleTimeString('ru-RU')}</span>
+                    <span className="text-xs text-text-secondary text-right">
+                      {new Date(c.closedAt).toLocaleTimeString('ru-RU')}
+                    </span>
                   </div>
                 ))}
               </div>
             </>
-          )}
-
-          {signal.fiboImpulse && (
-            <div className="bg-accent/5 border border-accent/20 rounded p-3 text-sm">
-              <div className="font-semibold mb-1">🌀 Fibo Impulse</div>
-              <div className="text-text-secondary">
-                {signal.fiboImpulse.direction} · {signal.fiboImpulse.sizeAtr.toFixed(1)}×ATR ·
-                {' '}{fmt(signal.fiboImpulse.fromPrice, d)} → {fmt(signal.fiboImpulse.toPrice, d)}
-              </div>
-            </div>
           )}
         </div>
       </div>
@@ -326,13 +271,12 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
   )
 }
 
-function PriceCard({ label, value, sub, tone, dim }: {
-  label: string; value: string; sub?: string;
-  tone?: 'long' | 'short' | 'neutral'; dim?: boolean;
+function PriceCard({ label, value, sub, tone }: {
+  label: string; value: string; sub?: string; tone?: 'long' | 'short' | 'neutral';
 }) {
   const color = tone === 'long' ? 'text-long' : tone === 'short' ? 'text-short' : 'text-text-primary'
   return (
-    <div className={`bg-card border border-input rounded p-3 ${dim ? 'opacity-60' : ''}`}>
+    <div className="bg-card border border-input rounded p-3">
       <div className="text-xs text-text-secondary">{label}</div>
       <div className={`text-base font-mono font-semibold ${color}`}>{value}</div>
       {sub && <div className="text-xs text-text-secondary">{sub}</div>}

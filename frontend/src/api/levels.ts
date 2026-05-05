@@ -168,3 +168,38 @@ export async function cancelLevelsSignal(id: number): Promise<LevelsSignal> {
     }),
   )
 }
+
+export async function editLevelsSignal(id: number, patch: {
+  entryPrice?: number
+  stopLoss?: number
+  currentStop?: number
+  tpLadder?: number[]
+  reason?: string
+}): Promise<LevelsSignal> {
+  return handle(
+    await fetch(`${BASE}/api/levels/${id}`, {
+      method: 'PUT',
+      headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  )
+}
+
+export async function closeLevelsSignalMarket(id: number): Promise<LevelsSignal> {
+  return handle(
+    await fetch(`${BASE}/api/levels/${id}/close-market`, {
+      method: 'POST',
+      headers: getHeaders(),
+    }),
+  )
+}
+
+export async function closeLevelsSignalManual(id: number, price: number, percent?: number): Promise<LevelsSignal> {
+  return handle(
+    await fetch(`${BASE}/api/levels/${id}/close-manual`, {
+      method: 'POST',
+      headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ price, percent }),
+    }),
+  )
+}

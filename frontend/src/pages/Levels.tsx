@@ -322,7 +322,15 @@ export default function Levels() {
       )}
 
       {selected && (
-        <LevelsSignalModal signal={selected} onClose={() => setSelected(null)} />
+        <LevelsSignalModal
+          signal={selected}
+          onClose={() => setSelected(null)}
+          onUpdate={(updated) => {
+            setSelected(updated)
+            setSignals(prev => prev.map(s => s.id === updated.id ? updated : s))
+            loadStats()
+          }}
+        />
       )}
     </div>
   )
