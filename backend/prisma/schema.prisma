@@ -292,6 +292,70 @@ model LevelsSignal {
   @@index([createdAt])
 }
 
+// === Paper trading for Levels strategy — separate virtual account ===
+model LevelsPaperConfig {
+  id                  Int      @id @default(1)
+  enabled             Boolean  @default(false)
+  startingDepositUsd  Float    @default(500)
+  currentDepositUsd   Float    @default(500)
+  riskPctPerTrade     Float    @default(2.0)
+  // Fees in % round-trip applied to the position notional
+  feesRoundTripPct    Float    @default(0.04)   // 0.04% = forex broker; crypto Bybit ~0.08%
+  // Circuit breakers
+  dailyLossLimitPct   Float    @default(5)      // pause for the day if hit
+  weeklyLossLimitPct  Float    @default(15)     // pause for the week
+  maxConcurrentPositions Int   @default(2)
+  maxPositionsPerSymbol  Int   @default(1)
+  // Lifecycle stats (kept in sync by tracker)
+  totalTrades         Int      @default(0)
+  totalWins           Int      @default(0)
+  totalLosses         Int      @default(0)
+  totalPnLUsd         Float    @default(0)
+  peakDepositUsd      Float    @default(500)    // for max-DD calculation
+  maxDrawdownPct      Float    @default(0)
+  startedAt           DateTime @default(now())
+  resetAt             DateTime?                  // last reset timestamp
+  updatedAt           DateTime @updatedAt
+  createdAt           DateTime @default(now())
+}
+
+// One paper trade per LevelsSignal that fired while paper mode was enabled.
+// Mirrors LevelsSignal status but with USD/lot accounting on virtual deposit.
+model LevelsPaperTrade {
+  id                Int       @id @default(autoincrement())
+  signalId          Int                                     // FK to LevelsSignal
+  symbol            String
+  market            String                                  // FOREX | CRYPTO
+  side              String                                  // BUY | SELL
+  entryPrice        Float
+  stopLoss          Float
+  initialStop       Float
+  currentStop       Float
+  tpLadder          Json                                    // [number, number, ...]
+  // Position sizing — what we virtually opened
+  depositAtEntryUsd Float                                   // deposit balance when trade opened
+  riskUsd           Float                                   // dollar amount risked (riskPct% × deposit)
+  positionSizeUsd   Float                                   // notional position size
+  positionUnits     Float                                   // base-asset units (e.g. for crypto: BTC qty)
+  // Lifecycle
+  status            String    @default("OPEN")              // OPEN | TP1_HIT | TP2_HIT | TP3_HIT | CLOSED | SL_HIT | EXPIRED
+  closes            Json      @default("[]")                // [{price, percent, pnlR, pnlUsd, closedAt, reason}]
+  realizedR         Float     @default(0)
+  realizedPnlUsd    Float     @default(0)                   // gross P&L in USD before fees
+  feesPaidUsd       Float     @default(0)
+  netPnlUsd         Float     @default(0)                   // gross - fees
+  // Tracking
+  lastPriceCheck    Float?
+  lastPriceCheckAt  DateTime?
+  expiresAt         DateTime?
+  closedAt          DateTime?
+  openedAt          DateTime  @default(now())
+
+  @@index([status, symbol])
+  @@index([openedAt])
+  @@index([signalId])
+}
+
 model LevelsConfig {
   id                  Int      @id @default(1)
   enabled             Boolean  @default(false)

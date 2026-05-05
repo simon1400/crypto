@@ -28,8 +28,10 @@ import { SCAN_COINS } from './scanner/coinScanner'
 import { prisma } from './db/prisma'
 import klinesRouter from './routes/klines'
 import levelsRouter from './routes/levels'
+import levelsPaperRouter from './routes/levelsPaper'
 import { startLevelsScanner, stopLevelsScanner } from './services/levelsLiveScanner'
 import { startLevelsTracker, stopLevelsTracker } from './services/levelsTracker'
+import { startLevelsPaperTrader, stopLevelsPaperTrader } from './services/levelsPaperTrader'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -59,6 +61,7 @@ app.use('/api/settings', settingsRouter)
 app.use('/api/trading', tradingRouter)
 app.use('/api/klines', klinesRouter)
 app.use('/api/levels', levelsRouter)
+app.use('/api/levels-paper', levelsPaperRouter)
 
 // Module-level interval references for graceful shutdown
 let signalTrackerInterval: NodeJS.Timeout
@@ -132,6 +135,7 @@ const server = app.listen(PORT, () => {
   // === Levels strategy live scanner & tracker (V2 + Fibo) ===
   startLevelsScanner()
   startLevelsTracker()
+  startLevelsPaperTrader()
 })
 
 async function gracefulShutdown(signal: string) {
@@ -151,6 +155,7 @@ async function gracefulShutdown(signal: string) {
   stopAutoScanner()
   stopLevelsScanner()
   stopLevelsTracker()
+  stopLevelsPaperTrader()
   stopHealthCheck()
 
   // 3. Close WebSocket connections

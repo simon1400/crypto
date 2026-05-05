@@ -34,14 +34,13 @@ interface SymbolSetup {
   fractalLR: 3 | 5
 }
 
-// Default setups per backtest results — admin can disable via LevelsConfig.symbolsEnabled
+// Default setups — based on RECENT 90d diagnostics (2026-05-05).
+// Removed: GBPUSD (-6R), ETH SHORT (-58R), SOL SHORT (-54R) — regime change made them lose money.
+// Kept: XAUUSD LONG (+81R), BTCUSDT (+119R, mostly 1 outlier — monitor), EURUSD LONG (+1R, marginal but neutral).
 export const DEFAULT_SETUPS: SymbolSetup[] = [
-  { symbol: 'XAUUSD',  market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // +310R/year
-  { symbol: 'EURUSD',  market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // marginal+
-  { symbol: 'GBPUSD',  market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // marginal+
-  { symbol: 'BTCUSDT', market: 'CRYPTO', side: 'BOTH', fractalLR: 3 }, // monitor both
-  { symbol: 'ETHUSDT', market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +57R/year
-  { symbol: 'SOLUSDT', market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +95R/year
+  { symbol: 'XAUUSD',  market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // +1.19R/trade in 90d
+  { symbol: 'EURUSD',  market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // neutral, low sample
+  { symbol: 'BTCUSDT', market: 'CRYPTO', side: 'BOTH', fractalLR: 3 }, // +19.77R/trade in 90d (low n)
 ]
 
 const DEDUP_WINDOW_MS = 60 * 60_000 // 1h: don't fire 2 signals on same level within 1h

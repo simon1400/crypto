@@ -49,6 +49,12 @@ export interface LadderConfig {
   /** After TP1, move SL to entry; after TPn, move SL to TP(n-1). */
   trailing: boolean
   maxHoldBars: number // 0 = no limit
+  /**
+   * Override: if set, ignore `splits` and close 100% of position on this TP index.
+   * 0 = TP1 only, 1 = TP2 only, 2 = TP3 only.
+   * No trailing applied — full close on first hit of that TP.
+   */
+  singleTpIdx?: number
 }
 
 export const DEFAULT_LADDER: LadderConfig = {
@@ -97,6 +103,19 @@ interface OpenPos {
   /** distributed split amounts aligned with ladder (length = min(ladder, splits)) */
   splitsForThis: number[]
   fills: Array<{ idx: number; price: number; frac: number; rContrib: number }>
+}
+
+/**
+ * Build splits for "close 100% at single TP idx" mode.
+ * Result: 0% on all TPs except `tpIdx`, which gets 100%.
+ * If `tpIdx` >= ladderLen, redirects to last available TP.
+ */
+function buildSingleTpSplits(ladderLen: number, tpIdx: number): number[] {
+  if (ladderLen <= 0) return []
+  const out = new Array(ladderLen).fill(0)
+  const idx = Math.min(tpIdx, ladderLen - 1)
+  out[idx] = 1.0
+  return out
 }
 
 function alignSplits(ladderLen: number, splits: number[]): number[] {
@@ -239,7 +258,9 @@ export function runLadderBacktest(
       openIdx: i,
       nextTpIdx: 0,
       remainingFrac: 1,
-      splitsForThis: alignSplits(sig.tpLadder.length, cfg.splits),
+      splitsForThis: cfg.singleTpIdx !== undefined
+        ? buildSingleTpSplits(sig.tpLadder.length, cfg.singleTpIdx)
+        : alignSplits(sig.tpLadder.length, cfg.splits),
       fills: [],
     }
   }
