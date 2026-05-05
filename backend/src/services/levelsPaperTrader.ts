@@ -88,10 +88,16 @@ function calcPosition(
  * Skips entirely if circuit breakers are active.
  */
 async function openNewPaperTrades(cfg: PaperConfig): Promise<number> {
-  // Find recent signals (last 24h) that don't yet have a paper trade
+  // Find recent signals (last 24h) that don't yet have a paper trade.
+  // Includes signals that are still OPEN (NEW / ACTIVE / TP1_HIT / TP2_HIT) — backfill
+  // so when user enables paper mode, they immediately see virtual versions of live trades.
   const since = new Date(Date.now() - 24 * 60 * 60_000)
   const signals = await prisma.levelsSignal.findMany({
-    where: { createdAt: { gte: since } },
+    where: {
+      createdAt: { gte: since },
+      // Skip signals that are already terminal — no point opening a virtual trade for a closed one
+      status: { in: ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT'] },
+    },
     orderBy: { createdAt: 'asc' },
   })
   if (signals.length === 0) return 0
@@ -133,6 +139,10 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<number> {
     const pos = calcPosition(cfg.currentDepositUsd, cfg.riskPctPerTrade, sig.entryPrice, sig.stopLoss)
     if (pos.positionUnits <= 0) continue
 
+    // Use signal's openedAt (createdAt) as the entry timestamp so the tracker
+    // replays from the moment the signal originally fired — backfilling any
+    // already-happened TP/SL hits.
+    const entryAt = new Date(sig.createdAt)
     await prisma.levelsPaperTrade.create({
       data: {
         signalId: sig.id,
@@ -144,6 +154,7 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<number> {
         initialStop: sig.initialStop,
         currentStop: sig.currentStop,
         tpLadder: sig.tpLadder as any,
+        openedAt: entryAt,
         depositAtEntryUsd: cfg.currentDepositUsd,
         riskUsd: pos.riskUsd,
         positionSizeUsd: pos.positionSizeUsd,
@@ -388,12 +399,13 @@ export async function runPaperCycle(): Promise<{ opened: number; updated: number
   const cfg = await getOrCreateConfig()
   if (!cfg.enabled) return { opened: 0, updated: 0, depositDelta: 0, deposit: cfg.currentDepositUsd }
 
+  // 1) Open virtual trades for new signals (and backfill any signals from before paper was enabled)
+  const opened = await openNewPaperTrades(cfg)
+
+  // 2) Track open trades — this also processes the just-opened ones, replaying candles
+  //    from each trade's openedAt (which we set to signal's createdAt for backfills).
   const updated = await trackOpenPaperTrades(cfg)
   if (updated.depositDelta !== 0) await applyDepositDelta(cfg, updated.depositDelta)
-
-  // Reload cfg after deposit change
-  const cfg2 = await getOrCreateConfig()
-  const opened = await openNewPaperTrades(cfg2)
 
   const final = await getOrCreateConfig()
   return { opened, updated: updated.updated, depositDelta: updated.depositDelta, deposit: final.currentDepositUsd }

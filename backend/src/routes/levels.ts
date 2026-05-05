@@ -2,6 +2,21 @@ import { Router } from 'express'
 import { prisma } from '../db/prisma'
 import { runLevelsScanCycle, DEFAULT_SETUPS } from '../services/levelsLiveScanner'
 import { runLevelsTrackerCycle } from '../services/levelsTracker'
+import { loadHistorical } from '../scalper/historicalLoader'
+import { loadForexHistorical } from '../scalper/forexLoader'
+
+/** Get the latest 5m close for a symbol — used as "current market price" for manual close. */
+async function getCurrentPrice(symbol: string, market: string): Promise<number | null> {
+  try {
+    const candles = market === 'FOREX'
+      ? await loadForexHistorical(symbol, '5m', 1)
+      : await loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
+    if (candles.length === 0) return null
+    return candles[candles.length - 1].close
+  } catch (e) {
+    return null
+  }
+}
 
 const router = Router()
 
@@ -140,6 +155,147 @@ router.post('/:id/cancel', async (req, res) => {
     const updated = await prisma.levelsSignal.update({
       where: { id },
       data: { status: 'EXPIRED', closedAt: new Date() },
+    })
+    res.json(updated)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * Edit a signal manually — adjust entry/SL/currentStop/tpLadder.
+ * Useful when the bot's calculated entry doesn't match where the user actually entered,
+ * or when the user wants to move SL/TP after the trade is open.
+ *
+ * NOTE: this does NOT recalculate realized R for already-filled TPs. Those stay as is.
+ * Only future tracking uses the new prices.
+ */
+router.put('/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const sig = await prisma.levelsSignal.findUnique({ where: { id } })
+    if (!sig) return res.status(404).json({ error: 'Not found' })
+
+    const { entryPrice, stopLoss, currentStop, tpLadder, reason } = req.body
+    const data: any = {}
+    if (typeof entryPrice === 'number' && entryPrice > 0) data.entryPrice = entryPrice
+    if (typeof stopLoss === 'number' && stopLoss > 0) {
+      data.stopLoss = stopLoss
+      // If we're editing initial SL while no fills happened yet, also update initialStop
+      const closes = (sig.closes as any[]) ?? []
+      if (closes.length === 0) data.initialStop = stopLoss
+      data.currentStop = stopLoss
+    }
+    if (typeof currentStop === 'number' && currentStop > 0) data.currentStop = currentStop
+    if (Array.isArray(tpLadder) && tpLadder.every((p) => typeof p === 'number' && p > 0)) {
+      data.tpLadder = tpLadder
+    }
+    if (typeof reason === 'string') {
+      data.reason = `${sig.reason} · [edited: ${reason}]`
+    }
+
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update' })
+    }
+    const updated = await prisma.levelsSignal.update({ where: { id }, data })
+    res.json(updated)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * Close the remaining position at current market price.
+ * Records a 'MANUAL' close in `closes` log with R calculated from initialStop distance.
+ */
+router.post('/:id/close-market', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const sig = await prisma.levelsSignal.findUnique({ where: { id } })
+    if (!sig) return res.status(404).json({ error: 'Not found' })
+    if (sig.status === 'CLOSED' || sig.status === 'SL_HIT' || sig.status === 'EXPIRED') {
+      return res.status(400).json({ error: `Already ${sig.status}` })
+    }
+    const price = await getCurrentPrice(sig.symbol, sig.market)
+    if (price === null) return res.status(503).json({ error: 'Could not fetch market price' })
+
+    const closes = ((sig.closes as any[]) ?? []) as any[]
+    const closedPctSoFar = closes.reduce((a, c) => a + (c.percent ?? 0), 0)
+    const remainingFrac = Math.max(0, 1 - closedPctSoFar / 100)
+    if (remainingFrac < 1e-6) return res.status(400).json({ error: 'Position fully closed' })
+
+    const isLong = sig.side === 'BUY'
+    const initialRisk = Math.abs(sig.entryPrice - sig.initialStop)
+    const pnlR = ((isLong ? price - sig.entryPrice : sig.entryPrice - price) / initialRisk) * remainingFrac
+    closes.push({
+      price, percent: remainingFrac * 100, pnlR,
+      closedAt: new Date().toISOString(),
+      reason: 'MANUAL',
+    })
+    const realizedR = (sig.realizedR ?? 0) + pnlR
+    const updated = await prisma.levelsSignal.update({
+      where: { id },
+      data: {
+        status: 'CLOSED',
+        closes: closes as any,
+        realizedR,
+        closedAt: new Date(),
+        lastPriceCheck: price,
+        lastPriceCheckAt: new Date(),
+      },
+    })
+    res.json(updated)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * Close at a manually specified price (useful when user closed externally and wants
+ * to record the actual fill price, not current market).
+ * Body: { price: number, percent?: number (default = remaining) }
+ */
+router.post('/:id/close-manual', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const sig = await prisma.levelsSignal.findUnique({ where: { id } })
+    if (!sig) return res.status(404).json({ error: 'Not found' })
+    if (sig.status === 'CLOSED' || sig.status === 'SL_HIT' || sig.status === 'EXPIRED') {
+      return res.status(400).json({ error: `Already ${sig.status}` })
+    }
+    const { price, percent } = req.body as { price?: number; percent?: number }
+    if (typeof price !== 'number' || price <= 0) {
+      return res.status(400).json({ error: 'price required' })
+    }
+
+    const closes = ((sig.closes as any[]) ?? []) as any[]
+    const closedPctSoFar = closes.reduce((a, c) => a + (c.percent ?? 0), 0)
+    const remainingFrac = Math.max(0, 1 - closedPctSoFar / 100)
+    if (remainingFrac < 1e-6) return res.status(400).json({ error: 'Position fully closed' })
+
+    const fillPct = typeof percent === 'number' ? Math.min(percent, remainingFrac * 100) : remainingFrac * 100
+    const fillFrac = fillPct / 100
+    const isLong = sig.side === 'BUY'
+    const initialRisk = Math.abs(sig.entryPrice - sig.initialStop)
+    const pnlR = ((isLong ? price - sig.entryPrice : sig.entryPrice - price) / initialRisk) * fillFrac
+    closes.push({
+      price, percent: fillPct, pnlR,
+      closedAt: new Date().toISOString(),
+      reason: 'MANUAL',
+    })
+    const realizedR = (sig.realizedR ?? 0) + pnlR
+    const newRemaining = remainingFrac - fillFrac
+    const status = newRemaining < 1e-6 ? 'CLOSED' : sig.status
+    const updated = await prisma.levelsSignal.update({
+      where: { id },
+      data: {
+        status,
+        closes: closes as any,
+        realizedR,
+        ...(status === 'CLOSED' ? { closedAt: new Date() } : {}),
+        lastPriceCheck: price,
+        lastPriceCheckAt: new Date(),
+      },
     })
     res.json(updated)
   } catch (e: any) {

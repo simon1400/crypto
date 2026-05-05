@@ -91,7 +91,23 @@ export default function LevelsPaper() {
     setConfig(updated)
   }
 
-  if (!config) return <div className="text-text-secondary">Загрузка...</div>
+  if (!config && loading) return <div className="text-text-secondary">Загрузка...</div>
+  if (!config) {
+    return (
+      <div>
+        <h1 className="text-2xl font-semibold mb-3">Демо-счёт</h1>
+        <div className="bg-short/15 border border-short/30 text-short rounded p-3 mb-4">
+          {error || 'Не удалось загрузить настройки демо-счёта. Возможно, миграция БД ещё не применена.'}
+        </div>
+        <button
+          onClick={loadAll}
+          className="px-4 py-2 bg-card border border-input rounded font-medium hover:bg-input"
+        >
+          Повторить
+        </button>
+      </div>
+    )
+  }
 
   const returnPct = stats?.returnPct ?? 0
   const totalTrades = config.totalTrades

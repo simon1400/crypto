@@ -1,6 +1,42 @@
 import { Router } from 'express'
 import { prisma } from '../db/prisma'
 import { runPaperCycle, resetPaperAccount } from '../services/levelsPaperTrader'
+import { loadHistorical } from '../scalper/historicalLoader'
+import { loadForexHistorical } from '../scalper/forexLoader'
+
+async function getCurrentPrice(symbol: string, market: string): Promise<number | null> {
+  try {
+    const candles = market === 'FOREX'
+      ? await loadForexHistorical(symbol, '5m', 1)
+      : await loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
+    if (candles.length === 0) return null
+    return candles[candles.length - 1].close
+  } catch (e) {
+    return null
+  }
+}
+
+/** Recompute deposit + stats after a manual close — keep config in sync. */
+async function recomputeDepositAndStats(): Promise<void> {
+  const cfg = await prisma.levelsPaperConfig.findUnique({ where: { id: 1 } })
+  if (!cfg) return
+  const closed = await prisma.levelsPaperTrade.findMany({
+    where: { status: { in: ['CLOSED', 'SL_HIT', 'EXPIRED'] } },
+    select: { netPnlUsd: true, openedAt: true, closedAt: true },
+  })
+  const totalTrades = closed.length
+  const totalWins = closed.filter((t) => t.netPnlUsd > 0).length
+  const totalLosses = closed.filter((t) => t.netPnlUsd < 0).length
+  const totalPnLUsd = closed.reduce((a, t) => a + t.netPnlUsd, 0)
+  const newDeposit = cfg.startingDepositUsd + totalPnLUsd
+  const newPeak = Math.max(cfg.peakDepositUsd, newDeposit)
+  const newDD = newPeak > 0 ? Math.max(cfg.maxDrawdownPct, ((newPeak - newDeposit) / newPeak) * 100) : 0
+  await prisma.levelsPaperConfig.update({
+    where: { id: 1 },
+    data: { currentDepositUsd: newDeposit, peakDepositUsd: newPeak, maxDrawdownPct: newDD,
+            totalTrades, totalWins, totalLosses, totalPnLUsd },
+  })
+}
 
 const router = Router()
 
@@ -133,6 +169,170 @@ router.get('/trades/:id', async (req, res) => {
     const trade = await prisma.levelsPaperTrade.findUnique({ where: { id } })
     if (!trade) return res.status(404).json({ error: 'Not found' })
     res.json(trade)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * Edit paper trade — adjust entry/SL/currentStop/tpLadder. Recalculates position size
+ * if entry or SL change AND no fills yet, otherwise keeps existing position size.
+ */
+router.put('/trades/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const trade = await prisma.levelsPaperTrade.findUnique({ where: { id } })
+    if (!trade) return res.status(404).json({ error: 'Not found' })
+
+    const { entryPrice, stopLoss, currentStop, tpLadder } = req.body
+    const data: any = {}
+    const fills = (trade.closes as any[]) ?? []
+    const noFillsYet = fills.length === 0
+
+    if (typeof entryPrice === 'number' && entryPrice > 0) data.entryPrice = entryPrice
+    if (typeof stopLoss === 'number' && stopLoss > 0) {
+      data.stopLoss = stopLoss
+      if (noFillsYet) data.initialStop = stopLoss
+      data.currentStop = stopLoss
+    }
+    if (typeof currentStop === 'number' && currentStop > 0) data.currentStop = currentStop
+    if (Array.isArray(tpLadder) && tpLadder.every((p) => typeof p === 'number' && p > 0)) {
+      data.tpLadder = tpLadder
+    }
+    // If editing entry/SL with no fills yet → recalc position size
+    if (noFillsYet && (data.entryPrice || data.stopLoss)) {
+      const newEntry = data.entryPrice ?? trade.entryPrice
+      const newSL = data.initialStop ?? trade.initialStop
+      const slDist = Math.abs(newEntry - newSL)
+      if (slDist > 0) {
+        const positionUnits = trade.riskUsd / slDist
+        data.positionUnits = positionUnits
+        data.positionSizeUsd = newEntry * positionUnits
+      }
+    }
+
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ error: 'No valid fields' })
+    }
+    const updated = await prisma.levelsPaperTrade.update({ where: { id }, data })
+    res.json(updated)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/** Close paper trade at current market price. */
+router.post('/trades/:id/close-market', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const trade = await prisma.levelsPaperTrade.findUnique({ where: { id } })
+    if (!trade) return res.status(404).json({ error: 'Not found' })
+    if (['CLOSED', 'SL_HIT', 'EXPIRED'].includes(trade.status)) {
+      return res.status(400).json({ error: `Already ${trade.status}` })
+    }
+    const price = await getCurrentPrice(trade.symbol, trade.market)
+    if (price === null) return res.status(503).json({ error: 'Could not fetch price' })
+
+    const fills = ((trade.closes as any[]) ?? []) as any[]
+    const closedPctSoFar = fills.reduce((a, c) => a + (c.percent ?? 0), 0)
+    const remainingFrac = Math.max(0, 1 - closedPctSoFar / 100)
+    if (remainingFrac < 1e-6) return res.status(400).json({ error: 'Already closed' })
+
+    const isLong = trade.side === 'BUY'
+    const initialRisk = Math.abs(trade.entryPrice - trade.initialStop)
+    const pnlR = ((isLong ? price - trade.entryPrice : trade.entryPrice - price) / initialRisk) * remainingFrac
+    const fillUnits = trade.positionUnits * remainingFrac
+    const pnlUsd = (isLong ? price - trade.entryPrice : trade.entryPrice - price) * fillUnits
+    fills.push({
+      price, percent: remainingFrac * 100, pnlR, pnlUsd,
+      closedAt: new Date().toISOString(),
+      reason: 'MANUAL',
+    })
+    // Apply fees on this fill
+    const cfg = await prisma.levelsPaperConfig.findUnique({ where: { id: 1 } })
+    const feeRate = cfg ? cfg.feesRoundTripPct / 100 : 0
+    const notional = trade.positionUnits * price * remainingFrac
+    const newFeeUsd = notional * feeRate
+    const totalFeesUsd = trade.feesPaidUsd + newFeeUsd
+    const realizedPnlUsd = trade.realizedPnlUsd + pnlUsd
+    const netPnlUsd = realizedPnlUsd - totalFeesUsd
+    const realizedR = trade.realizedR + pnlR
+
+    await prisma.levelsPaperTrade.update({
+      where: { id },
+      data: {
+        status: 'CLOSED',
+        closes: fills as any,
+        realizedR, realizedPnlUsd,
+        feesPaidUsd: totalFeesUsd, netPnlUsd,
+        closedAt: new Date(),
+        lastPriceCheck: price,
+        lastPriceCheckAt: new Date(),
+      },
+    })
+    await recomputeDepositAndStats()
+    const fresh = await prisma.levelsPaperTrade.findUnique({ where: { id } })
+    res.json(fresh)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/** Close paper trade at a manually specified price + percent. */
+router.post('/trades/:id/close-manual', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const trade = await prisma.levelsPaperTrade.findUnique({ where: { id } })
+    if (!trade) return res.status(404).json({ error: 'Not found' })
+    if (['CLOSED', 'SL_HIT', 'EXPIRED'].includes(trade.status)) {
+      return res.status(400).json({ error: `Already ${trade.status}` })
+    }
+    const { price, percent } = req.body as { price?: number; percent?: number }
+    if (typeof price !== 'number' || price <= 0) return res.status(400).json({ error: 'price required' })
+
+    const fills = ((trade.closes as any[]) ?? []) as any[]
+    const closedPctSoFar = fills.reduce((a, c) => a + (c.percent ?? 0), 0)
+    const remainingFrac = Math.max(0, 1 - closedPctSoFar / 100)
+    if (remainingFrac < 1e-6) return res.status(400).json({ error: 'Already closed' })
+
+    const fillPct = typeof percent === 'number' ? Math.min(percent, remainingFrac * 100) : remainingFrac * 100
+    const fillFrac = fillPct / 100
+    const isLong = trade.side === 'BUY'
+    const initialRisk = Math.abs(trade.entryPrice - trade.initialStop)
+    const pnlR = ((isLong ? price - trade.entryPrice : trade.entryPrice - price) / initialRisk) * fillFrac
+    const fillUnits = trade.positionUnits * fillFrac
+    const pnlUsd = (isLong ? price - trade.entryPrice : trade.entryPrice - price) * fillUnits
+    fills.push({
+      price, percent: fillPct, pnlR, pnlUsd,
+      closedAt: new Date().toISOString(),
+      reason: 'MANUAL',
+    })
+    const cfg = await prisma.levelsPaperConfig.findUnique({ where: { id: 1 } })
+    const feeRate = cfg ? cfg.feesRoundTripPct / 100 : 0
+    const notional = trade.positionUnits * price * fillFrac
+    const newFeeUsd = notional * feeRate
+    const totalFeesUsd = trade.feesPaidUsd + newFeeUsd
+    const realizedPnlUsd = trade.realizedPnlUsd + pnlUsd
+    const netPnlUsd = realizedPnlUsd - totalFeesUsd
+    const realizedR = trade.realizedR + pnlR
+    const newRemaining = remainingFrac - fillFrac
+    const status = newRemaining < 1e-6 ? 'CLOSED' : trade.status
+
+    await prisma.levelsPaperTrade.update({
+      where: { id },
+      data: {
+        status,
+        closes: fills as any,
+        realizedR, realizedPnlUsd,
+        feesPaidUsd: totalFeesUsd, netPnlUsd,
+        ...(status === 'CLOSED' ? { closedAt: new Date() } : {}),
+        lastPriceCheck: price,
+        lastPriceCheckAt: new Date(),
+      },
+    })
+    await recomputeDepositAndStats()
+    const fresh = await prisma.levelsPaperTrade.findUnique({ where: { id } })
+    res.json(fresh)
   } catch (e: any) {
     res.status(500).json({ error: e.message })
   }
