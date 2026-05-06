@@ -138,6 +138,20 @@ export async function editPaperTrade(id: number, patch: {
   }))
 }
 
+export interface PaperTradeLive {
+  id: number
+  status: string
+  currentPrice: number | null
+  unrealizedPnl: number
+  unrealizedPnlPct: number
+}
+
+export async function getPaperLivePrices(signal?: AbortSignal): Promise<PaperTradeLive[]> {
+  const res = await fetch(`${BASE}/api/levels-paper/trades/live`, { headers: getHeaders(), signal })
+  if (!res.ok) return []
+  return res.json()
+}
+
 export async function deletePaperTrade(id: number): Promise<{ ok: true }> {
   return handle(await fetch(`${BASE}/api/levels-paper/trades/${id}`, {
     method: 'DELETE',

@@ -62,9 +62,6 @@ interface SymbolSetup {
 // Statistical tail (<25 trades): NEAR/APT/TIA SELL — выглядят жирно, но выборка мала.
 // XAGUSD / SHIBUSDT — недоступны (платный TwelveData / Bybit формат).
 export const DEFAULT_SETUPS: SymbolSetup[] = [
-  // Forex
-  { symbol: 'XAUUSD',       market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // +1.19R/trade in 90d
-  { symbol: 'EURUSD',       market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // neutral, low sample
   // Crypto majors
   { symbol: 'BTCUSDT',      market: 'CRYPTO', side: 'BOTH', fractalLR: 3, tpMinAtr: 1.5 }, // 90d +19R; sweep +35R @ 1.5
   // Crypto SHORTs (alt-bear regime 2025-2026) with per-setup tpMinAtr from sweep
@@ -79,8 +76,6 @@ export const DEFAULT_SETUPS: SymbolSetup[] = [
   // Crypto LONG / BOTH outliers
   { symbol: 'HYPEUSDT',     market: 'CRYPTO', side: 'BUY',  fractalLR: 3, tpMinAtr: 0.5 }, // +0.74 → +0.71 R/tr, WR 40→52%
   { symbol: 'ENAUSDT',      market: 'CRYPTO', side: 'BOTH', fractalLR: 3, tpMinAtr: 1.5 }, // +1.86 → +2.11 R/tr (sweep +0.4R)
-  // Stocks (Polygon free) — uncorrelated with crypto/forex, US trading hours only
-  { symbol: 'USO',          market: 'STOCK',  side: 'BUY',  fractalLR: 3 }, // +0.59 R/tr 365d (WTI oil ETF proxy)
 ]
 
 const DEDUP_WINDOW_MS = 60 * 60_000 // 1h: don't fire 2 signals on same level within 1h

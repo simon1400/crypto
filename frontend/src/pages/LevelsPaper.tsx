@@ -2,9 +2,35 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   getPaperConfig, updatePaperConfig, resetPaper,
   getPaperTrades, getPaperStats, runPaperCycleNow,
-  type PaperConfig, type PaperTrade, type PaperStats,
+  getPaperLivePrices,
+  type PaperConfig, type PaperTrade, type PaperStats, type PaperTradeLive,
 } from '../api/levelsPaper'
 import PaperTradeModal from '../components/PaperTradeModal'
+import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
+
+function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): PositionChartPosition {
+  const closes = t.closes || []
+  const effectivePrice = currentPrice != null
+    ? currentPrice
+    : (closes.length > 0 ? closes[closes.length - 1].price : null)
+  return {
+    coin: t.symbol,
+    type: t.side === 'BUY' ? 'LONG' : 'SHORT',
+    entry: t.entryPrice,
+    stopLoss: t.currentStop,
+    takeProfits: (t.tpLadder || []).slice(0, 3),
+    openedAt: t.openedAt,
+    closedAt: t.closedAt,
+    currentPrice: effectivePrice,
+    partialCloses: closes.map(c => ({
+      price: c.price,
+      percent: c.percent,
+      closedAt: c.closedAt,
+      isSL: c.reason === 'SL',
+    })),
+    title: `${t.symbol} ${t.side === 'BUY' ? 'LONG' : 'SHORT'} (DEMO #${t.id})`,
+  }
+}
 
 type StatusFilter = 'OPEN' | 'CLOSED' | 'ALL'
 
@@ -38,6 +64,8 @@ export default function LevelsPaper() {
   const [resetAmount, setResetAmount] = useState(500)
   const [cycleRunning, setCycleRunning] = useState(false)
   const [selectedTrade, setSelectedTrade] = useState<PaperTrade | null>(null)
+  const [chartTrade, setChartTrade] = useState<PaperTrade | null>(null)
+  const [livePrices, setLivePrices] = useState<Record<number, PaperTradeLive>>({})
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -66,6 +94,33 @@ export default function LevelsPaper() {
     const t = setInterval(loadAll, 30_000)
     return () => clearInterval(t)
   }, [loadAll])
+
+  // Poll live prices every 3s for open trades
+  useEffect(() => {
+    const controller = new AbortController()
+    async function fetchLive() {
+      try {
+        const data = await getPaperLivePrices(controller.signal)
+        const map: Record<number, PaperTradeLive> = {}
+        data.forEach(d => { map[d.id] = d })
+        setLivePrices(map)
+
+        // Detect status change → reload full trades
+        const openStatuses = ['OPEN', 'TP1_HIT', 'TP2_HIT']
+        const changed = trades.some(t => {
+          const live = map[t.id]
+          if (!live) return openStatuses.includes(t.status) // was open, now gone = closed
+          return live.status !== t.status
+        })
+        if (changed) loadAll()
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return
+      }
+    }
+    fetchLive()
+    const interval = setInterval(fetchLive, 3000)
+    return () => { controller.abort(); clearInterval(interval) }
+  }, [trades, loadAll])
 
   const handleToggle = async () => {
     if (!config) return
@@ -222,11 +277,13 @@ export default function LevelsPaper() {
           <table className="w-full text-sm">
             <thead className="bg-input text-text-secondary">
               <tr>
+                <th className="w-8 px-2 py-2"></th>
                 <th className="text-left px-3 py-2">Время</th>
                 <th className="text-left px-3 py-2">Символ</th>
                 <th className="text-left px-3 py-2">Сторона</th>
                 <th className="text-right px-3 py-2 font-mono">Вход</th>
                 <th className="text-right px-3 py-2 font-mono">SL</th>
+                <th className="text-right px-3 py-2 font-mono">Цена</th>
                 <th className="text-right px-3 py-2 font-mono">Размер</th>
                 <th className="text-right px-3 py-2 font-mono">Риск</th>
                 <th className="text-center px-3 py-2">Status</th>
@@ -234,9 +291,9 @@ export default function LevelsPaper() {
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={9} className="text-center py-8 text-text-secondary">Загрузка...</td></tr>}
+              {loading && <tr><td colSpan={11} className="text-center py-8 text-text-secondary">Загрузка...</td></tr>}
               {!loading && trades.length === 0 && (
-                <tr><td colSpan={9} className="text-center py-8 text-text-secondary">
+                <tr><td colSpan={11} className="text-center py-8 text-text-secondary">
                   {config.enabled
                     ? 'Сделок ещё нет. Демо-счёт работает — виртуальные сделки появятся когда сканер найдёт сигналы.'
                     : 'Демо-счёт выключен. Включи кнопкой ● Выключен сверху.'}
@@ -246,10 +303,23 @@ export default function LevelsPaper() {
                 const sideColor = t.side === 'BUY' ? 'text-long' : 'text-short'
                 const sideEmoji = t.side === 'BUY' ? '🟢' : '🔴'
                 const badge = statusBadge[t.status] ?? statusBadge.OPEN
-                const pnlPct = (t.netPnlUsd / t.depositAtEntryUsd) * 100
-                const pnlTone = t.netPnlUsd > 0 ? 'text-long' : t.netPnlUsd < 0 ? 'text-short' : 'text-text-secondary'
+                const live = livePrices[t.id]
+                const isOpen = ['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(t.status)
+                // For open trades, use live unrealized P&L; for closed — netPnlUsd from DB
+                const displayPnl = isOpen && live ? live.unrealizedPnl : t.netPnlUsd
+                const displayPnlPct = isOpen && live
+                  ? live.unrealizedPnlPct
+                  : (t.netPnlUsd / t.depositAtEntryUsd) * 100
+                const pnlTone = displayPnl > 0 ? 'text-long' : displayPnl < 0 ? 'text-short' : 'text-text-secondary'
                 return (
                   <tr key={t.id} onClick={() => setSelectedTrade(t)} className="border-t border-input hover:bg-input/40 cursor-pointer">
+                    <td className="px-2 py-2 text-center">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setChartTrade(t) }}
+                        className="text-text-secondary hover:text-accent transition"
+                        title="Показать график"
+                      >📊</button>
+                    </td>
                     <td className="px-3 py-2 text-text-secondary text-xs">
                       {new Date(t.openedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
                     </td>
@@ -257,14 +327,19 @@ export default function LevelsPaper() {
                     <td className={`px-3 py-2 font-medium ${sideColor}`}>{sideEmoji} {t.side === 'BUY' ? 'LONG' : 'SHORT'}</td>
                     <td className="px-3 py-2 text-right font-mono">{fmtPrice(t.entryPrice, t.symbol, t.market)}</td>
                     <td className="px-3 py-2 text-right font-mono text-short">{fmtPrice(t.currentStop, t.symbol, t.market)}</td>
+                    <td className="px-3 py-2 text-right font-mono">
+                      {isOpen && live?.currentPrice != null
+                        ? <span className="text-text-primary">{fmtPrice(live.currentPrice, t.symbol, t.market)}</span>
+                        : <span className="text-text-secondary">—</span>}
+                    </td>
                     <td className="px-3 py-2 text-right font-mono text-xs">${t.positionSizeUsd.toFixed(0)}</td>
                     <td className="px-3 py-2 text-right font-mono text-xs">${t.riskUsd.toFixed(2)}</td>
                     <td className="px-3 py-2 text-center">
                       <span className={`px-2 py-0.5 rounded text-xs font-medium ${badge.bg} ${badge.text}`}>{badge.label}</span>
                     </td>
                     <td className={`px-3 py-2 text-right font-mono ${pnlTone}`}>
-                      <div>{fmtUsd(t.netPnlUsd)}</div>
-                      {t.netPnlUsd !== 0 && <div className="text-xs">{pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%</div>}
+                      <div>{fmtUsd(displayPnl)}{isOpen && <span className="text-xs text-text-secondary"> live</span>}</div>
+                      {displayPnl !== 0 && <div className="text-xs">{displayPnlPct >= 0 ? '+' : ''}{displayPnlPct.toFixed(2)}%</div>}
                     </td>
                   </tr>
                 )
@@ -338,6 +413,13 @@ export default function LevelsPaper() {
             getPaperStats().then(setStats).catch(() => {})
             getPaperConfig().then(setConfig).catch(() => {})
           }}
+        />
+      )}
+
+      {chartTrade && (
+        <PositionChartModal
+          position={paperTradeToPosition(chartTrade, livePrices[chartTrade.id]?.currentPrice ?? null)}
+          onClose={() => setChartTrade(null)}
         />
       )}
     </div>

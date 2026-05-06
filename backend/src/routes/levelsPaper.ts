@@ -4,6 +4,7 @@ import { runPaperCycle, resetPaperAccount } from '../services/levelsPaperTrader'
 import { loadHistorical } from '../scalper/historicalLoader'
 import { loadForexHistorical } from '../scalper/forexLoader'
 import { loadPolygonHistorical } from '../scalper/polygonLoader'
+import { fetchPricesBatch } from '../services/market'
 
 async function getCurrentPrice(symbol: string, market: string): Promise<number | null> {
   try {
@@ -95,6 +96,63 @@ router.post('/reset', async (req, res) => {
 router.post('/cycle-now', async (_req, res) => {
   try {
     const result = await runPaperCycle()
+    res.json(result)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// GET /api/levels-paper/trades/live — live prices & unrealized P&L for open paper trades
+// Mirrors GET /api/trades/live for the paper module.
+router.get('/trades/live', async (_req, res) => {
+  try {
+    const trades = await prisma.levelsPaperTrade.findMany({
+      where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+    })
+    if (trades.length === 0) return res.json([])
+
+    // Crypto-only batch (FOREX/STOCK paper trades — fall back to slow individual lookup)
+    const cryptoSymbols = trades.filter(t => t.market === 'CRYPTO').map(t => t.symbol)
+    const cryptoPrices = cryptoSymbols.length > 0 ? await fetchPricesBatch(cryptoSymbols) : {}
+
+    const result = await Promise.all(trades.map(async t => {
+      let price: number | null = null
+      if (t.market === 'CRYPTO') price = cryptoPrices[t.symbol] ?? null
+      else price = await getCurrentPrice(t.symbol, t.market)
+
+      if (price == null) {
+        return { id: t.id, status: t.status, currentPrice: null, unrealizedPnl: 0, unrealizedPnlPct: 0 }
+      }
+
+      // Compute unrealized P&L on remaining position
+      const fills = (t.closes as any[]) ?? []
+      const closedPctSoFar = fills.reduce((a, c) => a + (c.percent ?? 0), 0)
+      const remainingFrac = Math.max(0, 1 - closedPctSoFar / 100)
+      if (remainingFrac < 1e-6) {
+        return { id: t.id, status: t.status, currentPrice: price, unrealizedPnl: 0, unrealizedPnlPct: 0 }
+      }
+
+      const isLong = t.side === 'BUY'
+      const fillUnits = t.positionUnits * remainingFrac
+      const unrealizedGross = (isLong ? price - t.entryPrice : t.entryPrice - price) * fillUnits
+      // Net = realized + unrealized (gross) - already-paid fees - fees-on-this-portion-if-closed-now
+      const feesPaidUsd = t.feesPaidUsd ?? 0
+      const feeRatePct = t.feesRoundTripPct ?? 0.04 // fallback to default if config missing
+      const exitFeesIfClosedNow = t.positionUnits * price * remainingFrac * (feeRatePct / 100)
+      const totalUnrealized = (t.realizedPnlUsd ?? 0) + unrealizedGross - feesPaidUsd - exitFeesIfClosedNow
+      const unrealizedPnlPct = t.depositAtEntryUsd > 0
+        ? (totalUnrealized / t.depositAtEntryUsd) * 100
+        : 0
+
+      return {
+        id: t.id,
+        status: t.status,
+        currentPrice: price,
+        unrealizedPnl: Math.round(totalUnrealized * 100) / 100,
+        unrealizedPnlPct: Math.round(unrealizedPnlPct * 100) / 100,
+      }
+    }))
+
     res.json(result)
   } catch (e: any) {
     res.status(500).json({ error: e.message })
