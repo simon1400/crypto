@@ -190,8 +190,12 @@ export default function LevelsPaper() {
   const handleScanNow = async () => {
     setScanRunning(true)
     try {
+      // 1. Live scanner: detect new signals from latest 5m candles
       await scanLevelsNow()
+      // 2. Live tracker: update existing signals (TP/SL, PENDING fill/confirm)
       await trackLevelsNow()
+      // 3. Paper cycle: open virtual trades for any new signals + update P&L on existing
+      await runPaperCycleNow()
       await loadSignals()
       await loadAll()
     } catch (e: any) {

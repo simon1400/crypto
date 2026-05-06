@@ -21,7 +21,7 @@ import { loadPolygonHistorical } from '../scalper/polygonLoader'
 import {
   precomputeLevelsV2, generateSignalV2, newSignalState, aggregateDailyToWeekly,
   DEFAULT_LEVELS_V2, LevelsV2Config, SignalV2,
-  findImpulse, isInFiboZone, buildLadder, nearestOpposite,
+  findImpulse, isInFiboZone, buildLadder, nearestOpposite, passesRRFilter,
 } from '../scalper/levelsEngine2'
 import { sendNotification } from './notifier'
 
@@ -125,6 +125,10 @@ function buildCfg(
     fiboImpulseLookback: 100,
     fiboImpulseMinAtr: isLowVol ? 3.5 : 8,
     tpMinAtr,
+    // R:R guards: reject signals where TP1 is too close vs SL (<1.5R) or SL is too
+    // tight vs TP1 (>8R, lottery setup like SEI 2026-05-06 with SL 0.6% and TP1 9%).
+    minRR: 1.5,
+    maxRR: 8,
   }
 }
 
@@ -304,6 +308,8 @@ async function scanLimitPending(setup: SymbolSetup, m5: OHLCV[], m15: OHLCV[], h
       if (tpLadder.length === 0) continue
       // Sanity: SL on correct side
       if ((side === 'BUY' && sl >= lvl.price) || (side === 'SELL' && sl <= lvl.price)) continue
+      // R:R filter — reject bad geometry (TP1 too close vs SL, or SL too tight vs TP1)
+      if (!passesRRFilter(side, lvl.price, sl, tpLadder, cfg.minRR, cfg.maxRR)) continue
 
       const now = Date.now()
       const pendingExpiresAt = new Date(now + PENDING_VALID_HOURS * 60 * 60_000)

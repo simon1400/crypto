@@ -74,6 +74,21 @@ export interface LevelsV2Config {
    */
   tpMinAtr: number
 
+  /**
+   * Reject signals whose TP1/risk ratio is below this. Protects against bad setups
+   * where SL is much wider than TP1 (e.g. R:R < 1.5 means 1.5x reward needed to break
+   * even at WR ~40%). 0 = disabled.
+   */
+  minRR: number
+
+  /**
+   * Reject signals whose TP1/risk ratio is above this. Protects against "lottery"
+   * setups where SL is too tight relative to TP1 (e.g. R:R > 8 means SL is 8x closer
+   * than TP1 — usually means SL is in the noise zone and gets hit by random wicks).
+   * 0 = disabled.
+   */
+  maxRR: number
+
   // Cooldown to avoid duplicate signals on same level
   cooldownBars: number
 
@@ -138,6 +153,8 @@ export const DEFAULT_LEVELS_V2: LevelsV2Config = {
   slBufferAtr: 0.5,
   fallbackSlAtr: 1.5,
   tpMinAtr: 0,  // 0 = disabled (use nearest level as TP1, even if very close)
+  minRR: 1.5,   // reject signals with TP1/risk < 1.5 — bad geometry
+  maxRR: 8,     // reject lottery setups with TP1/risk > 8 — SL likely too tight
   cooldownBars: 4,
   allowReaction: true,
   allowBreakoutRetest: true,
@@ -481,6 +498,30 @@ export function buildLadder(
   return filtered.filter((p) => p < entry && farEnough(p)).sort((a, b) => b - a)
 }
 
+/**
+ * Check that TP1 / risk ratio falls within [minRR, maxRR]. Returns false if signal
+ * should be rejected. minRR=0 / maxRR=0 disable the respective bound.
+ */
+export function passesRRFilter(
+  side: 'BUY' | 'SELL',
+  entry: number,
+  sl: number,
+  tpLadder: number[],
+  minRR: number,
+  maxRR: number,
+): boolean {
+  if (tpLadder.length === 0) return false
+  const risk = Math.abs(entry - sl)
+  if (risk <= 0) return false
+  const tp1 = tpLadder[0]
+  const reward = side === 'BUY' ? tp1 - entry : entry - tp1
+  if (reward <= 0) return false
+  const rr = reward / risk
+  if (minRR > 0 && rr < minRR) return false
+  if (maxRR > 0 && rr > maxRR) return false
+  return true
+}
+
 export function nearestOpposite(side: 'BUY' | 'SELL', triggerLevel: number, candidates: number[]): number | null {
   if (side === 'BUY') {
     const below = candidates.filter((p) => p < triggerLevel)
@@ -573,6 +614,7 @@ export function generateSignalV2(
 
       if ((p.pierceSide === 'BUY' && sl < cur.close) || (p.pierceSide === 'SELL' && sl > cur.close)) {
         if (!fiboPassesFilter(p.pierceSide, p.levelPrice)) continue
+        if (!passesRRFilter(p.pierceSide, cur.close, sl, ladder, cfg.minRR, cfg.maxRR)) continue
         const isFibo = fiboCheck(p.pierceSide, p.levelPrice)
         state.lastFiredAt.set(key, i)
         toRemove.push(key)
@@ -657,17 +699,19 @@ export function generateSignalV2(
                   const isFibo = fiboCheck('SELL', upper.price)
                   // Single-target TP: opposite border (with slight buffer)
                   const tp = lower.price + rangeWidth * (1 - cfg.rangeTpFrac)
-                  state.lastFiredAt.set(key, i)
-                  return {
-                    side: 'SELL', entryTime: t, entryPrice: cur.close,
-                    reason: `RANGE_PLAY SHORT @ ${upper.source} ${upper.price.toFixed(2)} → ${lower.source} ${lower.price.toFixed(2)} (range ${widthAtr.toFixed(1)}×ATR, inside ${inside}/${cfg.rangeInsideLookback}${isFibo ? ', FIBO' : ''})`,
-                    slPrice: sl,
-                    tpLadder: [tp],
-                    level: upper.price,
-                    source: upper.source,
-                    event: 'RANGE_PLAY',
-                    isFiboConfluence: isFibo,
-                    fiboImpulse: impulse ?? undefined,
+                  if (passesRRFilter('SELL', cur.close, sl, [tp], cfg.minRR, cfg.maxRR)) {
+                    state.lastFiredAt.set(key, i)
+                    return {
+                      side: 'SELL', entryTime: t, entryPrice: cur.close,
+                      reason: `RANGE_PLAY SHORT @ ${upper.source} ${upper.price.toFixed(2)} → ${lower.source} ${lower.price.toFixed(2)} (range ${widthAtr.toFixed(1)}×ATR, inside ${inside}/${cfg.rangeInsideLookback}${isFibo ? ', FIBO' : ''})`,
+                      slPrice: sl,
+                      tpLadder: [tp],
+                      level: upper.price,
+                      source: upper.source,
+                      event: 'RANGE_PLAY',
+                      isFiboConfluence: isFibo,
+                      fiboImpulse: impulse ?? undefined,
+                    }
                   }
                 }
               }
@@ -684,17 +728,19 @@ export function generateSignalV2(
                 if (sl < cur.close) {
                   const isFibo = fiboCheck('BUY', lower.price)
                   const tp = upper.price - rangeWidth * (1 - cfg.rangeTpFrac)
-                  state.lastFiredAt.set(key, i)
-                  return {
-                    side: 'BUY', entryTime: t, entryPrice: cur.close,
-                    reason: `RANGE_PLAY LONG @ ${lower.source} ${lower.price.toFixed(2)} → ${upper.source} ${upper.price.toFixed(2)} (range ${widthAtr.toFixed(1)}×ATR, inside ${inside}/${cfg.rangeInsideLookback}${isFibo ? ', FIBO' : ''})`,
-                    slPrice: sl,
-                    tpLadder: [tp],
-                    level: lower.price,
-                    source: lower.source,
-                    event: 'RANGE_PLAY',
-                    isFiboConfluence: isFibo,
-                    fiboImpulse: impulse ?? undefined,
+                  if (passesRRFilter('BUY', cur.close, sl, [tp], cfg.minRR, cfg.maxRR)) {
+                    state.lastFiredAt.set(key, i)
+                    return {
+                      side: 'BUY', entryTime: t, entryPrice: cur.close,
+                      reason: `RANGE_PLAY LONG @ ${lower.source} ${lower.price.toFixed(2)} → ${upper.source} ${upper.price.toFixed(2)} (range ${widthAtr.toFixed(1)}×ATR, inside ${inside}/${cfg.rangeInsideLookback}${isFibo ? ', FIBO' : ''})`,
+                      slPrice: sl,
+                      tpLadder: [tp],
+                      level: lower.price,
+                      source: lower.source,
+                      event: 'RANGE_PLAY',
+                      isFiboConfluence: isFibo,
+                      fiboImpulse: impulse ?? undefined,
+                    }
                   }
                 }
               }
@@ -725,6 +771,7 @@ export function generateSignalV2(
         const sl = slFor('SELL', lvl.price)
         const tpLadder = buildLadder('SELL', cur.close, lvl.price, allPrices, atr * cfg.tpMinAtr)
         if (sl > cur.close && tpLadder.length > 0) {
+          if (!passesRRFilter('SELL', cur.close, sl, tpLadder, cfg.minRR, cfg.maxRR)) continue
           const isFibo = fiboCheck('SELL', lvl.price)
           state.lastFiredAt.set(key, i)
           return {
@@ -742,6 +789,7 @@ export function generateSignalV2(
         const sl = slFor('BUY', lvl.price)
         const tpLadder = buildLadder('BUY', cur.close, lvl.price, allPrices, atr * cfg.tpMinAtr)
         if (sl < cur.close && tpLadder.length > 0) {
+          if (!passesRRFilter('BUY', cur.close, sl, tpLadder, cfg.minRR, cfg.maxRR)) continue
           const isFibo = fiboCheck('BUY', lvl.price)
           state.lastFiredAt.set(key, i)
           return {
