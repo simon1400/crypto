@@ -33,6 +33,12 @@ interface SymbolSetup {
   market: 'FOREX' | 'CRYPTO' | 'STOCK'
   side: AllowedSide
   fractalLR: 3 | 5
+  /**
+   * Override for tpMinAtr — minimum distance of TP1 from entry (in ATR units).
+   * Skip levels too close to entry. 0 or undefined = use closest level (baseline).
+   * Per-setup tuned via 365d sweep backtest (2026-05-06).
+   */
+  tpMinAtr?: number
 }
 
 // Default setups — based on 365d backtest across 25+ symbols (2026-05-06).
@@ -60,26 +66,30 @@ export const DEFAULT_SETUPS: SymbolSetup[] = [
   { symbol: 'XAUUSD',       market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // +1.19R/trade in 90d
   { symbol: 'EURUSD',       market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // neutral, low sample
   // Crypto majors
-  { symbol: 'BTCUSDT',      market: 'CRYPTO', side: 'BOTH', fractalLR: 3 }, // +19.77R/trade in 90d (low n)
-  // Crypto SHORTs (alt-bear regime 2025-2026)
-  { symbol: 'XRPUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +1.91 R/tr 365d ★
-  { symbol: 'SEIUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.85 R/tr 365d
-  { symbol: 'WIFUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.73 R/tr 365d
-  { symbol: 'SOLUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.69 R/tr 365d
-  { symbol: 'ARBUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.59 R/tr 365d
-  { symbol: 'AVAXUSDT',     market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.46 R/tr 365d
-  { symbol: '1000PEPEUSDT', market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.43 R/tr 365d
-  { symbol: 'ETHUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.30 R/tr 365d
+  { symbol: 'BTCUSDT',      market: 'CRYPTO', side: 'BOTH', fractalLR: 3, tpMinAtr: 1.5 }, // 90d +19R; sweep +35R @ 1.5
+  // Crypto SHORTs (alt-bear regime 2025-2026) with per-setup tpMinAtr from sweep
+  { symbol: 'XRPUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3, tpMinAtr: 1.0 }, // +1.91 → +2.55 R/tr (sweep +9R)
+  { symbol: 'SEIUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 },                // baseline best (+0.85)
+  { symbol: 'WIFUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3, tpMinAtr: 2.0 }, // +0.73 → +1.17 R/tr (sweep +45R)
+  { symbol: 'SOLUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3, tpMinAtr: 1.0 }, // +0.69 → +1.17 R/tr (sweep +56R)
+  { symbol: 'ARBUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 },                // baseline best (+0.59)
+  { symbol: 'AVAXUSDT',     market: 'CRYPTO', side: 'SELL', fractalLR: 3, tpMinAtr: 1.0 }, // +0.46 → +0.73 R/tr (sweep +14R)
+  { symbol: '1000PEPEUSDT', market: 'CRYPTO', side: 'SELL', fractalLR: 3 },                // baseline (no diff)
+  { symbol: 'ETHUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 },                // baseline only — sweep ломает edge
   // Crypto LONG / BOTH outliers
-  { symbol: 'HYPEUSDT',     market: 'CRYPTO', side: 'BUY',  fractalLR: 3 }, // +0.76 R/tr 365d
-  { symbol: 'ENAUSDT',      market: 'CRYPTO', side: 'BOTH', fractalLR: 3 }, // +1.82 R/tr 365d
+  { symbol: 'HYPEUSDT',     market: 'CRYPTO', side: 'BUY',  fractalLR: 3, tpMinAtr: 0.5 }, // +0.74 → +0.71 R/tr, WR 40→52%
+  { symbol: 'ENAUSDT',      market: 'CRYPTO', side: 'BOTH', fractalLR: 3, tpMinAtr: 1.5 }, // +1.86 → +2.11 R/tr (sweep +0.4R)
   // Stocks (Polygon free) — uncorrelated with crypto/forex, US trading hours only
   { symbol: 'USO',          market: 'STOCK',  side: 'BUY',  fractalLR: 3 }, // +0.59 R/tr 365d (WTI oil ETF proxy)
 ]
 
 const DEDUP_WINDOW_MS = 60 * 60_000 // 1h: don't fire 2 signals on same level within 1h
 
-function buildCfg(fractalLR: 3 | 5, market: 'FOREX' | 'CRYPTO' | 'STOCK' = 'CRYPTO'): LevelsV2Config {
+function buildCfg(
+  fractalLR: 3 | 5,
+  market: 'FOREX' | 'CRYPTO' | 'STOCK' = 'CRYPTO',
+  tpMinAtr: number = 0,
+): LevelsV2Config {
   // Crypto = high volatility (BTC easily makes 8×ATR impulses).
   // Forex/Stocks = lower volatility — 8×ATR rarely happens during quiet sessions.
   // Loosen the fibo gate so we don't starve them of signals.
@@ -97,6 +107,7 @@ function buildCfg(fractalLR: 3 | 5, market: 'FOREX' | 'CRYPTO' | 'STOCK' = 'CRYP
     fiboZoneTo:   isLowVol ? 0.786 : 0.618,
     fiboImpulseLookback: 100,
     fiboImpulseMinAtr: isLowVol ? 3.5 : 8,
+    tpMinAtr,
   }
 }
 
@@ -213,7 +224,7 @@ async function scanSymbol(setup: SymbolSetup, expiryHours: number): Promise<numb
       return 0
     }
     const w1 = aggregateDailyToWeekly(d1)
-    const cfg = buildCfg(setup.fractalLR, setup.market)
+    const cfg = buildCfg(setup.fractalLR, setup.market, setup.tpMinAtr ?? 0)
     const pre = precomputeLevelsV2(m5, d1, w1, cfg, m15, h1)
 
     // Replay last few bars to populate signal state (pending pierces)

@@ -67,6 +67,13 @@ export interface LevelsV2Config {
   slBufferAtr: number
   fallbackSlAtr: number
 
+  /**
+   * Min distance (in ATR) of TP1 from entry. If the nearest level in trade direction
+   * is closer than this, skip it and use the next level. 0 = disabled (use the
+   * nearest level no matter how close). Improves R:R on TP1.
+   */
+  tpMinAtr: number
+
   // Cooldown to avoid duplicate signals on same level
   cooldownBars: number
 
@@ -130,6 +137,7 @@ export const DEFAULT_LEVELS_V2: LevelsV2Config = {
   retestHoldAtr: 0.3,
   slBufferAtr: 0.5,
   fallbackSlAtr: 1.5,
+  tpMinAtr: 0,  // 0 = disabled (use nearest level as TP1, even if very close)
   cooldownBars: 4,
   allowReaction: true,
   allowBreakoutRetest: true,
@@ -463,11 +471,14 @@ function buildLadder(
   entry: number,
   triggerLevel: number,
   candidates: number[],
+  tpMinDistance: number = 0,
 ): number[] {
   const eps = entry * 0.0001
   const filtered = candidates.filter((p) => Math.abs(p - triggerLevel) > eps)
-  if (side === 'BUY') return filtered.filter((p) => p > entry).sort((a, b) => a - b)
-  return filtered.filter((p) => p < entry).sort((a, b) => b - a)
+  // Skip levels too close to entry (TP1 must be at least tpMinDistance away)
+  const farEnough = (p: number) => tpMinDistance <= 0 || Math.abs(p - entry) >= tpMinDistance
+  if (side === 'BUY') return filtered.filter((p) => p > entry && farEnough(p)).sort((a, b) => a - b)
+  return filtered.filter((p) => p < entry && farEnough(p)).sort((a, b) => b - a)
 }
 
 function nearestOpposite(side: 'BUY' | 'SELL', triggerLevel: number, candidates: number[]): number | null {
@@ -554,7 +565,7 @@ export function generateSignalV2(
       if (last !== undefined && i - last < cfg.cooldownBars) { toRemove.push(key); continue }
 
       const sl = slFor(p.pierceSide, p.levelPrice)
-      const tpLadder = buildLadder(p.pierceSide, cur.close, p.levelPrice, allPrices)
+      const tpLadder = buildLadder(p.pierceSide, cur.close, p.levelPrice, allPrices, atr * cfg.tpMinAtr)
       const validLadder = tpLadder.length > 0
       // If no ladder (extreme — broke last known level), use ATR target
       const ladder = validLadder ? tpLadder
@@ -712,7 +723,7 @@ export function generateSignalV2(
       if (cur.high >= lvl.price - tol && cur.close <= lvl.price - minReturn && prev.close < lvl.price + tol) {
         if (!fiboPassesFilter('SELL', lvl.price)) continue
         const sl = slFor('SELL', lvl.price)
-        const tpLadder = buildLadder('SELL', cur.close, lvl.price, allPrices)
+        const tpLadder = buildLadder('SELL', cur.close, lvl.price, allPrices, atr * cfg.tpMinAtr)
         if (sl > cur.close && tpLadder.length > 0) {
           const isFibo = fiboCheck('SELL', lvl.price)
           state.lastFiredAt.set(key, i)
@@ -729,7 +740,7 @@ export function generateSignalV2(
       if (cur.low <= lvl.price + tol && cur.close >= lvl.price + minReturn && prev.close > lvl.price - tol) {
         if (!fiboPassesFilter('BUY', lvl.price)) continue
         const sl = slFor('BUY', lvl.price)
-        const tpLadder = buildLadder('BUY', cur.close, lvl.price, allPrices)
+        const tpLadder = buildLadder('BUY', cur.close, lvl.price, allPrices, atr * cfg.tpMinAtr)
         if (sl < cur.close && tpLadder.length > 0) {
           const isFibo = fiboCheck('BUY', lvl.price)
           state.lastFiredAt.set(key, i)

@@ -22,6 +22,7 @@
     "src/scalper/runBacktest365_forex.ts",
     "src/scalper/runBacktest365_retry.ts",
     "src/scalper/runBacktest365_polygon.ts",
-    "src/scalper/polygonProbe.ts"
+    "src/scalper/polygonProbe.ts",
+    "src/scalper/runBacktest_tpMinAtr_sweep.ts"
   ]
 }
