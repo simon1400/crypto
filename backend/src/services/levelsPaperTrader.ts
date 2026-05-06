@@ -17,6 +17,7 @@ import { prisma } from '../db/prisma'
 import { OHLCV } from './market'
 import { loadHistorical } from '../scalper/historicalLoader'
 import { loadForexHistorical } from '../scalper/forexLoader'
+import { loadPolygonHistorical } from '../scalper/polygonLoader'
 
 const SPLITS = [0.5, 0.3, 0.2] // must match production tracker
 
@@ -67,8 +68,9 @@ async function getOrCreateConfig(): Promise<PaperConfig | null> {
   }
 }
 
-async function loadRecent5m(symbol: string, market: 'FOREX' | 'CRYPTO'): Promise<OHLCV[]> {
+async function loadRecent5m(symbol: string, market: 'FOREX' | 'CRYPTO' | 'STOCK'): Promise<OHLCV[]> {
   if (market === 'FOREX') return loadForexHistorical(symbol, '5m', 1)
+  if (market === 'STOCK') return loadPolygonHistorical(symbol, '5m', 1)
   return loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
 }
 
@@ -371,7 +373,7 @@ async function trackOpenPaperTrades(cfg: PaperConfig): Promise<{ updated: number
   let updated = 0
   for (const [symbol, trades] of bySymbol) {
     try {
-      const market = trades[0].market as 'FOREX' | 'CRYPTO'
+      const market = trades[0].market as 'FOREX' | 'CRYPTO' | 'STOCK'
       const candles = await loadRecent5m(symbol, market)
       for (const tr of trades) {
         const r = await trackOnePaper(tr, candles, cfg)

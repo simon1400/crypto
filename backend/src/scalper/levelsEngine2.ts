@@ -301,7 +301,10 @@ export function precomputeLevelsV2(
         // Level exhausted at this bar (both sides traded)
         // BUT we want to keep it around for a bit even after exhaustion since pullbacks
         // to recently-pierced levels are tradeable. So we mark with exhaustedIdx = i + 24h
-        lvl.exhaustedIdx = i + Math.round(D1_MS / Math.max(1, ltf[1].time - ltf[0].time))
+        // Clamped to n-1 so downstream loops never run past the array end (matters for
+        // assets with discontinuous trading hours like ETFs).
+        const exhaustOffset = Math.round(D1_MS / Math.max(1, ltf[1].time - ltf[0].time))
+        lvl.exhaustedIdx = Math.min(n - 1, i + exhaustOffset)
         break
       }
     }

@@ -17,6 +17,7 @@ import { prisma } from '../db/prisma'
 import { OHLCV } from './market'
 import { loadHistorical } from '../scalper/historicalLoader'
 import { loadForexHistorical } from '../scalper/forexLoader'
+import { loadPolygonHistorical } from '../scalper/polygonLoader'
 import {
   precomputeLevelsV2, generateSignalV2, newSignalState, aggregateDailyToWeekly,
   DEFAULT_LEVELS_V2, LevelsV2Config, SignalV2,
@@ -29,7 +30,7 @@ type AllowedSide = 'BUY' | 'SELL' | 'BOTH'
 
 interface SymbolSetup {
   symbol: string
-  market: 'FOREX' | 'CRYPTO'
+  market: 'FOREX' | 'CRYPTO' | 'STOCK'
   side: AllowedSide
   fractalLR: 3 | 5
 }
@@ -72,15 +73,17 @@ export const DEFAULT_SETUPS: SymbolSetup[] = [
   // Crypto LONG / BOTH outliers
   { symbol: 'HYPEUSDT',     market: 'CRYPTO', side: 'BUY',  fractalLR: 3 }, // +0.76 R/tr 365d
   { symbol: 'ENAUSDT',      market: 'CRYPTO', side: 'BOTH', fractalLR: 3 }, // +1.82 R/tr 365d
+  // Stocks (Polygon free) — uncorrelated with crypto/forex, US trading hours only
+  { symbol: 'USO',          market: 'STOCK',  side: 'BUY',  fractalLR: 3 }, // +0.59 R/tr 365d (WTI oil ETF proxy)
 ]
 
 const DEDUP_WINDOW_MS = 60 * 60_000 // 1h: don't fire 2 signals on same level within 1h
 
-function buildCfg(fractalLR: 3 | 5, market: 'FOREX' | 'CRYPTO' = 'CRYPTO'): LevelsV2Config {
+function buildCfg(fractalLR: 3 | 5, market: 'FOREX' | 'CRYPTO' | 'STOCK' = 'CRYPTO'): LevelsV2Config {
   // Crypto = high volatility (BTC easily makes 8×ATR impulses).
-  // Forex = lower volatility, especially in quiet sessions — 8×ATR rarely happens.
-  // Loosen the fibo gate for forex so we don't starve XAU/EUR/etc. of signals.
-  const isForex = market === 'FOREX'
+  // Forex/Stocks = lower volatility — 8×ATR rarely happens during quiet sessions.
+  // Loosen the fibo gate so we don't starve them of signals.
+  const isLowVol = market === 'FOREX' || market === 'STOCK'
   return {
     ...DEFAULT_LEVELS_V2,
     fractalLeft: fractalLR, fractalRight: fractalLR,
@@ -90,10 +93,10 @@ function buildCfg(fractalLR: 3 | 5, market: 'FOREX' | 'CRYPTO' = 'CRYPTO'): Leve
     cooldownBars: 12,
     allowRangePlay: false,
     fiboMode: 'filter',
-    fiboZoneFrom: isForex ? 0.382 : 0.5,
-    fiboZoneTo:   isForex ? 0.786 : 0.618,
+    fiboZoneFrom: isLowVol ? 0.382 : 0.5,
+    fiboZoneTo:   isLowVol ? 0.786 : 0.618,
     fiboImpulseLookback: 100,
-    fiboImpulseMinAtr: isForex ? 3.5 : 8,
+    fiboImpulseMinAtr: isLowVol ? 3.5 : 8,
   }
 }
 
@@ -104,6 +107,13 @@ async function loadCandles(setup: SymbolSetup): Promise<{ m5: OHLCV[]; m15: OHLC
     const m15 = await loadForexHistorical(setup.symbol, '15m', 1)
     const h1  = await loadForexHistorical(setup.symbol, '1h', 1)
     const d1  = await loadForexHistorical(setup.symbol, '1d', 3)   // 90 days for PDH/PDL/PWH/PWL
+    return { m5, m15, h1, d1 }
+  } else if (setup.market === 'STOCK') {
+    // Polygon free — ETFs (US trading hours only)
+    const m5  = await loadPolygonHistorical(setup.symbol, '5m', 1)
+    const m15 = await loadPolygonHistorical(setup.symbol, '15m', 1)
+    const h1  = await loadPolygonHistorical(setup.symbol, '1h', 1)
+    const d1  = await loadPolygonHistorical(setup.symbol, '1d', 3)
     return { m5, m15, h1, d1 }
   } else {
     const m5  = await loadHistorical(setup.symbol, '5m',  1, 'bybit', 'linear')

@@ -3,12 +3,15 @@ import { prisma } from '../db/prisma'
 import { runPaperCycle, resetPaperAccount } from '../services/levelsPaperTrader'
 import { loadHistorical } from '../scalper/historicalLoader'
 import { loadForexHistorical } from '../scalper/forexLoader'
+import { loadPolygonHistorical } from '../scalper/polygonLoader'
 
 async function getCurrentPrice(symbol: string, market: string): Promise<number | null> {
   try {
     const candles = market === 'FOREX'
       ? await loadForexHistorical(symbol, '5m', 1)
-      : await loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
+      : market === 'STOCK'
+        ? await loadPolygonHistorical(symbol, '5m', 1)
+        : await loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
     if (candles.length === 0) return null
     return candles[candles.length - 1].close
   } catch (e) {
