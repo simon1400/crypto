@@ -7,6 +7,7 @@ import {
 } from '../api/levelsPaper'
 import PaperTradeModal from '../components/PaperTradeModal'
 import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
+import { formatDate, pnlColor, fmt2, fmt2Signed } from '../lib/formatters'
 
 function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): PositionChartPosition {
   const closes = t.closes || []
@@ -34,14 +35,43 @@ function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): Posit
 
 type StatusFilter = 'OPEN' | 'CLOSED' | 'ALL'
 
-const statusBadge: Record<string, { bg: string; text: string; label: string }> = {
-  OPEN:    { bg: 'bg-yellow-500/15', text: 'text-yellow-400', label: 'OPEN' },
-  TP1_HIT: { bg: 'bg-green-500/15',  text: 'text-green-400',  label: 'TP1' },
-  TP2_HIT: { bg: 'bg-green-500/20',  text: 'text-green-400',  label: 'TP2' },
-  TP3_HIT: { bg: 'bg-green-500/25',  text: 'text-green-400',  label: 'TP3' },
-  CLOSED:  { bg: 'bg-green-500/30',  text: 'text-green-300',  label: 'CLOSED' },
-  SL_HIT:  { bg: 'bg-red-500/15',    text: 'text-red-400',    label: 'SL' },
-  EXPIRED: { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'EXP' },
+// Paper-trade specific status badge — mirrors TradeStatusBadge palette (accent/long/short/neutral)
+const PAPER_STATUS_MAP: Record<string, { bg: string; text: string; label: string }> = {
+  OPEN:    { bg: 'bg-accent/10',     text: 'text-accent',     label: 'Открыта' },
+  TP1_HIT: { bg: 'bg-blue-500/10',   text: 'text-blue-400',   label: 'TP1' },
+  TP2_HIT: { bg: 'bg-blue-500/10',   text: 'text-blue-400',   label: 'TP2' },
+  TP3_HIT: { bg: 'bg-long/10',       text: 'text-long',       label: 'TP3' },
+  CLOSED:  { bg: 'bg-long/10',       text: 'text-long',       label: 'Закрыта' },
+  SL_HIT:  { bg: 'bg-short/10',      text: 'text-short',      label: 'Стоп' },
+  EXPIRED: { bg: 'bg-neutral/10',    text: 'text-neutral',    label: 'Истёк' },
+}
+
+function PaperStatusBadge({ status, pnl }: { status: string; pnl?: number }) {
+  if (status === 'SL_HIT' && pnl !== undefined && pnl > 0) {
+    return <span className="px-2 py-0.5 rounded text-xs font-medium bg-long/10 text-long">Закрыта (SL)</span>
+  }
+  const s = PAPER_STATUS_MAP[status] || PAPER_STATUS_MAP.EXPIRED
+  return <span className={`px-2 py-0.5 rounded text-xs font-medium ${s.bg} ${s.text}`}>{s.label}</span>
+}
+
+function formatElapsed(openedAt: string): string {
+  const ms = Date.now() - new Date(openedAt).getTime()
+  if (ms < 0) return '0м'
+  const mins = Math.floor(ms / 60000)
+  const hours = Math.floor(mins / 60)
+  const days = Math.floor(hours / 24)
+  if (days > 0) return `${days}д ${hours % 24}ч`
+  if (hours > 0) return `${hours}ч ${mins % 60}м`
+  return `${mins}м`
+}
+
+function LiveTimer({ openedAt }: { openedAt: string }) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 60000)
+    return () => clearInterval(id)
+  }, [])
+  return <>{formatElapsed(openedAt)}</>
 }
 
 function fmtUsd(n: number): string {
@@ -271,76 +301,135 @@ export default function LevelsPaper() {
         <FilterButton active={statusFilter === 'ALL'} onClick={() => setStatusFilter('ALL')}>Все</FilterButton>
       </div>
 
-      {/* Trades table */}
+      {/* Trades table — same style as /сделки */}
       <div className="bg-card border border-input rounded overflow-hidden mb-6">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-xs min-w-[900px]">
             <thead className="bg-input text-text-secondary">
               <tr>
-                <th className="w-8 px-2 py-2"></th>
-                <th className="text-left px-3 py-2">Время</th>
-                <th className="text-left px-3 py-2">Символ</th>
-                <th className="text-left px-3 py-2">Сторона</th>
-                <th className="text-right px-3 py-2 font-mono">Вход</th>
-                <th className="text-right px-3 py-2 font-mono">SL</th>
-                <th className="text-right px-3 py-2 font-mono">Цена</th>
-                <th className="text-right px-3 py-2 font-mono">Размер</th>
-                <th className="text-right px-3 py-2 font-mono">Риск</th>
-                <th className="text-center px-3 py-2">Status</th>
-                <th className="text-right px-3 py-2 font-mono">P&L</th>
+                <th className="text-left px-3 py-2">Дата</th>
+                <th className="text-left px-3 py-2">⏱</th>
+                <th className="text-left px-3 py-2">Монета</th>
+                <th className="text-right px-3 py-2">Вход</th>
+                <th className="text-right px-3 py-2">Цена</th>
+                <th className="text-right px-3 py-2">Размер</th>
+                <th className="text-right px-3 py-2">SL</th>
+                <th className="text-right px-3 py-2">TP</th>
+                <th className="text-right px-3 py-2">Рлз.</th>
+                <th className="text-right px-3 py-2">P&L</th>
+                <th className="text-center px-3 py-2">Статус</th>
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={11} className="text-center py-8 text-text-secondary">Загрузка...</td></tr>}
+              {loading && <tr><td colSpan={11} className="text-center py-12 text-text-secondary">Загрузка...</td></tr>}
               {!loading && trades.length === 0 && (
-                <tr><td colSpan={11} className="text-center py-8 text-text-secondary">
+                <tr><td colSpan={11} className="text-center py-12 text-text-secondary">
                   {config.enabled
                     ? 'Сделок ещё нет. Демо-счёт работает — виртуальные сделки появятся когда сканер найдёт сигналы.'
                     : 'Демо-счёт выключен. Включи кнопкой ● Выключен сверху.'}
                 </td></tr>
               )}
               {!loading && trades.map(t => {
-                const sideColor = t.side === 'BUY' ? 'text-long' : 'text-short'
-                const sideEmoji = t.side === 'BUY' ? '🟢' : '🔴'
-                const badge = statusBadge[t.status] ?? statusBadge.OPEN
                 const live = livePrices[t.id]
                 const isOpen = ['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(t.status)
-                // For open trades, use live unrealized P&L; for closed — netPnlUsd from DB
+                const closedFrac = (t.closes ?? []).reduce((a, c) => a + c.percent, 0) / 100
+                const remainingPositionUsd = t.positionSizeUsd * Math.max(0, 1 - closedFrac)
+
+                // Live P&L for open, realized for closed
                 const displayPnl = isOpen && live ? live.unrealizedPnl : t.netPnlUsd
                 const displayPnlPct = isOpen && live
                   ? live.unrealizedPnlPct
-                  : (t.netPnlUsd / t.depositAtEntryUsd) * 100
-                const pnlTone = displayPnl > 0 ? 'text-long' : displayPnl < 0 ? 'text-short' : 'text-text-secondary'
+                  : (t.depositAtEntryUsd > 0 ? (t.netPnlUsd / t.depositAtEntryUsd) * 100 : 0)
+
+                // SL distance as %
+                const slDir = t.side === 'BUY' ? 1 : -1
+                const slPctRaw = ((t.currentStop - t.entryPrice) / t.entryPrice) * 100 * slDir
+                const slPct = slPctRaw // already signed (negative for stop below long entry)
+
+                // TP final
+                const tps = (t.tpLadder ?? []).slice(0, 3)
+                const lastTp = tps.length > 0 ? tps[tps.length - 1] : null
+                const tpDir = t.side === 'BUY' ? 1 : -1
+                const tpPct = lastTp != null ? ((lastTp - t.entryPrice) / t.entryPrice) * 100 * tpDir : null
+
+                const sideColorCls = t.side === 'BUY' ? 'text-long' : 'text-short'
+                const closedPctNum = Math.round(closedFrac * 100)
+                const isFinished = ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT'].includes(t.status)
+
                 return (
-                  <tr key={t.id} onClick={() => setSelectedTrade(t)} className="border-t border-input hover:bg-input/40 cursor-pointer">
-                    <td className="px-2 py-2 text-center">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setChartTrade(t) }}
-                        className="text-text-secondary hover:text-accent transition"
-                        title="Показать график"
-                      >📊</button>
+                  <tr key={t.id}
+                    className="border-t border-input hover:bg-input/50 cursor-pointer transition-colors"
+                    onClick={() => setSelectedTrade(t)}>
+                    <td className="px-3 py-2 text-text-secondary whitespace-nowrap">{formatDate(t.openedAt)}</td>
+                    <td className="px-3 py-2 font-mono text-accent">
+                      {isOpen ? <LiveTimer openedAt={t.openedAt} /> : <span className="text-text-secondary">{formatElapsed(t.openedAt)}</span>}
                     </td>
-                    <td className="px-3 py-2 text-text-secondary text-xs">
-                      {new Date(t.openedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    <td className="px-3 py-2 font-mono font-medium text-text-primary">
+                      <span className="flex items-center gap-2">
+                        <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent" title="Demo paper trade">D</span>
+                        <span className={sideColorCls}>{t.symbol.replace('USDT', '')}</span>
+                        <button
+                          onClick={e => { e.stopPropagation(); setChartTrade(t) }}
+                          className="text-text-secondary hover:text-accent transition-colors"
+                          title="График позиции"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+                        </button>
+                      </span>
                     </td>
-                    <td className="px-3 py-2 font-mono font-semibold">{t.symbol}</td>
-                    <td className={`px-3 py-2 font-medium ${sideColor}`}>{sideEmoji} {t.side === 'BUY' ? 'LONG' : 'SHORT'}</td>
-                    <td className="px-3 py-2 text-right font-mono">{fmtPrice(t.entryPrice, t.symbol, t.market)}</td>
-                    <td className="px-3 py-2 text-right font-mono text-short">{fmtPrice(t.currentStop, t.symbol, t.market)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-text-primary">${fmtPrice(t.entryPrice, t.symbol, t.market)}</td>
                     <td className="px-3 py-2 text-right font-mono">
-                      {isOpen && live?.currentPrice != null
-                        ? <span className="text-text-primary">{fmtPrice(live.currentPrice, t.symbol, t.market)}</span>
-                        : <span className="text-text-secondary">—</span>}
+                      {isOpen && live?.currentPrice != null ? (
+                        <span className={pnlColor(live.unrealizedPnl)}>${fmtPrice(live.currentPrice, t.symbol, t.market)}</span>
+                      ) : (
+                        <span className="text-text-secondary">—</span>
+                      )}
                     </td>
-                    <td className="px-3 py-2 text-right font-mono text-xs">${t.positionSizeUsd.toFixed(0)}</td>
-                    <td className="px-3 py-2 text-right font-mono text-xs">${t.riskUsd.toFixed(2)}</td>
-                    <td className="px-3 py-2 text-center">
-                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${badge.bg} ${badge.text}`}>{badge.label}</span>
+                    <td className="px-3 py-2 text-right font-mono leading-tight">
+                      <span className="text-text-primary">${fmt2(remainingPositionUsd)}</span>
+                      {closedPctNum > 0 && closedPctNum < 100 && (
+                        <div className="text-[10px] text-text-secondary">было ${fmt2(t.positionSizeUsd)}</div>
+                      )}
                     </td>
-                    <td className={`px-3 py-2 text-right font-mono ${pnlTone}`}>
-                      <div>{fmtUsd(displayPnl)}{isOpen && <span className="text-xs text-text-secondary"> live</span>}</div>
-                      {displayPnl !== 0 && <div className="text-xs">{displayPnlPct >= 0 ? '+' : ''}{displayPnlPct.toFixed(2)}%</div>}
+                    <td className="px-3 py-2 text-right font-mono leading-tight">
+                      <span className="text-short">${fmtPrice(t.currentStop, t.symbol, t.market)}</span>
+                      <div className="text-[10px] text-short/70">{fmt2(slPct)}%</div>
                     </td>
+                    <td className="px-3 py-2 text-right font-mono leading-tight">
+                      {lastTp != null && tpPct != null ? (
+                        <>
+                          <span className="text-long">${fmtPrice(lastTp, t.symbol, t.market)}</span>
+                          <div className="text-[10px] text-long/70">+{fmt2(tpPct)}%</div>
+                        </>
+                      ) : (
+                        <span className="text-text-secondary">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono">
+                      {closedPctNum > 0 ? (
+                        <span className={pnlColor(t.realizedPnlUsd - t.feesPaidUsd)}>
+                          {fmt2Signed(t.realizedPnlUsd - t.feesPaidUsd)}$
+                        </span>
+                      ) : (
+                        <span className="text-text-secondary">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono leading-tight">
+                      {isOpen && live ? (
+                        <span className={pnlColor(live.unrealizedPnl)}>
+                          {fmt2Signed(live.unrealizedPnl)}$
+                          <div className="text-[10px] opacity-70">({fmt2Signed(live.unrealizedPnlPct)}%)</div>
+                        </span>
+                      ) : isFinished ? (
+                        <span className={pnlColor(t.netPnlUsd)} title={t.feesPaidUsd > 0 ? `Gross: ${fmt2Signed(t.realizedPnlUsd)}$ · Комиссии: -${fmt2(t.feesPaidUsd)}$` : undefined}>
+                          {fmt2Signed(t.netPnlUsd)}$
+                          {t.netPnlUsd !== 0 && <div className="text-[10px] opacity-70">({fmt2Signed(displayPnlPct)}%)</div>}
+                        </span>
+                      ) : (
+                        <span className="text-text-secondary">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-center"><PaperStatusBadge status={t.status} pnl={t.netPnlUsd} /></td>
                   </tr>
                 )
               })}
