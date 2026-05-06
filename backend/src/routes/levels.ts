@@ -369,12 +369,14 @@ router.get('/key-levels/:symbol', async (req, res) => {
     type Out = { price: number; label: string; kind: string; isSignal?: boolean }
     const out: Out[] = []
     const seen = new Set<string>()
-    // Russian labels — easier to scan on the right axis at a glance
+    // Russian labels — easier to scan on the right axis at a glance.
+    // PDH/PDL = previous day's high/low (yesterday's, not today's session).
+    // PWH/PWL = previous week's high/low.
     const labelMap: Record<string, string> = {
-      PDH: 'Макс дня',
-      PDL: 'Мин дня',
-      PWH: 'Макс недели',
-      PWL: 'Мин недели',
+      PDH: 'Макс вчера',
+      PDL: 'Мин вчера',
+      PWH: 'Макс прошл. недели',
+      PWL: 'Мин прошл. недели',
     }
 
     const activeIdxs = pre.activeAt[lastIdx] ?? []
@@ -387,6 +389,25 @@ router.get('/key-levels/:symbol', async (req, res) => {
       if (seen.has(key)) continue
       seen.add(key)
       out.push({ price: lvl.price, label, kind: lvl.source })
+    }
+
+    // Today's session high/low — built live from m5 (PDH/PDL only have prev day).
+    // Useful context: chart shows what the current day has done so far.
+    const todayStart = new Date()
+    todayStart.setUTCHours(0, 0, 0, 0)
+    const todayStartMs = todayStart.getTime()
+    let dth = -Infinity
+    let dtl = Infinity
+    for (const c of m5) {
+      if (c.time < todayStartMs) continue
+      if (c.high > dth) dth = c.high
+      if (c.low < dtl) dtl = c.low
+    }
+    if (dth > 0 && Math.abs(dth - refPrice) <= tolerance) {
+      out.push({ price: dth, label: 'Макс сегодня', kind: 'PDH' })
+    }
+    if (dtl < Infinity && Math.abs(dtl - refPrice) <= tolerance) {
+      out.push({ price: dtl, label: 'Мин сегодня', kind: 'PDL' })
     }
 
     // Add the signal level itself (highlighted). Strip 5m/M15/H1 fractals from
