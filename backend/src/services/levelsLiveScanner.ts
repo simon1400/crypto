@@ -16,12 +16,11 @@
 import { prisma } from '../db/prisma'
 import { OHLCV } from './market'
 import { loadHistorical } from '../scalper/historicalLoader'
-import { loadForexHistorical } from '../scalper/forexLoader'
-import { loadPolygonHistorical } from '../scalper/polygonLoader'
 import {
   precomputeLevelsV2, generateSignalV2, newSignalState, aggregateDailyToWeekly,
   DEFAULT_LEVELS_V2, LevelsV2Config, SignalV2,
   findImpulse, isInFiboZone, buildLadder, nearestOpposite, passesRRFilter,
+  killzoneOf,
 } from '../scalper/levelsEngine2'
 import { sendNotification } from './notifier'
 
@@ -33,7 +32,7 @@ type EntryMode = 'MARKET' | 'LIMIT'
 
 interface SymbolSetup {
   symbol: string
-  market: 'FOREX' | 'CRYPTO' | 'STOCK'
+  market: 'CRYPTO'
   side: AllowedSide
   fractalLR: 3 | 5
   /**
@@ -52,9 +51,8 @@ interface SymbolSetup {
 }
 
 // Default setups — based on 365d backtest across 25+ symbols (2026-05-06).
-// FOREX uses loosened Fibo gate (see buildCfg) — needed because 8×ATR impulses are rare on slow forex.
 //
-// 365d backtest results (V2 levels, ladder 50/30/20, fees crypto 0.08% / forex 0.04%):
+// 365d backtest results (V2 levels, ladder 50/30/20, fees crypto 0.08%):
 // CRYPTO SHORTs (alt-bear regime 2025–2026):
 //   XRPUSDT SELL: 48 trades, +91.5R, +1.91 R/tr, WR 48%, PF 5.28 ★★★
 //   SEIUSDT SELL: 29 trades, +24.7R, +0.85 R/tr, WR 41%, PF 2.39 ★
@@ -101,16 +99,12 @@ export const DEFAULT_SETUPS: SymbolSetup[] = [
 ]
 
 const DEDUP_WINDOW_MS = 60 * 60_000 // 1h: don't fire 2 signals on same level within 1h
+const SYMBOL_DEDUP_WINDOW_MS = 30 * 60_000 // 30min: don't fire 2 signals on same symbol+side (any level) — prevents stacking 3+ entries on the same coin in one cycle
 
 function buildCfg(
   fractalLR: 3 | 5,
-  market: 'FOREX' | 'CRYPTO' | 'STOCK' = 'CRYPTO',
   tpMinAtr: number = 0,
 ): LevelsV2Config {
-  // Crypto = high volatility (BTC easily makes 8×ATR impulses).
-  // Forex/Stocks = lower volatility — 8×ATR rarely happens during quiet sessions.
-  // Loosen the fibo gate so we don't starve them of signals.
-  const isLowVol = market === 'FOREX' || market === 'STOCK'
   return {
     ...DEFAULT_LEVELS_V2,
     fractalLeft: fractalLR, fractalRight: fractalLR,
@@ -120,41 +114,28 @@ function buildCfg(
     cooldownBars: 12,
     allowRangePlay: false,
     fiboMode: 'filter',
-    fiboZoneFrom: isLowVol ? 0.382 : 0.5,
-    fiboZoneTo:   isLowVol ? 0.786 : 0.618,
+    fiboZoneFrom: 0.5,
+    fiboZoneTo:   0.618,
     fiboImpulseLookback: 100,
-    fiboImpulseMinAtr: isLowVol ? 3.5 : 8,
+    fiboImpulseMinAtr: 8,
     tpMinAtr,
     // R:R guard: reject lottery setups where SL is too tight vs TP1 (>8R = SEI case
     // 2026-05-06 with SL 0.6% and TP1 9%). minRR is DISABLED (sweep 2026-05-06 showed
     // it removes profitable setups: R/tr drops from +1.09 to +0.64).
     minRR: 0,
     maxRR: 8,
+    // Killzone filter: exclude NY_PM (15-17 UTC) — only consistently negative session
+    // per 365d backtest 2026-05-06 (R/tr -0.10, totalR -6 across 58 trades).
+    excludeKillzones: ['NY_PM'],
   }
 }
 
 async function loadCandles(setup: SymbolSetup): Promise<{ m5: OHLCV[]; m15: OHLCV[]; h1: OHLCV[]; d1: OHLCV[] }> {
-  if (setup.market === 'FOREX') {
-    // Twelve Data — pull a small recent window (incremental cache will only fetch new candles)
-    const m5  = await loadForexHistorical(setup.symbol, '5m', 1)   // ~30 days
-    const m15 = await loadForexHistorical(setup.symbol, '15m', 1)
-    const h1  = await loadForexHistorical(setup.symbol, '1h', 1)
-    const d1  = await loadForexHistorical(setup.symbol, '1d', 3)   // 90 days for PDH/PDL/PWH/PWL
-    return { m5, m15, h1, d1 }
-  } else if (setup.market === 'STOCK') {
-    // Polygon free — ETFs (US trading hours only)
-    const m5  = await loadPolygonHistorical(setup.symbol, '5m', 1)
-    const m15 = await loadPolygonHistorical(setup.symbol, '15m', 1)
-    const h1  = await loadPolygonHistorical(setup.symbol, '1h', 1)
-    const d1  = await loadPolygonHistorical(setup.symbol, '1d', 3)
-    return { m5, m15, h1, d1 }
-  } else {
-    const m5  = await loadHistorical(setup.symbol, '5m',  1, 'bybit', 'linear')
-    const m15 = await loadHistorical(setup.symbol, '15m', 1, 'bybit', 'linear')
-    const h1  = await loadHistorical(setup.symbol, '1h',  1, 'bybit', 'linear')
-    const d1  = await loadHistorical(setup.symbol, '1d',  3, 'bybit', 'linear')
-    return { m5, m15, h1, d1 }
-  }
+  const m5  = await loadHistorical(setup.symbol, '5m',  1, 'bybit', 'linear')
+  const m15 = await loadHistorical(setup.symbol, '15m', 1, 'bybit', 'linear')
+  const h1  = await loadHistorical(setup.symbol, '1h',  1, 'bybit', 'linear')
+  const d1  = await loadHistorical(setup.symbol, '1d',  3, 'bybit', 'linear')
+  return { m5, m15, h1, d1 }
 }
 
 async function dedupHit(symbol: string, side: 'BUY' | 'SELL', level: number): Promise<boolean> {
@@ -166,6 +147,25 @@ async function dedupHit(symbol: string, side: 'BUY' | 'SELL', level: number): Pr
       side,
       createdAt: { gte: since },
       level: { gte: level - eps, lte: level + eps },
+      status: { in: ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT', 'PENDING', 'AWAITING_CONFIRM'] },
+    },
+  })
+  return !!existing
+}
+
+/**
+ * Per-symbol dedup (any level): blocks stacking multiple signals on the same
+ * symbol+side within 30 minutes. Prevents the 22:11 AAVE×2+AVAX×1 case where
+ * three close fractals fired in the same scan cycle, tripling user's risk
+ * exposure on what is effectively the same trade idea.
+ */
+async function symbolDedupHit(symbol: string, side: 'BUY' | 'SELL'): Promise<boolean> {
+  const since = new Date(Date.now() - SYMBOL_DEDUP_WINDOW_MS)
+  const existing = await prisma.levelsSignal.findFirst({
+    where: {
+      symbol,
+      side,
+      createdAt: { gte: since },
       status: { in: ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT', 'PENDING', 'AWAITING_CONFIRM'] },
     },
   })
@@ -267,6 +267,11 @@ async function scanLimitPending(setup: SymbolSetup, m5: OHLCV[], m15: OHLCV[], h
   const atr = pre.atr[lastIdx]
   if (!isFinite(atr) || atr <= 0) return 0
 
+  // Killzone filter — same as in generateSignalV2 (e.g. skip NY_PM where R/tr is negative)
+  if (cfg.excludeKillzones && cfg.excludeKillzones.length > 0) {
+    if (cfg.excludeKillzones.includes(killzoneOf(cur.time))) return 0
+  }
+
   const activeIdxs = pre.activeAt[lastIdx] ?? []
   if (activeIdxs.length === 0) return 0
   const allowedSet = new Set(cfg.allowedSources)
@@ -298,6 +303,8 @@ async function scanLimitPending(setup: SymbolSetup, m5: OHLCV[], m15: OHLCV[], h
 
       // Skip if already pending/active for this level
       if (await pendingDedupHit(setup.symbol, side, lvl.price)) continue
+      // Skip if any signal on this symbol+side is active in the last 30 min
+      if (await symbolDedupHit(setup.symbol, side)) continue
 
       // Compute SL & TP relative to limit price
       const opp = nearestOpposite(side, lvl.price, allPrices)
@@ -384,7 +391,7 @@ async function scanSymbol(setup: SymbolSetup, expiryHours: number): Promise<numb
       console.warn(`[LevelsScanner] ${setup.symbol}: not enough 5m candles (${m5.length})`)
       return 0
     }
-    const cfg = buildCfg(setup.fractalLR, setup.market, setup.tpMinAtr ?? 0)
+    const cfg = buildCfg(setup.fractalLR, setup.tpMinAtr ?? 0)
 
     // === LIMIT mode: scan active levels in fibo zone, create PENDING signals ===
     if (setup.entryMode === 'LIMIT') {
@@ -412,9 +419,14 @@ async function scanSymbol(setup: SymbolSetup, expiryHours: number): Promise<numb
     // Side filter (per-setup direction restriction)
     if (setup.side !== 'BOTH' && sig.side !== setup.side) return 0
 
-    // Dedup
+    // Dedup (same level, 1h window)
     if (await dedupHit(setup.symbol, sig.side, sig.level)) {
       console.log(`[LevelsScanner] ${setup.symbol} dedup hit on ${sig.side} ${sig.level.toFixed(2)}`)
+      return 0
+    }
+    // Symbol dedup (any level, 30min window) — prevents stacking 3+ entries on same coin
+    if (await symbolDedupHit(setup.symbol, sig.side)) {
+      console.log(`[LevelsScanner] ${setup.symbol} symbol dedup: ${sig.side} signal already active in last 30 min`)
       return 0
     }
 

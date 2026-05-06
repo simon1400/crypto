@@ -26,9 +26,19 @@ interface Props {
   onClose: () => void
 }
 
+// Killzone definitions in UTC hour ranges. NY_PM is filtered out by engine but still
+// shown on chart so user can see why no signals appeared during it.
+const KILLZONE_RANGES: { name: string; startHour: number; endHour: number; color: string; label: string }[] = [
+  { name: 'ASIAN',  startHour: 23, endHour: 4,  color: 'rgba(156, 163, 175, 0.07)', label: 'Asian' },   // grey
+  { name: 'LONDON', startHour: 6,  endHour: 9,  color: 'rgba(96, 165, 250, 0.10)',  label: 'London' }, // blue (best edge)
+  { name: 'NY',     startHour: 12, endHour: 15, color: 'rgba(34, 197, 94, 0.07)',   label: 'NY' },     // green
+  { name: 'NY_PM',  startHour: 15, endHour: 17, color: 'rgba(246, 70, 93, 0.07)',   label: 'NY PM' },  // red (excluded)
+]
+
 export default function PositionChartModal({ position, onClose }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
 
   const {
     klines,
@@ -253,6 +263,37 @@ export default function PositionChartModal({ position, onClose }: Props) {
       })
     })
 
+    // --- Structural reference levels (PDH/PDL/PWH/PWL + nearest M15/H1 fractals) ---
+    if (position.keyLevels && position.keyLevels.length > 0) {
+      // Color per kind for quick recognition
+      const colorByKind: Record<string, string> = {
+        PDH: '#9ca3af',         // grey-400 — yesterday's high
+        PDL: '#9ca3af',
+        PWH: '#a78bfa',         // violet — last week's high (stronger)
+        PWL: '#a78bfa',
+        FRACTAL_H1: '#60a5fa',  // blue — H1 fractal (strong swing)
+        FRACTAL_M15: '#3b82f6', // blue-darker — M15 fractal
+        FRACTAL_5M: '#475569',
+        OTHER: '#475569',
+      }
+      // Skip levels that overlap entry/SL/TP within ±0.05% — they're already drawn
+      const eps = entry * 0.0005
+      const drawn = [entry, stopLoss, ...takeProfits]
+      const isOverlap = (p: number) => drawn.some(d => Math.abs(p - d) <= eps)
+
+      for (const kl of position.keyLevels) {
+        if (isOverlap(kl.price)) continue
+        candleSeries.createPriceLine({
+          price: kl.price,
+          color: colorByKind[kl.kind] ?? '#475569',
+          lineWidth: 1,
+          lineStyle: LineStyle.Dotted,
+          axisLabelVisible: true,
+          title: kl.label,
+        })
+      }
+    }
+
     // --- Markers: entry (Buy/Sell) + partial closes ---
     type SeriesMarker = {
       time: UTCTimestamp
@@ -366,6 +407,83 @@ export default function PositionChartModal({ position, onClose }: Props) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [klines, isLong, depEntry, depStopLoss, depTakeProfits, depOpenedAt, depClosedAt, depPartials])
+
+  // Effect: draw killzone vertical bands as DOM divs absolutely positioned over the chart.
+  // Uses chart.timeScale().timeToCoordinate() for accurate UTC-hour → x-pixel mapping.
+  // Re-renders on visible range / resize so bands stay aligned.
+  useEffect(() => {
+    if (klines.length === 0) return
+    const overlay = overlayRef.current
+    const chart = chartRef.current
+    if (!overlay || !chart) return
+
+    const timeScale = chart.timeScale()
+
+    function render() {
+      if (!overlay || !chart) return
+      const range = timeScale.getVisibleRange()
+      if (!range) return
+      const fromMs = (range.from as number) * 1000
+      const toMs = (range.to as number) * 1000
+
+      // Build killzone segments for every UTC day in visible range
+      type Segment = { startMs: number; endMs: number; color: string; label: string }
+      const segments: Segment[] = []
+      const dayMs = 24 * 60 * 60 * 1000
+      const firstDayStart = Math.floor(fromMs / dayMs) * dayMs - dayMs
+      const lastDayStart = Math.ceil(toMs / dayMs) * dayMs + dayMs
+      for (let d = firstDayStart; d <= lastDayStart; d += dayMs) {
+        for (const kz of KILLZONE_RANGES) {
+          if (kz.startHour < kz.endHour) {
+            const s = d + kz.startHour * 60 * 60 * 1000
+            const e = d + kz.endHour * 60 * 60 * 1000
+            if (e >= fromMs && s <= toMs) segments.push({ startMs: s, endMs: e, color: kz.color, label: kz.label })
+          } else {
+            // Wrap midnight (Asian: 23-04). Two segments per day.
+            const s1 = d + kz.startHour * 60 * 60 * 1000
+            const e1 = d + dayMs
+            if (e1 >= fromMs && s1 <= toMs) segments.push({ startMs: s1, endMs: e1, color: kz.color, label: kz.label })
+            const s2 = d
+            const e2 = d + kz.endHour * 60 * 60 * 1000
+            if (e2 >= fromMs && s2 <= toMs) segments.push({ startMs: s2, endMs: e2, color: kz.color, label: kz.label })
+          }
+        }
+      }
+
+      // Render
+      overlay.innerHTML = ''
+      const overlayWidth = overlay.clientWidth
+      for (const seg of segments) {
+        const x1 = timeScale.timeToCoordinate((seg.startMs / 1000) as UTCTimestamp)
+        const x2 = timeScale.timeToCoordinate((seg.endMs / 1000) as UTCTimestamp)
+        if (x1 == null || x2 == null) continue
+        const left = Math.max(0, Math.min(overlayWidth, x1))
+        const right = Math.max(0, Math.min(overlayWidth, x2))
+        const width = right - left
+        if (width <= 0) continue
+        const div = document.createElement('div')
+        div.style.position = 'absolute'
+        div.style.left = `${left}px`
+        div.style.top = '0'
+        div.style.width = `${width}px`
+        div.style.height = '100%'
+        div.style.background = seg.color
+        div.style.pointerEvents = 'none'
+        overlay.appendChild(div)
+      }
+    }
+
+    render()
+    timeScale.subscribeVisibleTimeRangeChange(render)
+    const resizeObs = new ResizeObserver(render)
+    if (containerRef.current) resizeObs.observe(containerRef.current)
+
+    return () => {
+      timeScale.unsubscribeVisibleTimeRangeChange(render)
+      resizeObs.disconnect()
+      if (overlay) overlay.innerHTML = ''
+    }
+  }, [klines.length])
 
   // Micro-effect: push a live-price candle as soon as BOTH series and price are available.
   // Deps include klines.length so it re-fires after heavy effect builds the chart.
@@ -547,7 +665,10 @@ export default function PositionChartModal({ position, onClose }: Props) {
               {error}
             </div>
           )}
-          <div ref={containerRef} className="w-full h-full" />
+          <div ref={containerRef} className="w-full h-full relative">
+            {/* Killzone bands overlay (drawn by effect below) */}
+            <div ref={overlayRef} className="absolute inset-0 pointer-events-none" />
+          </div>
         </div>
       </div>
     </div>

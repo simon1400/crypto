@@ -2,7 +2,7 @@ import { BASE, getHeaders } from './base'
 
 // ===================== Levels strategy live signals =====================
 
-export type LevelsMarket = 'FOREX' | 'CRYPTO'
+export type LevelsMarket = 'CRYPTO'
 export type LevelsSide = 'BUY' | 'SELL'
 export type LevelsEvent = 'REACTION' | 'BREAKOUT_RETEST'
 export type LevelsStatus =
@@ -202,6 +202,18 @@ export async function closeLevelsSignalMarket(id: number): Promise<LevelsSignal>
       headers: getHeaders(),
     }),
   )
+}
+
+export interface KeyLevelDto {
+  price: number
+  label: string
+  kind: 'PDH' | 'PDL' | 'PWH' | 'PWL' | 'FRACTAL_H1' | 'FRACTAL_M15' | 'FRACTAL_5M' | 'OTHER'
+}
+
+export async function getKeyLevels(symbol: string, entryPrice?: number): Promise<{ levels: KeyLevelDto[] }> {
+  const p = new URLSearchParams()
+  if (entryPrice !== undefined) p.set('entryPrice', String(entryPrice))
+  return handle(await fetch(`${BASE}/api/levels/key-levels/${encodeURIComponent(symbol)}?${p}`, { headers: getHeaders() }))
 }
 
 export async function cancelPendingLevelsSignal(id: number): Promise<LevelsSignal> {

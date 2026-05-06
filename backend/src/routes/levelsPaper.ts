@@ -2,17 +2,11 @@ import { Router } from 'express'
 import { prisma } from '../db/prisma'
 import { runPaperCycle, resetPaperAccount } from '../services/levelsPaperTrader'
 import { loadHistorical } from '../scalper/historicalLoader'
-import { loadForexHistorical } from '../scalper/forexLoader'
-import { loadPolygonHistorical } from '../scalper/polygonLoader'
 import { fetchPricesBatch } from '../services/market'
 
-async function getCurrentPrice(symbol: string, market: string): Promise<number | null> {
+async function getCurrentPrice(symbol: string): Promise<number | null> {
   try {
-    const candles = market === 'FOREX'
-      ? await loadForexHistorical(symbol, '5m', 1)
-      : market === 'STOCK'
-        ? await loadPolygonHistorical(symbol, '5m', 1)
-        : await loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
+    const candles = await loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
     if (candles.length === 0) return null
     return candles[candles.length - 1].close
   } catch (e) {
@@ -132,14 +126,11 @@ router.get('/trades/live', async (_req, res) => {
     })
     if (trades.length === 0) return res.json([])
 
-    // Crypto-only batch (FOREX/STOCK paper trades — fall back to slow individual lookup)
-    const cryptoSymbols = trades.filter(t => t.market === 'CRYPTO').map(t => t.symbol)
-    const cryptoPrices = cryptoSymbols.length > 0 ? await fetchPricesBatch(cryptoSymbols) : {}
+    const symbols = trades.map(t => t.symbol)
+    const prices = await fetchPricesBatch(symbols)
 
     const result = await Promise.all(trades.map(async t => {
-      let price: number | null = null
-      if (t.market === 'CRYPTO') price = cryptoPrices[t.symbol] ?? null
-      else price = await getCurrentPrice(t.symbol, t.market)
+      const price: number | null = prices[t.symbol] ?? null
 
       if (price == null) {
         return { id: t.id, status: t.status, currentPrice: null, unrealizedPnl: 0, unrealizedPnlPct: 0 }
@@ -401,7 +392,7 @@ router.post('/trades/:id/close-market', async (req, res) => {
     if (['CLOSED', 'SL_HIT', 'EXPIRED'].includes(trade.status)) {
       return res.status(400).json({ error: `Already ${trade.status}` })
     }
-    const price = await getCurrentPrice(trade.symbol, trade.market)
+    const price = await getCurrentPrice(trade.symbol)
     if (price === null) return res.status(503).json({ error: 'Could not fetch price' })
 
     const fills = ((trade.closes as any[]) ?? []) as any[]

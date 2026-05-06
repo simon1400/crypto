@@ -37,7 +37,7 @@ export interface PaperTrade {
   id: number
   signalId: number
   symbol: string
-  market: 'FOREX' | 'CRYPTO'
+  market: 'CRYPTO'
   side: 'BUY' | 'SELL'
   entryPrice: number
   stopLoss: number

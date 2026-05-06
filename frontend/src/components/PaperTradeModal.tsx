@@ -20,11 +20,8 @@ function fmt(n: number, dec = 5): string {
 function fmtUsd(n: number): string {
   return `${n >= 0 ? '+' : ''}$${Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2)}`
 }
-function dec(symbol: string, market: string): number {
-  if (market === 'CRYPTO') return symbol.includes('USDT') ? 2 : 6
-  if (/^XAU|^XAG/.test(symbol)) return 2
-  if (/JPY/.test(symbol)) return 3
-  return 5
+function dec(symbol: string): number {
+  return symbol.includes('USDT') ? 2 : 6
 }
 function pct(from: number, to: number, side: 'BUY' | 'SELL'): string {
   if (!from) return ''
@@ -37,7 +34,7 @@ const STATUS_OPTIONS = ['OPEN', 'TP1_HIT', 'TP2_HIT', 'TP3_HIT', 'CLOSED', 'SL_H
 
 export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate, onDelete }: Props) {
   const [trade, setTrade] = useState<PaperTrade>(initialTrade)
-  const d = dec(trade.symbol, trade.market)
+  const d = dec(trade.symbol)
   const sideText = trade.side === 'BUY' ? 'LONG' : 'SHORT'
   const sideColor = trade.side === 'BUY' ? 'text-long' : 'text-short'
   const sideEmoji = trade.side === 'BUY' ? '🟢' : '🔴'
@@ -162,7 +159,7 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
               <span className="text-xs text-text-secondary">#{trade.id}</span>
             </div>
             <p className="text-sm text-text-secondary">
-              {trade.market} · открыто {new Date(trade.openedAt).toLocaleString('ru-RU')}
+              открыто {new Date(trade.openedAt).toLocaleString('ru-RU')}
             </p>
           </div>
           <button onClick={onClose} className="text-text-secondary hover:text-text-primary text-xl">×</button>

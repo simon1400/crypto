@@ -7,15 +7,20 @@ import {
 } from '../api/levelsPaper'
 import {
   getLevelsSignals, getLevelsConfig, updateLevelsConfig,
-  scanLevelsNow, trackLevelsNow,
+  scanLevelsNow, trackLevelsNow, getKeyLevels,
   type LevelsSignal, type LevelsStatus, type LevelsConfig as LevelsCfg, type LevelsSetup,
+  type KeyLevelDto,
 } from '../api/levels'
 import PaperTradeModal from '../components/PaperTradeModal'
 import LevelsSignalModal from '../components/LevelsSignalModal'
 import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
 import { formatDate, pnlColor, fmt2, fmt2Signed, fmtPrice as fmtPriceShared } from '../lib/formatters'
 
-function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): PositionChartPosition {
+function paperTradeToPosition(
+  t: PaperTrade,
+  currentPrice: number | null,
+  keyLevels?: KeyLevelDto[],
+): PositionChartPosition {
   const closes = t.closes || []
   const effectivePrice = currentPrice != null
     ? currentPrice
@@ -35,6 +40,7 @@ function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): Posit
       closedAt: c.closedAt,
       isSL: c.reason === 'SL',
     })),
+    keyLevels: keyLevels?.map(k => ({ price: k.price, label: k.label, kind: k.kind })),
     title: `${t.symbol} ${t.side === 'BUY' ? 'LONG' : 'SHORT'} (DEMO #${t.id})`,
   }
 }
@@ -118,6 +124,7 @@ export default function LevelsPaper() {
   const [cycleRunning, setCycleRunning] = useState(false)
   const [selectedTrade, setSelectedTrade] = useState<PaperTrade | null>(null)
   const [chartTrade, setChartTrade] = useState<PaperTrade | null>(null)
+  const [chartKeyLevels, setChartKeyLevels] = useState<KeyLevelDto[]>([])
   const [livePrices, setLivePrices] = useState<Record<number, PaperTradeLive>>({})
   // Tab + signals state (merged from old /levels page)
   const [tab, setTab] = useState<Tab>('TRADES')
@@ -151,6 +158,16 @@ export default function LevelsPaper() {
   }, [statusFilter])
 
   useEffect(() => { loadAll() }, [loadAll])
+
+  // Fetch key reference levels (PDH/PDL/PWH/PWL + nearby fractals) when opening chart
+  useEffect(() => {
+    if (!chartTrade) { setChartKeyLevels([]); return }
+    let cancelled = false
+    getKeyLevels(chartTrade.symbol, chartTrade.entryPrice)
+      .then(r => { if (!cancelled) setChartKeyLevels(r.levels) })
+      .catch(() => { if (!cancelled) setChartKeyLevels([]) })
+    return () => { cancelled = true }
+  }, [chartTrade])
   useEffect(() => {
     const t = setInterval(loadAll, 30_000)
     return () => clearInterval(t)
@@ -644,7 +661,7 @@ export default function LevelsPaper() {
 
       {chartTrade && (
         <PositionChartModal
-          position={paperTradeToPosition(chartTrade, livePrices[chartTrade.id]?.currentPrice ?? null)}
+          position={paperTradeToPosition(chartTrade, livePrices[chartTrade.id]?.currentPrice ?? null, chartKeyLevels)}
           onClose={() => setChartTrade(null)}
         />
       )}

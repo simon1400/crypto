@@ -14,6 +14,12 @@ export const INTERVAL_SECONDS: Record<ChartInterval, number> = {
 // Extracted so the modal component focuses purely on chart rendering.
 // =============================================================================
 
+export interface KeyLevel {
+  price: number
+  label: string                              // "PDH", "PDL", "PWH", "PWL", "Fractal H1 89.50" etc.
+  kind: 'PDH' | 'PDL' | 'PWH' | 'PWL' | 'FRACTAL_H1' | 'FRACTAL_M15' | 'FRACTAL_5M' | 'OTHER'
+}
+
 export interface PositionChartPosition {
   coin: string                               // "BTC" or "BTCUSDT" — both supported
   type: 'LONG' | 'SHORT'
@@ -24,6 +30,8 @@ export interface PositionChartPosition {
   closedAt: string | null                    // ISO; null if still open
   currentPrice?: number | null               // live price for open positions, final price for closed
   partialCloses?: { price: number; percent: number; closedAt: string; isSL?: boolean }[]
+  // optional: structural levels (PDH/PDL/PWH/PWL + nearby fractals) drawn as dotted lines
+  keyLevels?: KeyLevel[]
   // optional display-only fields
   title?: string                             // modal header override
 }

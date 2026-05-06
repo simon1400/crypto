@@ -12,7 +12,6 @@
 import { prisma } from '../db/prisma'
 import { OHLCV } from './market'
 import { loadHistorical } from '../scalper/historicalLoader'
-import { loadForexHistorical } from '../scalper/forexLoader'
 import { sendNotification } from './notifier'
 import { CONFIRM_WINDOW_BARS } from './levelsLiveScanner'
 import { DEFAULT_LEVELS_V2 } from '../scalper/levelsEngine2'
@@ -33,8 +32,7 @@ interface CloseRecord {
   reason: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED'
 }
 
-async function loadRecent5m(symbol: string, market: 'FOREX' | 'CRYPTO'): Promise<OHLCV[]> {
-  if (market === 'FOREX') return loadForexHistorical(symbol, '5m', 1)
+async function loadRecent5m(symbol: string): Promise<OHLCV[]> {
   return loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
 }
 
@@ -342,8 +340,7 @@ export async function runLevelsTrackerCycle(): Promise<number> {
   let processed = 0
   for (const [symbol, sigs] of bySymbol) {
     try {
-      const market = sigs[0].market as 'FOREX' | 'CRYPTO'
-      const candles = await loadRecent5m(symbol, market)
+      const candles = await loadRecent5m(symbol)
       for (const sig of sigs) {
         if (sig.status === 'PENDING' || sig.status === 'AWAITING_CONFIRM') {
           await trackPendingLimit(sig, candles)

@@ -179,7 +179,7 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
       const sideEmoji = d.side === 'BUY' ? '🟢' : '🔴'
       const sideText = d.side === 'BUY' ? 'LONG' : 'SHORT'
       const sym = d.symbol
-      const dec = d.market === 'FOREX' ? forexDecimals(sym) : (sym.includes('USDT') ? 2 : 5)
+      const dec = sym.includes('USDT') ? 2 : 5
       const tps: number[] = (d.tpLadder as number[] || []).slice(0, 3)
       const tpLines = tps.map((tp, i) => {
         const pct = d.entryPrice ? (((tp - d.entryPrice) / d.entryPrice) * 100 * (d.side === 'BUY' ? 1 : -1)).toFixed(2) : '?'
@@ -201,17 +201,10 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
         const leverage = positionSizeUsd > 0 && d.depositUsd > 0
           ? Math.min(100, Math.max(1, positionSizeUsd / d.depositUsd))
           : 1
-        // Lot conversion for forex (1 lot = 100,000 units of base currency for FX, 100 oz for XAU)
-        let lotsLine = ''
-        if (d.market === 'FOREX') {
-          const lotSize = /^XAU|^XAG/.test(sym) ? 100 : 100_000
-          const lots = positionUnits / lotSize
-          lotsLine = `\n📦 Лоты      <code>${lots.toFixed(3)}</code>  (1 лот = ${lotSize})`
-        }
         sizingBlock = [
           ``,
           `💰 Депо:    <code>$${d.depositUsd.toFixed(2)}</code>  · Риск ${d.riskPctPerTrade}% (<code>$${riskUsd.toFixed(2)}</code>)`,
-          `📐 Размер   <code>$${positionSizeUsd.toFixed(2)}</code>  · ${positionUnits.toFixed(d.market === 'CRYPTO' ? 6 : 2)} ${d.market === 'CRYPTO' ? sym.replace('USDT', '') : 'units'}${lotsLine}`,
+          `📐 Размер   <code>$${positionSizeUsd.toFixed(2)}</code>  · ${positionUnits.toFixed(6)} ${sym.replace('USDT', '')}`,
           `⚡ Плечо    <code>${leverage.toFixed(1)}x</code>  (рекомендуемое для риска ${d.riskPctPerTrade}%)`,
         ].join('\n')
       }
@@ -285,7 +278,7 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
       const sideEmoji = d.side === 'BUY' ? '🟢' : '🔴'
       const sideText = d.side === 'BUY' ? 'LONG' : 'SHORT'
       const sym = d.symbol
-      const dec = d.market === 'FOREX' ? forexDecimals(sym) : (sym.includes('USDT') ? 2 : 5)
+      const dec = sym.includes('USDT') ? 2 : 5
       const tps: number[] = (d.tpLadder as number[] || []).slice(0, 3)
       const tpLines = tps.map((tp, i) => {
         const pct = d.entryPrice ? (((tp - d.entryPrice) / d.entryPrice) * 100 * (d.side === 'BUY' ? 1 : -1)).toFixed(2) : '?'

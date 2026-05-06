@@ -1,23 +1,18 @@
 /**
  * Levels Paper Trader — virtual ($) trading engine that mirrors live signals.
  *
- * Runs every 5 minutes (independent of live scanner/tracker):
- *   1) For each new LevelsSignal that fired since last cycle, open a virtual trade
- *      with position size = (deposit × riskPct%) / SL distance.
- *      Skips if circuit breakers are tripped (daily/weekly loss).
- *   2) For each open paper trade, replay recent 5m candles to detect TP1/TP2/TP3 hits
- *      and SL hits, update closes log + USD P&L. Mirrors live tracker logic
- *      (ladder 50/30/20 + trailing SL → BE / TP(n-1)).
- *   3) After each fill, update deposit and stats.
+ * Two cycles run in parallel:
+ *   - Slow (every 5 min): opens new paper trades, replays 5m klines for TP/SL/expiry.
+ *     Catches wicks (high/low) that fast cycle's last-price can't see.
+ *   - Fast (every 2 sec): polls last-price via Bybit batch endpoint, applies
+ *     TP/SL on synthetic single-tick candle. Sub-second latency in normal flow.
  *
  * No Telegram notifications — only DB writes. UI displays everything.
  */
 
 import { prisma } from '../db/prisma'
-import { OHLCV } from './market'
+import { OHLCV, fetchPricesBatch } from './market'
 import { loadHistorical } from '../scalper/historicalLoader'
-import { loadForexHistorical } from '../scalper/forexLoader'
-import { loadPolygonHistorical } from '../scalper/polygonLoader'
 
 const SPLITS = [0.5, 0.3, 0.2] // must match production tracker
 
@@ -68,9 +63,7 @@ async function getOrCreateConfig(): Promise<PaperConfig | null> {
   }
 }
 
-async function loadRecent5m(symbol: string, market: 'FOREX' | 'CRYPTO' | 'STOCK'): Promise<OHLCV[]> {
-  if (market === 'FOREX') return loadForexHistorical(symbol, '5m', 1)
-  if (market === 'STOCK') return loadPolygonHistorical(symbol, '5m', 1)
+async function loadRecent5m(symbol: string): Promise<OHLCV[]> {
   return loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
 }
 
@@ -81,8 +74,7 @@ async function loadRecent5m(symbol: string, market: 'FOREX' | 'CRYPTO' | 'STOCK'
  *   positionUnits = riskUsd / slDistance
  *   positionSizeUsd = entry * positionUnits  (notional)
  *
- * Forex special: positionUnits is interpreted as the base asset (XAU oz, etc).
- * Crypto: positionUnits is the base coin amount.
+ * positionUnits is the base coin amount (e.g. BTC).
  */
 function calcPosition(
   deposit: number, riskPct: number, entry: number, sl: number,
@@ -354,8 +346,7 @@ async function trackOpenPaperTrades(cfg: PaperConfig): Promise<{ updated: number
   let updated = 0
   for (const [symbol, trades] of bySymbol) {
     try {
-      const market = trades[0].market as 'FOREX' | 'CRYPTO' | 'STOCK'
-      const candles = await loadRecent5m(symbol, market)
+      const candles = await loadRecent5m(symbol)
       for (const tr of trades) {
         const r = await trackOnePaper(tr, candles, cfg)
         totalDelta += r.pnlDelta
@@ -363,6 +354,45 @@ async function trackOpenPaperTrades(cfg: PaperConfig): Promise<{ updated: number
       }
     } catch (e: any) {
       console.warn(`[Paper] track ${symbol} failed: ${e.message}`)
+    }
+  }
+  return { updated, depositDelta: totalDelta }
+}
+
+/**
+ * FAST tracker — runs every 2 seconds. Uses last-price (single batch call)
+ * instead of 5m klines.
+ *
+ * Synthesizes a 1-tick candle (high=low=close=price) so we can reuse
+ * trackOnePaper's TP/SL/trailing logic. Wicks beyond price won't be detected
+ * here, but the slow tracker (5m, every 5 min) will catch any missed wicks
+ * because it replays full klines with high/low.
+ */
+async function trackOpenPaperTradesFast(cfg: PaperConfig): Promise<{ updated: number; depositDelta: number }> {
+  const open = await prisma.levelsPaperTrade.findMany({
+    where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+  })
+  if (open.length === 0) return { updated: 0, depositDelta: 0 }
+
+  const symbols = [...new Set(open.map((t) => t.symbol))]
+  const prices = await fetchPricesBatch(symbols)
+
+  const now = Date.now()
+  let totalDelta = 0
+  let updated = 0
+  for (const tr of open) {
+    const price = prices[tr.symbol]
+    if (!price || price <= 0) continue
+    // Single synthetic tick — high/low/close all equal current price.
+    // This covers the common case (price crosses TP/SL between cycles).
+    // Wick-only spikes will be picked up by the slow 5m replay.
+    const tick: OHLCV = { time: now, open: price, high: price, low: price, close: price, volume: 0 }
+    try {
+      const r = await trackOnePaper(tr, [tick], cfg)
+      totalDelta += r.pnlDelta
+      if (r.statusChanged) updated++
+    } catch (e: any) {
+      console.warn(`[PaperFast] track ${tr.symbol}#${tr.id} failed: ${e.message}`)
     }
   }
   return { updated, depositDelta: totalDelta }
@@ -408,6 +438,16 @@ export async function runPaperCycle(): Promise<{ opened: number; updated: number
   return { opened, updated: updated.updated, depositDelta: updated.depositDelta, deposit: final?.currentDepositUsd ?? 0 }
 }
 
+/** Fast cycle — CRYPTO-only TP/SL tracking via last-price. No open/expiry. */
+export async function runPaperCycleFast(): Promise<{ updated: number; depositDelta: number }> {
+  const cfg = await getOrCreateConfig()
+  if (!cfg || !cfg.enabled) return { updated: 0, depositDelta: 0 }
+
+  const r = await trackOpenPaperTradesFast(cfg)
+  if (r.depositDelta !== 0) await applyDepositDelta(cfg, r.depositDelta)
+  return r
+}
+
 export async function resetPaperAccount(newStartingDeposit?: number): Promise<PaperConfig> {
   const cfg = await getOrCreateConfig()
   if (!cfg) throw new Error('Paper config table missing — migration not applied yet')
@@ -435,22 +475,35 @@ export async function resetPaperAccount(newStartingDeposit?: number): Promise<Pa
 }
 
 let paperInterval: NodeJS.Timeout | null = null
+let paperFastInterval: NodeJS.Timeout | null = null
 export function startLevelsPaperTrader(): void {
   if (paperInterval) return
-  const tick = async () => {
+  const slowTick = async () => {
     try {
       const r = await runPaperCycle()
       if (r.opened > 0 || r.updated > 0) {
-        console.log(`[Paper] cycle: opened=${r.opened} updated=${r.updated} delta=${r.depositDelta.toFixed(2)} depo=$${r.deposit.toFixed(2)}`)
+        console.log(`[Paper] slow: opened=${r.opened} updated=${r.updated} delta=${r.depositDelta.toFixed(2)} depo=$${r.deposit.toFixed(2)}`)
       }
     } catch (e: any) {
-      console.error('[Paper] tick error:', e.message)
+      console.error('[Paper] slow tick error:', e.message)
     }
   }
-  setTimeout(tick, 90_000) // 90s after boot — after live tracker has had a chance to run
-  paperInterval = setInterval(tick, 5 * 60_000)
-  console.log('[Paper] started (5 min interval)')
+  const fastTick = async () => {
+    try {
+      const r = await runPaperCycleFast()
+      if (r.updated > 0) {
+        console.log(`[Paper] fast: updated=${r.updated} delta=${r.depositDelta.toFixed(2)}`)
+      }
+    } catch (e: any) {
+      console.error('[Paper] fast tick error:', e.message)
+    }
+  }
+  setTimeout(slowTick, 90_000) // 90s after boot — after live tracker has had a chance to run
+  paperInterval = setInterval(slowTick, 5 * 60_000)
+  paperFastInterval = setInterval(fastTick, 2_000)
+  console.log('[Paper] started (slow=5min, fast=2s for CRYPTO)')
 }
 export function stopLevelsPaperTrader(): void {
   if (paperInterval) { clearInterval(paperInterval); paperInterval = null }
+  if (paperFastInterval) { clearInterval(paperFastInterval); paperFastInterval = null }
 }

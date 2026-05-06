@@ -89,6 +89,18 @@ export interface LevelsV2Config {
    */
   maxRR: number
 
+  /**
+   * Time-of-day filter — reject signals whose entry hour (UTC) falls into one of these
+   * killzone names. Sessions:
+   *   ASIAN  23:00-04:00 UTC
+   *   LONDON 06:00-09:00 UTC
+   *   NY     12:00-15:00 UTC
+   *   NY_PM  15:00-17:00 UTC  (this one is unprofitable per 365d backtest 2026-05-06)
+   *   OFF    everything else
+   * Empty array = no filter. Default: ['NY_PM'] (the only consistently negative session).
+   */
+  excludeKillzones: Array<'ASIAN' | 'LONDON' | 'NY' | 'NY_PM' | 'OFF'>
+
   // Cooldown to avoid duplicate signals on same level
   cooldownBars: number
 
@@ -155,6 +167,7 @@ export const DEFAULT_LEVELS_V2: LevelsV2Config = {
   tpMinAtr: 0,  // 0 = disabled (use nearest level as TP1, even if very close)
   minRR: 0,     // disabled — sweep showed it removes profitable setups (R/tr drops from 1.09 to 0.64)
   maxRR: 8,     // reject lottery setups with TP1/risk > 8 (SL too tight, e.g. SEI 2026-05-06)
+  excludeKillzones: ['NY_PM'],  // 365d backtest 2026-05-06: NY_PM (15-17 UTC) had R/tr -0.10, only consistent loser
   cooldownBars: 4,
   allowReaction: true,
   allowBreakoutRetest: true,
@@ -498,6 +511,18 @@ export function buildLadder(
   return filtered.filter((p) => p < entry && farEnough(p)).sort((a, b) => b - a)
 }
 
+export type Killzone = 'ASIAN' | 'LONDON' | 'NY' | 'NY_PM' | 'OFF'
+
+/** Map a UTC unix-ms timestamp to its killzone session name. */
+export function killzoneOf(unixMs: number): Killzone {
+  const hour = new Date(unixMs).getUTCHours()
+  if (hour >= 23 || hour < 4) return 'ASIAN'
+  if (hour >= 6 && hour < 9) return 'LONDON'
+  if (hour >= 12 && hour < 15) return 'NY'
+  if (hour >= 15 && hour < 17) return 'NY_PM'
+  return 'OFF'
+}
+
 /**
  * Check that TP1 / risk ratio falls within [minRR, maxRR]. Returns false if signal
  * should be rejected. minRR=0 / maxRR=0 disable the respective bound.
@@ -544,6 +569,12 @@ export function generateSignalV2(
   const t = cur.time
   const atr = pre.atr[i]
   if (!isFinite(atr) || atr <= 0) return null
+
+  // Killzone filter — reject signals fired during excluded sessions (e.g. NY_PM, where
+  // 365d backtest showed R/tr -0.10).
+  if (cfg.excludeKillzones && cfg.excludeKillzones.length > 0) {
+    if (cfg.excludeKillzones.includes(killzoneOf(t))) return null
+  }
 
   const allowedSet = new Set(cfg.allowedSources)
   const activeIdxs = pre.activeAt[i] ?? []
