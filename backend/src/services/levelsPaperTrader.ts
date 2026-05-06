@@ -120,41 +120,23 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<number> {
   })
   const existingIds = new Set(existingTrades.map((t) => t.signalId))
 
-  // Circuit breakers
-  const dailyOk = await checkDailyLimit(cfg)
-  const weeklyOk = await checkWeeklyLimit(cfg)
-  if (!dailyOk || !weeklyOk) {
-    console.log(`[Paper] circuit breaker active (daily=${dailyOk}, weekly=${weeklyOk}), skipping new trades`)
-    return 0
-  }
-
+  // Circuit breakers disabled (2026-05-06) — user wants every signal taken
   let opened = 0
   for (const sig of signals) {
     if (existingIds.has(sig.id)) continue
 
-    // Concurrent positions check
-    const openCount = await prisma.levelsPaperTrade.count({
-      where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
-    })
-    if (openCount >= cfg.maxConcurrentPositions) {
-      console.log(`[Paper] max concurrent (${cfg.maxConcurrentPositions}) reached, skip sig ${sig.id}`)
-      continue
-    }
-    // Per-symbol limit
-    const sameSymOpen = await prisma.levelsPaperTrade.count({
-      where: { symbol: sig.symbol, status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
-    })
-    if (sameSymOpen >= cfg.maxPositionsPerSymbol) {
-      continue
-    }
-
+    // No concurrent / per-symbol caps — user opted in to take every signal (2026-05-06)
     const pos = calcPosition(cfg.currentDepositUsd, cfg.riskPctPerTrade, sig.entryPrice, sig.stopLoss)
     if (pos.positionUnits <= 0) continue
 
     // Use signal's openedAt (createdAt) as the entry timestamp so the tracker
     // replays from the moment the signal originally fired — backfilling any
     // already-happened TP/SL hits.
-    const entryAt = new Date(sig.createdAt)
+    // For LIMIT-mode signals: use entryFilledAt (when limit actually filled) so the
+    // tracker doesn't replay TP/SL hits that happened during the PENDING phase.
+    const entryAt = (sig as any).entryFilledAt
+      ? new Date((sig as any).entryFilledAt)
+      : new Date(sig.createdAt)
     await prisma.levelsPaperTrade.create({
       data: {
         signalId: sig.id,
@@ -287,12 +269,11 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Pr
         reason: tpName,
       })
       remainingFrac -= fillFrac
-      // Trailing SL — only if enabled (per-trade override falls back to config default).
-      // Default OFF: SL stays at initial until manually moved (matches real Bybit behavior).
+      // BE-only trailing — only if enabled (per-trade override falls back to config default).
+      // After TP1 move SL to entry (BE). After TP2/TP3 leave SL at BE — no further trailing.
       const trailEnabled = trade.autoTrailingSL ?? cfg.autoTrailingSL
-      if (trailEnabled) {
-        if (nextTpIdx === 0) currentStop = entry
-        else currentStop = tpLadder[nextTpIdx - 1]
+      if (trailEnabled && nextTpIdx === 0) {
+        currentStop = entry
       }
       status = nextTpIdx === 0 ? 'TP1_HIT' : nextTpIdx === 1 ? 'TP2_HIT' : 'TP3_HIT'
       statusChanged = true

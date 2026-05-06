@@ -276,9 +276,15 @@ model LevelsSignal {
   fiboImpulse       Json?                                    // {fromPrice, toPrice, direction, sizeAtr}
   reason            String                                   // human-readable
   // === Status / lifecycle ===
-  status            String    @default("NEW")                // NEW | ACTIVE | TP1_HIT | TP2_HIT | TP3_HIT | CLOSED | SL_HIT | EXPIRED
+  // Statuses for MARKET flow: NEW → ACTIVE → TP1_HIT → TP2_HIT → TP3_HIT → CLOSED / SL_HIT / EXPIRED
+  // Statuses for LIMIT flow:  PENDING → AWAITING_CONFIRM → ACTIVE (then same as above), or CANCELLED
+  status            String    @default("NEW")
   closes            Json      @default("[]")                 // [{price, percent, pnlR, closedAt}]
   realizedR         Float     @default(0)
+  // === Entry mode (LIMIT pending lifecycle) ===
+  entryMode         String    @default("MARKET")             // MARKET | LIMIT
+  entryFilledAt     DateTime?                                // when limit order filled (LIMIT only)
+  pendingExpiresAt  DateTime?                                // when limit-pending expires before fill (LIMIT only)
   // === Tracking ===
   lastPriceCheck    Float?                                   // last observed price (for live UI)
   lastPriceCheckAt  DateTime?

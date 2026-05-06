@@ -21,12 +21,15 @@ import { loadPolygonHistorical } from '../scalper/polygonLoader'
 import {
   precomputeLevelsV2, generateSignalV2, newSignalState, aggregateDailyToWeekly,
   DEFAULT_LEVELS_V2, LevelsV2Config, SignalV2,
+  findImpulse, isInFiboZone, buildLadder, nearestOpposite,
 } from '../scalper/levelsEngine2'
 import { sendNotification } from './notifier'
 
 // === Per-symbol production config (positive-EV combos from backtest) ===
 // side: 'BUY' = LONG-only, 'SELL' = SHORT-only, 'BOTH' = trade both directions
 type AllowedSide = 'BUY' | 'SELL' | 'BOTH'
+
+type EntryMode = 'MARKET' | 'LIMIT'
 
 interface SymbolSetup {
   symbol: string
@@ -39,6 +42,13 @@ interface SymbolSetup {
    * Per-setup tuned via 365d sweep backtest (2026-05-06).
    */
   tpMinAtr?: number
+  /**
+   * Entry mode:
+   *   'MARKET' (default) — wait for reaction-confirmation 5m close, enter at close.
+   *   'LIMIT' — place limit at level, fill on touch within 1h, confirm on next close.
+   * Per-setup decision via walk-forward backtest (2026-05-06): only SOL/ARB had stable LIMIT edge.
+   */
+  entryMode?: EntryMode
 }
 
 // Default setups — based on 365d backtest across 25+ symbols (2026-05-06).
@@ -68,14 +78,26 @@ export const DEFAULT_SETUPS: SymbolSetup[] = [
   { symbol: 'XRPUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3, tpMinAtr: 1.0 }, // +1.91 → +2.55 R/tr (sweep +9R)
   { symbol: 'SEIUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 },                // baseline best (+0.85)
   { symbol: 'WIFUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3, tpMinAtr: 2.0 }, // +0.73 → +1.17 R/tr (sweep +45R)
-  { symbol: 'SOLUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3, tpMinAtr: 1.0 }, // +0.69 → +1.17 R/tr (sweep +56R)
-  { symbol: 'ARBUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 },                // baseline best (+0.59)
+  // SOL & ARB: walk-forward validated LIMIT edge (2026-05-06).
+  //   SOL: TRAIN +1.17→+4.23 R/tr, TEST +0.07→+0.33 R/tr (LIMIT wins both periods).
+  //   ARB: TRAIN +0.58→+1.07 R/tr, TEST +0.41→+1.53 R/tr (LIMIT wins both periods).
+  // All other setups (XRP/SEI/WIF/AVAX/PEPE/ETH/HYPE/ENA/BTC) had unstable LIMIT edge in walk-forward,
+  // so they default to MARKET.
+  { symbol: 'SOLUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3, tpMinAtr: 1.0, entryMode: 'LIMIT' },
+  { symbol: 'ARBUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3,                entryMode: 'LIMIT' },
   { symbol: 'AVAXUSDT',     market: 'CRYPTO', side: 'SELL', fractalLR: 3, tpMinAtr: 1.0 }, // +0.46 → +0.73 R/tr (sweep +14R)
   { symbol: '1000PEPEUSDT', market: 'CRYPTO', side: 'SELL', fractalLR: 3 },                // baseline (no diff)
   { symbol: 'ETHUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 },                // baseline only — sweep ломает edge
   // Crypto LONG / BOTH outliers
   { symbol: 'HYPEUSDT',     market: 'CRYPTO', side: 'BUY',  fractalLR: 3, tpMinAtr: 0.5 }, // +0.74 → +0.71 R/tr, WR 40→52%
   { symbol: 'ENAUSDT',      market: 'CRYPTO', side: 'BOTH', fractalLR: 3, tpMinAtr: 1.5 }, // +1.86 → +2.11 R/tr (sweep +0.4R)
+  // === Round 5 additions (2026-05-06) — 365d backtest of 20 new altcoins, walk-forward validated ===
+  // Out of 60 combos (20 sym × 3 sides), 8 passed PASS criteria, 5 stable in walk-forward,
+  // tpMinAtr swept per symbol. Final 4 added (AAVE BOTH dropped — duplicates SELL).
+  { symbol: 'AAVEUSDT',     market: 'CRYPTO', side: 'SELL', fractalLR: 3, tpMinAtr: 1.5 }, // ★★★ +2.19 R/tr (139 trades, +304R/yr) — tpMinAtr sweep gives +1.44 vs baseline
+  { symbol: 'STRKUSDT',     market: 'CRYPTO', side: 'SELL', fractalLR: 3 },                // +0.47 R/tr (56 trades, WR 68%)
+  { symbol: 'BLURUSDT',     market: 'CRYPTO', side: 'SELL', fractalLR: 3 },                // +0.39 R/tr (36 trades, WR 58%)
+  { symbol: 'CRVUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3, tpMinAtr: 0.5 }, // +0.44 R/tr (74 trades) — sweep slightly improves
 ]
 
 const DEDUP_WINDOW_MS = 60 * 60_000 // 1h: don't fire 2 signals on same level within 1h
@@ -139,7 +161,21 @@ async function dedupHit(symbol: string, side: 'BUY' | 'SELL', level: number): Pr
       side,
       createdAt: { gte: since },
       level: { gte: level - eps, lte: level + eps },
-      status: { in: ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT'] },
+      status: { in: ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT', 'PENDING', 'AWAITING_CONFIRM'] },
+    },
+  })
+  return !!existing
+}
+
+/** Same dedup but checks active PENDING signal on the exact level for LIMIT mode (longer window). */
+async function pendingDedupHit(symbol: string, side: 'BUY' | 'SELL', level: number): Promise<boolean> {
+  const eps = level * 0.0005
+  const existing = await prisma.levelsSignal.findFirst({
+    where: {
+      symbol,
+      side,
+      level: { gte: level - eps, lte: level + eps },
+      status: { in: ['PENDING', 'AWAITING_CONFIRM', 'ACTIVE', 'TP1_HIT', 'TP2_HIT'] },
     },
   })
   return !!existing
@@ -210,6 +246,129 @@ async function saveAndNotify(setup: SymbolSetup, sig: SignalV2, expiryHours: num
   console.log(`[LevelsScanner] NEW ${setup.symbol} ${sig.side} ${sig.event} @ ${sig.source} ${sig.level.toFixed(2)} (id=${created.id})`)
 }
 
+/** LIMIT-mode parameters (1h fill window, ~15min of confirm window after fill). */
+export const PENDING_VALID_HOURS = 1   // 12 × 5m bars = 1h
+export const CONFIRM_WINDOW_BARS = 3   // 3 × 5m bars = 15min after fill
+
+/**
+ * For LIMIT-mode setups: scan active levels in current Fibo zone, create PENDING signals
+ * for any level not already pending. Returns number of PENDING signals created.
+ */
+async function scanLimitPending(setup: SymbolSetup, m5: OHLCV[], m15: OHLCV[], h1: OHLCV[], d1: OHLCV[], cfg: LevelsV2Config, expiryHours: number): Promise<number> {
+  const w1 = aggregateDailyToWeekly(d1)
+  const pre = precomputeLevelsV2(m5, d1, w1, cfg, m15, h1)
+  const lastIdx = m5.length - 1
+  const cur = m5[lastIdx]
+  const atr = pre.atr[lastIdx]
+  if (!isFinite(atr) || atr <= 0) return 0
+
+  const activeIdxs = pre.activeAt[lastIdx] ?? []
+  if (activeIdxs.length === 0) return 0
+  const allowedSet = new Set(cfg.allowedSources)
+  const impulse = findImpulse(m5, lastIdx, cfg.fiboImpulseLookback, cfg.fiboImpulseMinAtr, atr)
+  if (!impulse) return 0
+
+  const allowedSides: Array<'BUY' | 'SELL'> = setup.side === 'BOTH' ? ['BUY', 'SELL']
+    : setup.side === 'BUY' ? ['BUY'] : ['SELL']
+
+  // All active level prices (for SL/TP computation)
+  const priceSet = new Map<string, number>()
+  for (const li of activeIdxs) {
+    const lvl = pre.levels[li]
+    if (!allowedSet.has(lvl.source)) continue
+    priceSet.set(lvl.price.toFixed(8), lvl.price)
+  }
+  const allPrices = [...priceSet.values()]
+
+  let created = 0
+  for (const li of activeIdxs) {
+    const lvl = pre.levels[li]
+    if (!allowedSet.has(lvl.source)) continue
+    for (const side of allowedSides) {
+      // Must be in fibo zone for matching impulse direction
+      if (!isInFiboZone(lvl.price, side, impulse, cfg.fiboZoneFrom, cfg.fiboZoneTo, 0)) continue
+      // BUY limits below current, SELL above
+      if (side === 'BUY' && lvl.price >= cur.close) continue
+      if (side === 'SELL' && lvl.price <= cur.close) continue
+
+      // Skip if already pending/active for this level
+      if (await pendingDedupHit(setup.symbol, side, lvl.price)) continue
+
+      // Compute SL & TP relative to limit price
+      const opp = nearestOpposite(side, lvl.price, allPrices)
+      const slBuf = atr * cfg.slBufferAtr
+      const sl = opp !== null
+        ? (side === 'BUY' ? opp - slBuf : opp + slBuf)
+        : (side === 'BUY' ? lvl.price - atr * cfg.fallbackSlAtr : lvl.price + atr * cfg.fallbackSlAtr)
+      const tpLadder = buildLadder(side, lvl.price, lvl.price, allPrices, atr * cfg.tpMinAtr)
+      if (tpLadder.length === 0) continue
+      // Sanity: SL on correct side
+      if ((side === 'BUY' && sl >= lvl.price) || (side === 'SELL' && sl <= lvl.price)) continue
+
+      const now = Date.now()
+      const pendingExpiresAt = new Date(now + PENDING_VALID_HOURS * 60 * 60_000)
+      const expiresAt = new Date(now + expiryHours * 60 * 60_000)
+
+      const reason = `LIMIT_PENDING ${side} @ ${lvl.source} ${lvl.price.toFixed(4)} (fibo ${impulse.direction}, awaiting fill within ${PENDING_VALID_HOURS}h)`
+
+      const dbCreated = await prisma.levelsSignal.create({
+        data: {
+          symbol: setup.symbol,
+          market: setup.market,
+          side,
+          event: 'REACTION', // semantically a reaction-style entry
+          source: lvl.source,
+          level: lvl.price,
+          entryPrice: lvl.price,
+          stopLoss: sl,
+          initialStop: sl,
+          currentStop: sl,
+          tpLadder,
+          isFiboConfluence: true,
+          fiboImpulse: impulse as any,
+          reason,
+          status: 'PENDING',
+          entryMode: 'LIMIT',
+          pendingExpiresAt,
+          expiresAt,
+        },
+      })
+
+      // Telegram notify (best-effort)
+      let depositUsd: number | undefined, riskPctPerTrade: number | undefined
+      try {
+        const paperCfg = await prisma.levelsPaperConfig.findUnique({ where: { id: 1 } })
+        if (paperCfg) { depositUsd = paperCfg.currentDepositUsd; riskPctPerTrade = paperCfg.riskPctPerTrade }
+      } catch {}
+      try {
+        await sendNotification('LEVELS_PENDING' as any, {
+          id: dbCreated.id,
+          symbol: setup.symbol,
+          market: setup.market,
+          side,
+          source: lvl.source,
+          level: lvl.price,
+          entryPrice: lvl.price,
+          stopLoss: sl,
+          tpLadder,
+          isFibo: true,
+          reason,
+          depositUsd,
+          riskPctPerTrade,
+          pendingExpiresAt,
+        })
+        await prisma.levelsSignal.update({ where: { id: dbCreated.id }, data: { notifiedTelegram: true } })
+      } catch (e: any) {
+        console.error('[LevelsScanner] LIMIT pending notify failed:', e.message)
+      }
+
+      console.log(`[LevelsScanner] PENDING ${setup.symbol} ${side} @ ${lvl.source} ${lvl.price.toFixed(4)} (id=${dbCreated.id})`)
+      created++
+    }
+  }
+  return created
+}
+
 async function scanSymbol(setup: SymbolSetup, expiryHours: number): Promise<number> {
   let signalsFired = 0
   try {
@@ -218,8 +377,16 @@ async function scanSymbol(setup: SymbolSetup, expiryHours: number): Promise<numb
       console.warn(`[LevelsScanner] ${setup.symbol}: not enough 5m candles (${m5.length})`)
       return 0
     }
-    const w1 = aggregateDailyToWeekly(d1)
     const cfg = buildCfg(setup.fractalLR, setup.market, setup.tpMinAtr ?? 0)
+
+    // === LIMIT mode: scan active levels in fibo zone, create PENDING signals ===
+    if (setup.entryMode === 'LIMIT') {
+      signalsFired = await scanLimitPending(setup, m5, m15, h1, d1, cfg, expiryHours)
+      return signalsFired
+    }
+
+    // === MARKET mode (default): wait for confirmed reaction signal on the last bar ===
+    const w1 = aggregateDailyToWeekly(d1)
     const pre = precomputeLevelsV2(m5, d1, w1, cfg, m15, h1)
 
     // Replay last few bars to populate signal state (pending pierces)

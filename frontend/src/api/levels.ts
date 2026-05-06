@@ -5,7 +5,11 @@ import { BASE, getHeaders } from './base'
 export type LevelsMarket = 'FOREX' | 'CRYPTO'
 export type LevelsSide = 'BUY' | 'SELL'
 export type LevelsEvent = 'REACTION' | 'BREAKOUT_RETEST'
-export type LevelsStatus = 'NEW' | 'ACTIVE' | 'TP1_HIT' | 'TP2_HIT' | 'TP3_HIT' | 'CLOSED' | 'SL_HIT' | 'EXPIRED'
+export type LevelsStatus =
+  | 'NEW' | 'ACTIVE' | 'TP1_HIT' | 'TP2_HIT' | 'TP3_HIT' | 'CLOSED' | 'SL_HIT' | 'EXPIRED'
+  | 'PENDING' | 'AWAITING_CONFIRM' | 'CANCELLED'
+
+export type LevelsEntryMode = 'MARKET' | 'LIMIT'
 
 export interface LevelsClose {
   price: number
@@ -41,6 +45,10 @@ export interface LevelsSignal {
   status: LevelsStatus
   closes: LevelsClose[]
   realizedR: number
+  // LIMIT-mode lifecycle
+  entryMode: LevelsEntryMode
+  entryFilledAt: string | null
+  pendingExpiresAt: string | null
   lastPriceCheck: number | null
   lastPriceCheckAt: string | null
   notifiedTelegram: boolean
@@ -69,6 +77,8 @@ export interface LevelsSetup {
   market: LevelsMarket
   side: 'BUY' | 'SELL' | 'BOTH'
   fractalLR: 3 | 5
+  tpMinAtr?: number
+  entryMode?: LevelsEntryMode
 }
 
 export interface LevelsConfig {
@@ -188,6 +198,15 @@ export async function editLevelsSignal(id: number, patch: {
 export async function closeLevelsSignalMarket(id: number): Promise<LevelsSignal> {
   return handle(
     await fetch(`${BASE}/api/levels/${id}/close-market`, {
+      method: 'POST',
+      headers: getHeaders(),
+    }),
+  )
+}
+
+export async function cancelPendingLevelsSignal(id: number): Promise<LevelsSignal> {
+  return handle(
+    await fetch(`${BASE}/api/levels/${id}/cancel-pending`, {
       method: 'POST',
       headers: getHeaders(),
     }),

@@ -466,7 +466,7 @@ export function isInFiboZone(
   return retr >= zoneFrom - tolerance && retr <= zoneTo + tolerance
 }
 
-function buildLadder(
+export function buildLadder(
   side: 'BUY' | 'SELL',
   entry: number,
   triggerLevel: number,
@@ -481,7 +481,7 @@ function buildLadder(
   return filtered.filter((p) => p < entry && farEnough(p)).sort((a, b) => b - a)
 }
 
-function nearestOpposite(side: 'BUY' | 'SELL', triggerLevel: number, candidates: number[]): number | null {
+export function nearestOpposite(side: 'BUY' | 'SELL', triggerLevel: number, candidates: number[]): number | null {
   if (side === 'BUY') {
     const below = candidates.filter((p) => p < triggerLevel)
     return below.length === 0 ? null : Math.max(...below)

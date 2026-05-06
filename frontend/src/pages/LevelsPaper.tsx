@@ -2,12 +2,18 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   getPaperConfig, updatePaperConfig, resetPaper,
   getPaperTrades, getPaperStats, runPaperCycleNow,
-  getPaperLivePrices,
+  getPaperLivePrices, wipeAllPaper,
   type PaperConfig, type PaperTrade, type PaperStats, type PaperTradeLive,
 } from '../api/levelsPaper'
+import {
+  getLevelsSignals, getLevelsConfig, updateLevelsConfig,
+  scanLevelsNow, trackLevelsNow,
+  type LevelsSignal, type LevelsStatus, type LevelsConfig as LevelsCfg, type LevelsSetup,
+} from '../api/levels'
 import PaperTradeModal from '../components/PaperTradeModal'
+import LevelsSignalModal from '../components/LevelsSignalModal'
 import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
-import { formatDate, pnlColor, fmt2, fmt2Signed } from '../lib/formatters'
+import { formatDate, pnlColor, fmt2, fmt2Signed, fmtPrice as fmtPriceShared } from '../lib/formatters'
 
 function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): PositionChartPosition {
   const closes = t.closes || []
@@ -77,11 +83,28 @@ function LiveTimer({ openedAt }: { openedAt: string }) {
 function fmtUsd(n: number): string {
   return `${n >= 0 ? '+' : ''}$${Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2)}`
 }
-function fmtPrice(n: number, symbol: string, market: string): string {
+// Wraps shared fmtPrice — handles low-value coins (PEPE etc) automatically.
+function fmtPrice(n: number, _symbol?: string, _market?: string): string {
   if (n == null || isNaN(n)) return '—'
-  const dec = market === 'CRYPTO' ? (symbol.includes('USDT') ? 2 : 6) : (/^XAU|^XAG/.test(symbol) ? 2 : /JPY/.test(symbol) ? 3 : 5)
-  return n.toFixed(dec)
+  return fmtPriceShared(n)
 }
+
+// Status badges for raw signals (matches Levels.tsx old palette)
+const SIGNAL_STATUS_BADGE: Record<LevelsStatus, { bg: string; text: string; label: string }> = {
+  NEW:               { bg: 'bg-yellow-500/15', text: 'text-yellow-400', label: 'NEW' },
+  ACTIVE:            { bg: 'bg-blue-500/15',   text: 'text-blue-400',   label: 'ACTIVE' },
+  TP1_HIT:           { bg: 'bg-green-500/15',  text: 'text-green-400',  label: 'TP1' },
+  TP2_HIT:           { bg: 'bg-green-500/20',  text: 'text-green-400',  label: 'TP2' },
+  TP3_HIT:           { bg: 'bg-green-500/25',  text: 'text-green-400',  label: 'TP3' },
+  CLOSED:            { bg: 'bg-green-500/30',  text: 'text-green-300',  label: 'CLOSED' },
+  SL_HIT:            { bg: 'bg-red-500/15',    text: 'text-red-400',    label: 'SL' },
+  EXPIRED:           { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'EXP' },
+  PENDING:           { bg: 'bg-purple-500/15', text: 'text-purple-300', label: '⏳ PENDING' },
+  AWAITING_CONFIRM:  { bg: 'bg-purple-500/25', text: 'text-purple-200', label: '⏳ FILL' },
+  CANCELLED:         { bg: 'bg-neutral/10',    text: 'text-neutral',    label: '❎ CANCEL' },
+}
+
+type Tab = 'TRADES' | 'SIGNALS'
 
 export default function LevelsPaper() {
   const [config, setConfig] = useState<PaperConfig | null>(null)
@@ -96,6 +119,14 @@ export default function LevelsPaper() {
   const [selectedTrade, setSelectedTrade] = useState<PaperTrade | null>(null)
   const [chartTrade, setChartTrade] = useState<PaperTrade | null>(null)
   const [livePrices, setLivePrices] = useState<Record<number, PaperTradeLive>>({})
+  // Tab + signals state (merged from old /levels page)
+  const [tab, setTab] = useState<Tab>('TRADES')
+  const [signals, setSignals] = useState<LevelsSignal[]>([])
+  const [signalsLoading, setSignalsLoading] = useState(false)
+  const [signalsConfig, setSignalsConfig] = useState<LevelsCfg | null>(null)
+  const [setups, setSetups] = useState<LevelsSetup[]>([])
+  const [selectedSignal, setSelectedSignal] = useState<LevelsSignal | null>(null)
+  const [scanRunning, setScanRunning] = useState(false)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -124,6 +155,71 @@ export default function LevelsPaper() {
     const t = setInterval(loadAll, 30_000)
     return () => clearInterval(t)
   }, [loadAll])
+
+  // === Signals tab data loading ===
+  const loadSignals = useCallback(async () => {
+    setSignalsLoading(true)
+    try {
+      const status: LevelsStatus[] | undefined = statusFilter === 'OPEN'
+        ? ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT', 'PENDING', 'AWAITING_CONFIRM']
+        : statusFilter === 'CLOSED'
+        ? ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT', 'CANCELLED']
+        : undefined
+      const res = await getLevelsSignals({ status, limit: 200 })
+      setSignals(res.data)
+    } catch {
+      // silently
+    } finally {
+      setSignalsLoading(false)
+    }
+  }, [statusFilter])
+
+  const loadSignalsConfig = useCallback(async () => {
+    try {
+      const r = await getLevelsConfig()
+      setSignalsConfig(r.config)
+      setSetups(r.defaultSetups)
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    if (tab === 'SIGNALS') loadSignals()
+  }, [tab, loadSignals])
+  useEffect(() => { loadSignalsConfig() }, [loadSignalsConfig])
+
+  const handleScanNow = async () => {
+    setScanRunning(true)
+    try {
+      await scanLevelsNow()
+      await trackLevelsNow()
+      await loadSignals()
+      await loadAll()
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setScanRunning(false)
+    }
+  }
+  const handleToggleSignalsEnabled = async () => {
+    if (!signalsConfig) return
+    const updated = await updateLevelsConfig({ enabled: !signalsConfig.enabled })
+    setSignalsConfig(updated)
+  }
+  const handleWipeAll = async () => {
+    const amount = window.prompt('Очистить ВСЕ сигналы и сделки и сбросить депо. Введи новый стартовый депозит:', String(config?.startingDepositUsd ?? 500))
+    if (!amount) return
+    const n = parseFloat(amount)
+    if (!isFinite(n) || n <= 0) { alert('Некорректное число'); return }
+    if (!confirm(`ОЧИСТИТЬ ВСЁ? Удалятся все сигналы и виртуальные сделки. Депо: $${n}`)) return
+    try {
+      const r = await wipeAllPaper(n)
+      alert(`Удалено: ${r.deletedSignals} сигналов, ${r.deletedTrades} сделок. Депо: $${r.config.currentDepositUsd}`)
+      await loadAll()
+      await loadSignals()
+    } catch (e: any) {
+      alert(`Ошибка: ${e.message}`)
+    }
+  }
 
   // Poll live prices every 3s for open trades
   useEffect(() => {
@@ -205,25 +301,49 @@ export default function LevelsPaper() {
     <div>
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Демо-счёт (Paper Trading)</h1>
+          <h1 className="text-2xl font-semibold">Уровни</h1>
           <p className="text-sm text-text-secondary">
-            Автоматическая виртуальная торговля по сигналам из /levels · реальные данные, виртуальный депозит
+            Стратегия V2 + Fibo · авто-сигналы каждые 5 мин · виртуальная торговля + Telegram
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <button onClick={handleScanNow} disabled={scanRunning}
+            className="px-4 py-2 bg-accent text-primary rounded font-medium hover:bg-accent/90 disabled:opacity-50">
+            {scanRunning ? 'Сканирую…' : 'Скан сейчас'}
+          </button>
           <button onClick={handleCycleNow} disabled={cycleRunning}
             className="px-4 py-2 bg-card border border-input rounded font-medium hover:bg-input disabled:opacity-50">
-            {cycleRunning ? 'Обновляю...' : 'Обновить сейчас'}
+            {cycleRunning ? 'Обновляю...' : 'Обновить демо'}
           </button>
           <button onClick={handleToggle}
             className={`px-4 py-2 rounded font-medium ${config.enabled
               ? 'bg-long/15 text-long border border-long/40 hover:bg-long/25'
               : 'bg-card border border-input hover:bg-input'}`}>
-            {config.enabled ? '● Включён' : '○ Выключен'}
+            {config.enabled ? '● Демо вкл.' : '○ Демо выкл.'}
+          </button>
+          <button onClick={handleToggleSignalsEnabled}
+            className={`px-4 py-2 rounded font-medium ${signalsConfig?.enabled
+              ? 'bg-long/15 text-long border border-long/40 hover:bg-long/25'
+              : 'bg-card border border-input hover:bg-input'}`}>
+            {signalsConfig?.enabled ? '● Сканер вкл.' : '○ Сканер выкл.'}
           </button>
           <button onClick={() => setShowSettings(!showSettings)}
             className="px-4 py-2 bg-card border border-input rounded font-medium hover:bg-input">⚙ Настройки</button>
+          <button onClick={handleWipeAll}
+            className="px-4 py-2 bg-short/15 border border-short/40 text-short rounded font-medium hover:bg-short/25">
+            🗑 Очистить всё
+          </button>
         </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-2 mb-4 border-b border-input">
+        <TabButton active={tab === 'TRADES'} onClick={() => setTab('TRADES')}>
+          💼 Виртуальные сделки
+        </TabButton>
+        <TabButton active={tab === 'SIGNALS'} onClick={() => setTab('SIGNALS')}>
+          📡 Сигналы (raw)
+        </TabButton>
       </div>
 
       {/* Top stats */}
@@ -261,18 +381,13 @@ export default function LevelsPaper() {
               </button>
               <div className="text-xs text-text-secondary mt-1">
                 {config.autoTrailingSL
-                  ? 'После TP1 → SL в BE, после TP2 → SL в TP1'
+                  ? 'После TP1 → SL в BE. После TP2/TP3 SL не двигается.'
                   : 'SL стоит на initial до ручного переноса (как Bybit)'}
               </div>
             </div>
-            <ConfigField label="Daily loss limit (%)" value={config.dailyLossLimitPct}
-              onChange={(v) => handleConfigSave({ dailyLossLimitPct: v })} step={1} min={1} max={50} />
-            <ConfigField label="Weekly loss limit (%)" value={config.weeklyLossLimitPct}
-              onChange={(v) => handleConfigSave({ weeklyLossLimitPct: v })} step={1} min={1} max={50} />
-            <ConfigField label="Max позиций одновременно" value={config.maxConcurrentPositions}
-              onChange={(v) => handleConfigSave({ maxConcurrentPositions: Math.round(v) })} step={1} min={1} max={10} />
-            <ConfigField label="Max на инструмент" value={config.maxPositionsPerSymbol}
-              onChange={(v) => handleConfigSave({ maxPositionsPerSymbol: Math.round(v) })} step={1} min={1} max={5} />
+          </div>
+          <div className="text-xs text-text-secondary mt-3 bg-input/40 rounded p-2">
+            ⚠ Лимиты на дневной/недельный убыток и на количество позиций <b>отключены</b> — берём все сигналы без ограничений.
           </div>
           <div className="border-t border-input mt-4 pt-4 flex items-end gap-3 flex-wrap">
             <div className="flex-1 min-w-[200px]">
@@ -294,12 +409,14 @@ export default function LevelsPaper() {
 
       {error && <div className="bg-short/15 border border-short/30 text-short rounded p-3 mb-4">{error}</div>}
 
-      {/* Filters */}
+      {/* Filters (shared across tabs) */}
       <div className="flex gap-2 mb-4">
         <FilterButton active={statusFilter === 'OPEN'} onClick={() => setStatusFilter('OPEN')}>Открытые</FilterButton>
         <FilterButton active={statusFilter === 'CLOSED'} onClick={() => setStatusFilter('CLOSED')}>Закрытые</FilterButton>
         <FilterButton active={statusFilter === 'ALL'} onClick={() => setStatusFilter('ALL')}>Все</FilterButton>
       </div>
+
+      {tab === 'TRADES' && (<>{/* === TRADES TAB === */}
 
       {/* Trades table — same style as /сделки */}
       <div className="bg-card border border-input rounded overflow-hidden mb-6">
@@ -386,9 +503,15 @@ export default function LevelsPaper() {
                       )}
                     </td>
                     <td className="px-3 py-2 text-right font-mono leading-tight">
-                      <span className="text-text-primary">${fmt2(remainingPositionUsd)}</span>
-                      {closedPctNum > 0 && closedPctNum < 100 && (
-                        <div className="text-[10px] text-text-secondary">было ${fmt2(t.positionSizeUsd)}</div>
+                      {isFinished ? (
+                        <span className="text-text-secondary">${fmt2(t.positionSizeUsd)}</span>
+                      ) : (
+                        <>
+                          <span className="text-text-primary">${fmt2(remainingPositionUsd)}</span>
+                          {closedPctNum > 0 && closedPctNum < 100 && (
+                            <div className="text-[10px] text-text-secondary">было ${fmt2(t.positionSizeUsd)}</div>
+                          )}
+                        </>
                       )}
                     </td>
                     <td className="px-3 py-2 text-right font-mono leading-tight">
@@ -485,6 +608,16 @@ export default function LevelsPaper() {
           </div>
         </div>
       )}
+      </>)}
+
+      {tab === 'SIGNALS' && (
+        <SignalsTab
+          signals={signals}
+          loading={signalsLoading}
+          setups={setups}
+          onSelect={setSelectedSignal}
+        />
+      )}
 
       {selectedTrade && (
         <PaperTradeModal
@@ -511,7 +644,117 @@ export default function LevelsPaper() {
           onClose={() => setChartTrade(null)}
         />
       )}
+
+      {selectedSignal && (
+        <LevelsSignalModal
+          signal={selectedSignal}
+          onClose={() => setSelectedSignal(null)}
+          onUpdate={(updated) => {
+            setSelectedSignal(updated)
+            setSignals(prev => prev.map(s => s.id === updated.id ? updated : s))
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+function SignalsTab({ signals, loading, setups, onSelect }: {
+  signals: LevelsSignal[]; loading: boolean; setups: LevelsSetup[];
+  onSelect: (s: LevelsSignal) => void
+}) {
+  return (
+    <>
+      {/* Setups overview */}
+      {setups.length > 0 && (
+        <details className="mb-4 bg-card border border-input rounded">
+          <summary className="px-4 py-2 cursor-pointer font-semibold text-sm">Активные инструменты ({setups.length})</summary>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 p-3 border-t border-input">
+            {setups.map(s => {
+              const sideText = s.side === 'BUY' ? 'LONG' : s.side === 'SELL' ? 'SHORT' : 'BOTH'
+              const sideColor = s.side === 'BUY' ? 'text-long' : s.side === 'SELL' ? 'text-short' : 'text-text-primary'
+              const isLimit = s.entryMode === 'LIMIT'
+              return (
+                <div key={`${s.symbol}-${s.side}`} className="bg-input/30 rounded p-2">
+                  <div className="font-mono font-semibold text-sm">{s.symbol}</div>
+                  <div className="text-xs text-text-secondary">
+                    <span className={sideColor}>{sideText}</span> · {s.market}
+                    {isLimit && <span className="ml-1 text-purple-300">⏳ LIMIT</span>}
+                    {s.tpMinAtr ? <span className="ml-1 text-accent">tpMin {s.tpMinAtr}</span> : null}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </details>
+      )}
+
+      {/* Signals table */}
+      <div className="bg-card border border-input rounded overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs min-w-[900px]">
+            <thead className="bg-input text-text-secondary">
+              <tr>
+                <th className="text-left px-3 py-2">Время</th>
+                <th className="text-left px-3 py-2">Символ</th>
+                <th className="text-left px-3 py-2">Сторона</th>
+                <th className="text-left px-3 py-2">Событие</th>
+                <th className="text-right px-3 py-2 font-mono">Уровень</th>
+                <th className="text-right px-3 py-2 font-mono">Вход</th>
+                <th className="text-right px-3 py-2 font-mono">SL</th>
+                <th className="text-right px-3 py-2 font-mono">TP1/TP2/TP3</th>
+                <th className="text-center px-3 py-2">Status</th>
+                <th className="text-right px-3 py-2 font-mono">R</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr><td colSpan={10} className="text-center py-8 text-text-secondary">Загрузка...</td></tr>
+              )}
+              {!loading && signals.length === 0 && (
+                <tr><td colSpan={10} className="text-center py-8 text-text-secondary">Сигналов нет</td></tr>
+              )}
+              {!loading && signals.map(s => {
+                const tps = s.tpLadder.slice(0, 3)
+                const sideColor = s.side === 'BUY' ? 'text-long' : 'text-short'
+                const sideEmoji = s.side === 'BUY' ? '🟢' : '🔴'
+                const badge = SIGNAL_STATUS_BADGE[s.status]
+                const rTone = s.realizedR > 0 ? 'text-long' : s.realizedR < 0 ? 'text-short' : 'text-text-secondary'
+                return (
+                  <tr key={s.id} onClick={() => onSelect(s)}
+                    className="border-t border-input hover:bg-input/40 cursor-pointer">
+                    <td className="px-3 py-2 text-text-secondary text-xs">
+                      {new Date(s.createdAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    </td>
+                    <td className="px-3 py-2 font-mono font-semibold">{s.symbol}</td>
+                    <td className={`px-3 py-2 font-medium ${sideColor}`}>{sideEmoji} {s.side === 'BUY' ? 'LONG' : 'SHORT'}</td>
+                    <td className="px-3 py-2 text-xs">
+                      {s.event === 'BREAKOUT_RETEST' ? '🚀 BR' : '🎯 React'}
+                      {s.isFiboConfluence && <span className="ml-1 text-accent">🌀</span>}
+                      {s.entryMode === 'LIMIT' && <span className="ml-1 text-purple-300">⏳</span>}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono">${fmtPriceShared(s.level)}</td>
+                    <td className="px-3 py-2 text-right font-mono">${fmtPriceShared(s.entryPrice)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-short">${fmtPriceShared(s.currentStop)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-xs">
+                      {tps.map(tp => fmtPriceShared(tp)).join(' / ')}
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${badge?.bg} ${badge?.text}`}>
+                        {badge?.label ?? s.status}
+                      </span>
+                    </td>
+                    <td className={`px-3 py-2 text-right font-mono ${rTone}`}>
+                      {s.realizedR !== 0 ? `${s.realizedR >= 0 ? '+' : ''}${s.realizedR.toFixed(2)}R` : '—'}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -523,6 +766,18 @@ function Stat({ label, value, sub, tone }: { label: string; value: string; sub?:
       <div className={`text-lg font-mono font-semibold ${color}`}>{value}</div>
       {sub && <div className="text-xs text-text-secondary">{sub}</div>}
     </div>
+  )
+}
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button onClick={onClick}
+      className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+        active
+          ? 'border-accent text-accent'
+          : 'border-transparent text-text-secondary hover:text-text-primary'
+      }`}>
+      {children}
+    </button>
   )
 }
 function FilterButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {

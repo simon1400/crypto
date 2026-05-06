@@ -93,6 +93,27 @@ router.post('/reset', async (req, res) => {
   }
 })
 
+/**
+ * WIPE ALL — destructive. Deletes every LevelsSignal and LevelsPaperTrade in the DB,
+ * then resets the paper account deposit. Use to start clean.
+ */
+router.post('/wipe-all', async (req, res) => {
+  try {
+    const { startingDepositUsd } = req.body as { startingDepositUsd?: number }
+    const tradesDeleted = await prisma.levelsPaperTrade.deleteMany({})
+    const signalsDeleted = await prisma.levelsSignal.deleteMany({})
+    const cfg = await resetPaperAccount(startingDepositUsd)
+    res.json({
+      ok: true,
+      deletedTrades: tradesDeleted.count,
+      deletedSignals: signalsDeleted.count,
+      config: cfg,
+    })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 router.post('/cycle-now', async (_req, res) => {
   try {
     const result = await runPaperCycle()

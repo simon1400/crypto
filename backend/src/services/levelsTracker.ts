@@ -14,6 +14,8 @@ import { OHLCV } from './market'
 import { loadHistorical } from '../scalper/historicalLoader'
 import { loadForexHistorical } from '../scalper/forexLoader'
 import { sendNotification } from './notifier'
+import { CONFIRM_WINDOW_BARS } from './levelsLiveScanner'
+import { DEFAULT_LEVELS_V2 } from '../scalper/levelsEngine2'
 
 // === Production exit logic: ladder 50/30/20 + trailing SL ===
 // Tested on 90d, 3-symbol portfolio (XAU/EUR/BTC):
@@ -58,6 +60,141 @@ async function getUsdContext(signalId: number): Promise<{
     }
   } catch {
     return null
+  }
+}
+
+/**
+ * Compute simple ATR(14) on a candle window. Used for confirmation/pierce thresholds
+ * during PENDING tracking (no need to recompute full level catalogue).
+ */
+function atrAt(candles: OHLCV[], i: number, period = 14): number {
+  if (i < period) return 0
+  let sum = 0
+  for (let k = i - period + 1; k <= i; k++) {
+    if (k <= 0) continue
+    const prev = candles[k - 1].close
+    sum += Math.max(candles[k].high - candles[k].low, Math.abs(candles[k].high - prev), Math.abs(candles[k].low - prev))
+  }
+  return sum / period
+}
+
+/**
+ * Track a LIMIT-mode signal in PENDING or AWAITING_CONFIRM state.
+ * Transitions:
+ *   PENDING + wick touches level → AWAITING_CONFIRM (record entryFilledAt)
+ *   PENDING + pendingExpiresAt passed without fill → CANCELLED
+ *   PENDING + close pierces level wrong-way by pierceMinAtr × ATR → CANCELLED (anti-knife)
+ *   AWAITING_CONFIRM + close confirms (≥ reactionMinReturnAtr × ATR in our side) → ACTIVE
+ *   AWAITING_CONFIRM + close pierces wrong-way by pierceMinAtr × ATR → CANCELLED
+ *   AWAITING_CONFIRM + CONFIRM_WINDOW_BARS bars passed without confirm → CANCELLED
+ */
+async function trackPendingLimit(sig: any, recentCandles: OHLCV[]): Promise<void> {
+  const sinceMs = sig.lastPriceCheckAt
+    ? new Date(sig.lastPriceCheckAt).getTime()
+    : new Date(sig.createdAt).getTime()
+  const newCandles = recentCandles.filter((c) => c.time > sinceMs)
+  if (newCandles.length === 0) return
+
+  const isLong = sig.side === 'BUY'
+  const level: number = sig.level
+  const pierceMin = DEFAULT_LEVELS_V2.pierceMinAtr      // 0.5 × ATR
+  const reactionMin = DEFAULT_LEVELS_V2.reactionMinReturnAtr // 0.3 × ATR
+
+  let status: string = sig.status
+  let entryFilledAt: Date | null = sig.entryFilledAt ? new Date(sig.entryFilledAt) : null
+  let cancelled = false
+  let activated = false
+
+  for (let k = 0; k < newCandles.length; k++) {
+    const c = newCandles[k]
+    // ATR — find candle's index in recentCandles and compute on that subarray
+    const idxInRecent = recentCandles.indexOf(c)
+    const atr = atrAt(recentCandles, idxInRecent)
+    if (atr <= 0) continue
+
+    // Anti-knife: close pierces against us by pierceMinAtr×ATR
+    if (isLong && c.close < level - atr * pierceMin) {
+      status = 'CANCELLED'
+      cancelled = true
+      break
+    }
+    if (!isLong && c.close > level + atr * pierceMin) {
+      status = 'CANCELLED'
+      cancelled = true
+      break
+    }
+
+    // PENDING phase: watch for fill (wick touching level)
+    if (status === 'PENDING') {
+      // Expiry check
+      if (sig.pendingExpiresAt && new Date(sig.pendingExpiresAt) < new Date(c.time)) {
+        status = 'CANCELLED'
+        cancelled = true
+        break
+      }
+      const filled = isLong ? c.low <= level : c.high >= level
+      if (filled) {
+        status = 'AWAITING_CONFIRM'
+        entryFilledAt = new Date(c.time)
+        // Don't break — same bar's close might already provide confirmation
+      }
+    }
+
+    // AWAITING_CONFIRM phase: watch for reaction-confirmation close
+    if (status === 'AWAITING_CONFIRM' && entryFilledAt) {
+      const sinceFillMs = c.time - entryFilledAt.getTime()
+      const sinceFillBars = Math.floor(sinceFillMs / (5 * 60_000))
+      // Confirm window expired
+      if (sinceFillBars > CONFIRM_WINDOW_BARS) {
+        status = 'CANCELLED'
+        cancelled = true
+        break
+      }
+      const minReturn = atr * reactionMin
+      const confirmed = isLong ? c.close >= level + minReturn : c.close <= level - minReturn
+      if (confirmed) {
+        status = 'ACTIVE'
+        activated = true
+        break
+      }
+    }
+  }
+
+  // PENDING expiry standalone (no candles processed but time passed)
+  if (status === 'PENDING' && sig.pendingExpiresAt && new Date(sig.pendingExpiresAt) < new Date()) {
+    status = 'CANCELLED'
+    cancelled = true
+  }
+
+  const lastCandle = newCandles[newCandles.length - 1]
+  await prisma.levelsSignal.update({
+    where: { id: sig.id },
+    data: {
+      status,
+      entryFilledAt: entryFilledAt ?? undefined,
+      lastPriceCheck: lastCandle.close,
+      lastPriceCheckAt: new Date(lastCandle.time),
+      ...(cancelled ? { closedAt: new Date() } : {}),
+    },
+  })
+
+  if (activated) {
+    try {
+      await sendNotification('LEVELS_LIMIT_FILLED' as any, {
+        id: sig.id, symbol: sig.symbol, side: sig.side, level: sig.level,
+        entryPrice: sig.entryPrice, slPrice: sig.currentStop, tpLadder: sig.tpLadder,
+      })
+    } catch (e: any) {
+      console.error('[LevelsTracker] LIMIT_FILLED notify failed:', e.message)
+    }
+    console.log(`[LevelsTracker] LIMIT activated id=${sig.id} ${sig.symbol} ${sig.side} @ ${sig.level}`)
+  } else if (cancelled) {
+    try {
+      await sendNotification('LEVELS_LIMIT_CANCELLED' as any, {
+        id: sig.id, symbol: sig.symbol, side: sig.side, level: sig.level,
+      })
+    } catch {}
+    console.log(`[LevelsTracker] LIMIT cancelled id=${sig.id} ${sig.symbol} ${sig.side} @ ${sig.level}`)
   }
 }
 
@@ -130,8 +267,8 @@ async function trackOne(sig: any, recentCandles: OHLCV[]): Promise<void> {
       })
       remainingFrac -= fillFrac
       // Trailing SL move
-      if (nextTpIdx === 0) currentStop = entry           // BE after TP1
-      else currentStop = tpLadder[nextTpIdx - 1]         // previous TP after TP(n>1)
+      // BE-only trailing: after TP1 move SL to entry; after TP2/TP3 leave SL at BE.
+      if (nextTpIdx === 0) currentStop = entry
       // Status step
       status = (nextTpIdx === 0 ? 'TP1_HIT' : nextTpIdx === 1 ? 'TP2_HIT' : 'TP3_HIT')
       // Telegram
@@ -190,7 +327,7 @@ async function trackOne(sig: any, recentCandles: OHLCV[]): Promise<void> {
 
 export async function runLevelsTrackerCycle(): Promise<number> {
   const open = await prisma.levelsSignal.findMany({
-    where: { status: { in: ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT'] } },
+    where: { status: { in: ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT', 'PENDING', 'AWAITING_CONFIRM'] } },
   })
   if (open.length === 0) return 0
 
@@ -208,7 +345,11 @@ export async function runLevelsTrackerCycle(): Promise<number> {
       const market = sigs[0].market as 'FOREX' | 'CRYPTO'
       const candles = await loadRecent5m(symbol, market)
       for (const sig of sigs) {
-        await trackOne(sig, candles)
+        if (sig.status === 'PENDING' || sig.status === 'AWAITING_CONFIRM') {
+          await trackPendingLimit(sig, candles)
+        } else {
+          await trackOne(sig, candles)
+        }
         processed++
       }
     } catch (e: any) {

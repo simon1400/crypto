@@ -23,6 +23,12 @@
     "src/scalper/runBacktest365_retry.ts",
     "src/scalper/runBacktest365_polygon.ts",
     "src/scalper/polygonProbe.ts",
-    "src/scalper/runBacktest_tpMinAtr_sweep.ts"
+    "src/scalper/runBacktest_tpMinAtr_sweep.ts",
+    "src/scalper/runBacktest_limit_compare.ts",
+    "src/scalper/runBacktest_limit_realistic.ts",
+    "src/scalper/runBacktest_walkforward.ts",
+    "src/scalper/runBacktest_new_setups.ts",
+    "src/scalper/runBacktest_walkforward_new.ts",
+    "src/scalper/runBacktest_tpMinAtr_sweep_new.ts"
   ]
 }

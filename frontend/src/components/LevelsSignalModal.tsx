@@ -2,7 +2,9 @@ import { useState } from 'react'
 import {
   type LevelsSignal,
   editLevelsSignal, closeLevelsSignalMarket, closeLevelsSignalManual,
+  cancelPendingLevelsSignal,
 } from '../api/levels'
+import { fmtPrice } from '../lib/formatters'
 
 interface Props {
   signal: LevelsSignal
@@ -10,16 +12,9 @@ interface Props {
   onUpdate?: (updated: LevelsSignal) => void
 }
 
-function fmt(n: number, dec = 5): string {
+function fmt(n: number): string {
   if (n == null || isNaN(n)) return '—'
-  if (Math.abs(n) >= 1000) return n.toFixed(2)
-  return n.toFixed(dec)
-}
-function dec(symbol: string, market: string): number {
-  if (market === 'CRYPTO') return symbol.includes('USDT') ? 2 : 6
-  if (/^XAU|^XAG/.test(symbol)) return 2
-  if (/JPY/.test(symbol)) return 3
-  return 5
+  return fmtPrice(n)
 }
 function pct(from: number, to: number, side: 'BUY' | 'SELL'): string {
   if (!from) return ''
@@ -35,10 +30,13 @@ function rDist(entry: number, sl: number, target: number, side: 'BUY' | 'SELL'):
 }
 
 const isOpen = (status: string) => ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT'].includes(status)
+const isPending = (status: string) => ['PENDING', 'AWAITING_CONFIRM'].includes(status)
 
 export default function LevelsSignalModal({ signal: initialSignal, onClose, onUpdate }: Props) {
   const [signal, setSignal] = useState<LevelsSignal>(initialSignal)
-  const d = dec(signal.symbol, signal.market)
+  // Decimals for number inputs — based on price magnitude
+  const sample = signal.entryPrice || signal.level
+  const d = sample >= 100 ? 2 : sample >= 1 ? 4 : sample >= 0.01 ? 5 : 8
   const sideText = signal.side === 'BUY' ? 'LONG' : 'SHORT'
   const sideColor = signal.side === 'BUY' ? 'text-long' : 'text-short'
   const sideEmoji = signal.side === 'BUY' ? '🟢' : '🔴'
@@ -114,11 +112,25 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
   }
 
   const canEdit = isOpen(signal.status)
+  const canCancelPending = isPending(signal.status)
+  const cancelPending = async () => {
+    if (!confirm('Отменить ожидающий лимит-ордер?')) return
+    setBusy(true); setError(null)
+    try {
+      const updated = await cancelPendingLevelsSignal(signal.id)
+      setSignal(updated)
+      onUpdate?.(updated)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div
-        className="bg-bg-primary border border-input rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+        className="bg-primary border border-input rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-input p-4 flex justify-between items-start">
@@ -132,7 +144,7 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
               )}
             </div>
             <p className="text-sm text-text-secondary">
-              {eventText} @ {signal.source} {fmt(signal.level, d)} · {new Date(signal.createdAt).toLocaleString('ru-RU')}
+              {eventText} @ {signal.source} {fmt(signal.level)} · {new Date(signal.createdAt).toLocaleString('ru-RU')}
             </p>
           </div>
           <button onClick={onClose} className="text-text-secondary hover:text-text-primary text-xl">×</button>
@@ -143,6 +155,26 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
 
           {error && (
             <div className="bg-short/15 border border-short/30 text-short rounded p-2 text-sm mb-3">{error}</div>
+          )}
+
+          {/* Cancel pending limit (PENDING / AWAITING_CONFIRM only) */}
+          {canCancelPending && (
+            <div className="flex gap-2 mb-4 flex-wrap">
+              <button onClick={cancelPending} disabled={busy}
+                className="px-3 py-1.5 bg-short/15 border border-short/40 text-short rounded text-sm font-medium hover:bg-short/25">
+                ❎ Отменить лимит
+              </button>
+              {signal.entryMode === 'LIMIT' && signal.pendingExpiresAt && signal.status === 'PENDING' && (
+                <span className="px-3 py-1.5 bg-card border border-input rounded text-xs text-text-secondary">
+                  ⏰ Истекает: {new Date(signal.pendingExpiresAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              )}
+              {signal.status === 'AWAITING_CONFIRM' && signal.entryFilledAt && (
+                <span className="px-3 py-1.5 bg-purple-500/15 border border-purple-500/40 text-purple-300 rounded text-xs">
+                  Лимит исполнен в {new Date(signal.entryFilledAt).toLocaleTimeString('ru-RU')}, жду подтверждения
+                </span>
+              )}
+            </div>
           )}
 
           {/* Action buttons */}
@@ -166,7 +198,7 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
               ) : (
                 <>
                   <button onClick={saveEdit} disabled={busy}
-                    className="px-3 py-1.5 bg-accent text-bg-primary rounded text-sm font-medium hover:bg-accent/90">
+                    className="px-3 py-1.5 bg-accent text-primary rounded text-sm font-medium hover:bg-accent/90">
                     {busy ? 'Сохраняю...' : 'Сохранить'}
                   </button>
                   <button onClick={cancelEdit} disabled={busy}
@@ -198,7 +230,7 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
               </div>
               <div className="flex gap-2">
                 <button onClick={closeAtPrice} disabled={busy}
-                  className="px-3 py-1.5 bg-accent text-bg-primary rounded text-sm font-medium">
+                  className="px-3 py-1.5 bg-accent text-primary rounded text-sm font-medium">
                   {busy ? 'Закрываю...' : 'Подтвердить закрытие'}
                 </button>
                 <button onClick={() => setShowCloseManual(false)} disabled={busy}
@@ -209,12 +241,12 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
 
           {/* Geometry — view or edit */}
           <div className="grid grid-cols-2 gap-3 mb-4">
-            <PriceCard label="Уровень" value={fmt(signal.level, d)} sub={signal.source} />
+            <PriceCard label="Уровень" value={fmt(signal.level)} sub={signal.source} />
             {editing ? (
               <EditableCard label="Вход" dec={d}
                 value={editEntry} onChange={setEditEntry} />
             ) : (
-              <PriceCard label="Вход" value={fmt(signal.entryPrice, d)} sub="" />
+              <PriceCard label="Вход" value={fmt(signal.entryPrice)} sub="" />
             )}
             {editing ? (
               <EditableCard label="SL" dec={d} tone="short"
@@ -222,7 +254,7 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
             ) : (
               <PriceCard
                 label="SL (current)"
-                value={fmt(signal.currentStop, d)}
+                value={fmt(signal.currentStop)}
                 sub={pct(signal.entryPrice, signal.currentStop, signal.side)}
                 tone="short"
               />
@@ -230,7 +262,7 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
             {!editing && (
               <PriceCard
                 label="SL initial"
-                value={fmt(signal.initialStop, d)}
+                value={fmt(signal.initialStop)}
                 sub={pct(signal.entryPrice, signal.initialStop, signal.side)}
                 tone="short"
                 dim
@@ -264,7 +296,7 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
                 >
                   <div className="flex items-center gap-3">
                     <span className={`font-mono font-semibold w-12 ${isHit ? 'text-long' : ''}`}>TP{i + 1}</span>
-                    <span className="font-mono">{fmt(tp, d)}</span>
+                    <span className="font-mono">{fmt(tp)}</span>
                     <span className="text-xs text-text-secondary">{pct(signal.entryPrice, tp, signal.side)}</span>
                     <span className="text-xs text-accent">{rDist(signal.entryPrice, signal.initialStop, tp, signal.side)}</span>
                   </div>
@@ -299,7 +331,7 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
               <div className="space-y-1 mb-4 text-sm">
                 {signal.closes.map((c, i) => (
                   <div key={i} className="flex justify-between bg-card border border-input rounded p-2">
-                    <span className="font-mono">{c.reason} @ {fmt(c.price, d)}</span>
+                    <span className="font-mono">{c.reason} @ {fmt(c.price)}</span>
                     <span className="text-text-secondary">{c.percent.toFixed(0)}%</span>
                     <span className={`font-mono ${c.pnlR > 0 ? 'text-long' : c.pnlR < 0 ? 'text-short' : ''}`}>
                       {c.pnlR >= 0 ? '+' : ''}{c.pnlR.toFixed(2)}R
@@ -316,7 +348,7 @@ export default function LevelsSignalModal({ signal: initialSignal, onClose, onUp
               <div className="font-semibold mb-1">🌀 Fibo Impulse</div>
               <div className="text-text-secondary">
                 {signal.fiboImpulse.direction} · {signal.fiboImpulse.sizeAtr.toFixed(1)}×ATR ·
-                {' '}{fmt(signal.fiboImpulse.fromPrice, d)} → {fmt(signal.fiboImpulse.toPrice, d)}
+                {' '}{fmt(signal.fiboImpulse.fromPrice)} → {fmt(signal.fiboImpulse.toPrice)}
               </div>
             </div>
           )}

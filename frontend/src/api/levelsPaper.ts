@@ -100,6 +100,16 @@ export async function resetPaper(startingDepositUsd?: number): Promise<PaperConf
   }))
 }
 
+export async function wipeAllPaper(startingDepositUsd?: number): Promise<{
+  ok: true; deletedTrades: number; deletedSignals: number; config: PaperConfig
+}> {
+  return handle(await fetch(`${BASE}/api/levels-paper/wipe-all`, {
+    method: 'POST',
+    headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ startingDepositUsd }),
+  }))
+}
+
 export async function getPaperTrades(opts: { status?: string[]; symbol?: string; limit?: number; offset?: number } = {}): Promise<{ data: PaperTrade[]; total: number }> {
   const p = new URLSearchParams()
   if (opts.status?.length) p.set('status', opts.status.join(','))

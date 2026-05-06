@@ -281,6 +281,68 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
       ].join('\n')
     }
 
+    case 'LEVELS_PENDING' as any: {
+      const sideEmoji = d.side === 'BUY' ? '🟢' : '🔴'
+      const sideText = d.side === 'BUY' ? 'LONG' : 'SHORT'
+      const sym = d.symbol
+      const dec = d.market === 'FOREX' ? forexDecimals(sym) : (sym.includes('USDT') ? 2 : 5)
+      const tps: number[] = (d.tpLadder as number[] || []).slice(0, 3)
+      const tpLines = tps.map((tp, i) => {
+        const pct = d.entryPrice ? (((tp - d.entryPrice) / d.entryPrice) * 100 * (d.side === 'BUY' ? 1 : -1)).toFixed(2) : '?'
+        const pctClose = i === 0 ? '50%' : i === 1 ? '30%' : '20%'
+        return `   ├ TP${i + 1}  <code>${tp.toFixed(dec)}</code>  (+${pct}%)  [${pctClose}]`
+      }).join('\n')
+      const slPctVal = d.entryPrice ? (((d.stopLoss - d.entryPrice) / d.entryPrice) * 100 * (d.side === 'BUY' ? 1 : -1)).toFixed(2) : '?'
+      const expiresStr = d.pendingExpiresAt ? new Date(d.pendingExpiresAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : ''
+
+      let sizingBlock = ''
+      if (typeof d.depositUsd === 'number' && typeof d.riskPctPerTrade === 'number' && d.depositUsd > 0) {
+        const riskUsd = (d.depositUsd * d.riskPctPerTrade) / 100
+        const slDist = Math.abs(d.entryPrice - d.stopLoss)
+        const positionUnits = slDist > 0 ? riskUsd / slDist : 0
+        const positionSizeUsd = d.entryPrice * positionUnits
+        sizingBlock = [
+          ``,
+          `💰 Депо:    <code>$${d.depositUsd.toFixed(2)}</code>  · Риск ${d.riskPctPerTrade}% (<code>$${riskUsd.toFixed(2)}</code>)`,
+          `📐 Размер   <code>$${positionSizeUsd.toFixed(2)}</code>`,
+        ].join('\n')
+      }
+      return [
+        `⏳ ${sideEmoji} <b>${sym}</b> <b>${sideText}</b>  · 📌 Лимит ждёт`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `📐 Лимит    <code>${(d.entryPrice as number).toFixed(dec)}</code>  (${d.source})`,
+        `🛑 SL       <code>${(d.stopLoss as number).toFixed(dec)}</code>  (${slPctVal}%)`,
+        ``,
+        `🎯 Тейки:`,
+        tpLines,
+        sizingBlock,
+        ``,
+        `⏰ Действителен до ${expiresStr}`,
+      ].filter((l) => l !== '').join('\n')
+    }
+
+    case 'LEVELS_LIMIT_FILLED' as any: {
+      const sym = d.symbol
+      const dec = sym.includes('USDT') ? 2 : 5
+      return [
+        `🎯 <b>${sym}</b>  Лимит исполнен → активна`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `📍 Вход   <code>${(d.entryPrice as number).toFixed(dec)}</code>`,
+        `🛑 SL     <code>${(d.slPrice as number).toFixed(dec)}</code>`,
+      ].join('\n')
+    }
+
+    case 'LEVELS_LIMIT_CANCELLED' as any: {
+      const sym = d.symbol
+      const dec = sym.includes('USDT') ? 2 : 5
+      return [
+        `❎ <b>${sym}</b>  Лимит отменён`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `📐 Уровень <code>${(d.level as number).toFixed(dec)}</code>`,
+        `<i>Цена не дотронулась за окно или импульс сломался.</i>`,
+      ].join('\n')
+    }
+
     case 'LEVELS_DAILY_SUMMARY' as any: {
       const date = (d.date as string) || new Date().toISOString().slice(0, 10)
       const opened = d.opened as number

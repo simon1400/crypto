@@ -213,8 +213,11 @@ router.post('/:id/close-market', async (req, res) => {
     const id = parseInt(req.params.id, 10)
     const sig = await prisma.levelsSignal.findUnique({ where: { id } })
     if (!sig) return res.status(404).json({ error: 'Not found' })
-    if (sig.status === 'CLOSED' || sig.status === 'SL_HIT' || sig.status === 'EXPIRED') {
+    if (sig.status === 'CLOSED' || sig.status === 'SL_HIT' || sig.status === 'EXPIRED' || sig.status === 'CANCELLED') {
       return res.status(400).json({ error: `Already ${sig.status}` })
+    }
+    if (sig.status === 'PENDING' || sig.status === 'AWAITING_CONFIRM') {
+      return res.status(400).json({ error: `Cannot close in ${sig.status} state — use cancel-pending` })
     }
     const price = await getCurrentPrice(sig.symbol, sig.market)
     if (price === null) return res.status(503).json({ error: 'Could not fetch market price' })
@@ -260,8 +263,11 @@ router.post('/:id/close-manual', async (req, res) => {
     const id = parseInt(req.params.id, 10)
     const sig = await prisma.levelsSignal.findUnique({ where: { id } })
     if (!sig) return res.status(404).json({ error: 'Not found' })
-    if (sig.status === 'CLOSED' || sig.status === 'SL_HIT' || sig.status === 'EXPIRED') {
+    if (sig.status === 'CLOSED' || sig.status === 'SL_HIT' || sig.status === 'EXPIRED' || sig.status === 'CANCELLED') {
       return res.status(400).json({ error: `Already ${sig.status}` })
+    }
+    if (sig.status === 'PENDING' || sig.status === 'AWAITING_CONFIRM') {
+      return res.status(400).json({ error: `Cannot close in ${sig.status} state — use cancel-pending` })
     }
     const { price, percent } = req.body as { price?: number; percent?: number }
     if (typeof price !== 'number' || price <= 0) {
@@ -296,6 +302,28 @@ router.post('/:id/close-manual', async (req, res) => {
         lastPriceCheck: price,
         lastPriceCheckAt: new Date(),
       },
+    })
+    res.json(updated)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * Cancel a PENDING or AWAITING_CONFIRM (LIMIT) signal manually.
+ * Marks status as CANCELLED, sets closedAt.
+ */
+router.post('/:id/cancel-pending', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const sig = await prisma.levelsSignal.findUnique({ where: { id } })
+    if (!sig) return res.status(404).json({ error: 'Not found' })
+    if (sig.status !== 'PENDING' && sig.status !== 'AWAITING_CONFIRM') {
+      return res.status(400).json({ error: `Cannot cancel — status is ${sig.status}` })
+    }
+    const updated = await prisma.levelsSignal.update({
+      where: { id },
+      data: { status: 'CANCELLED', closedAt: new Date() },
     })
     res.json(updated)
   } catch (e: any) {
