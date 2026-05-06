@@ -3,9 +3,7 @@ import { prisma } from '../db/prisma'
 import { runLevelsScanCycle, DEFAULT_SETUPS } from '../services/levelsLiveScanner'
 import { runLevelsTrackerCycle } from '../services/levelsTracker'
 import { loadHistorical } from '../scalper/historicalLoader'
-import {
-  precomputeLevelsV2, aggregateDailyToWeekly, DEFAULT_LEVELS_V2, type LevelV2,
-} from '../scalper/levelsEngine2'
+import { aggregateDailyToWeekly } from '../scalper/levelsEngine2'
 
 /** Get the latest 5m close for a symbol — used as "current market price" for manual close. */
 async function getCurrentPrice(symbol: string): Promise<number | null> {
@@ -354,45 +352,41 @@ router.get('/key-levels/:symbol', async (req, res) => {
     if (m5.length < 50) return res.json({ levels: [] })
 
     const w1 = aggregateDailyToWeekly(d1)
-    // Skip M15/H1 loading — we no longer surface those fractals on the chart.
-    const cfg = {
-      ...DEFAULT_LEVELS_V2,
-      fiboMode: 'off' as const,
-      // Restrict precompute to PDH/PDL/PWH/PWL only — saves work
-      allowedSources: ['PDH', 'PDL', 'PWH', 'PWL'] as any,
-    }
-    const pre = precomputeLevelsV2(m5, d1, w1, cfg)
     const lastIdx = m5.length - 1
     const refPrice = entryPrice > 0 ? entryPrice : m5[lastIdx].close
     const tolerance = refPrice * 0.02
 
     type Out = { price: number; label: string; kind: string; isSignal?: boolean }
     const out: Out[] = []
-    const seen = new Set<string>()
-    // Russian labels — easier to scan on the right axis at a glance.
-    // PDH/PDL = previous day's high/low (yesterday's, not today's session).
-    // PWH/PWL = previous week's high/low.
-    const labelMap: Record<string, string> = {
-      PDH: 'Макс вчера',
-      PDL: 'Мин вчера',
-      PWH: 'Макс прошл. недели',
-      PWL: 'Мин прошл. недели',
-    }
 
-    const activeIdxs = pre.activeAt[lastIdx] ?? []
-    for (const li of activeIdxs) {
-      const lvl: LevelV2 = pre.levels[li]
-      const label = labelMap[lvl.source]
-      if (!label) continue
-      if (Math.abs(lvl.price - refPrice) > tolerance) continue
-      const key = `${lvl.source}:${lvl.price.toFixed(8)}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      out.push({ price: lvl.price, label, kind: lvl.source })
+    // Take PDH/PDL/PWH/PWL directly from the daily/weekly arrays — we want them
+    // on the chart for context regardless of "exhausted" status (price already
+    // pierced both sides). The exhaustion logic only matters for signal generation.
+    //
+    // Daily array: last entry is today's session (still forming), so [length-2] is
+    // yesterday's closed candle = PDH/PDL.
+    if (d1.length >= 2) {
+      const prevDay = d1[d1.length - 2]
+      if (Math.abs(prevDay.high - refPrice) <= tolerance) {
+        out.push({ price: prevDay.high, label: 'Макс вчера', kind: 'PDH' })
+      }
+      if (Math.abs(prevDay.low - refPrice) <= tolerance) {
+        out.push({ price: prevDay.low, label: 'Мин вчера', kind: 'PDL' })
+      }
+    }
+    // Weekly array: aggregateDailyToWeekly only includes fully-closed weeks, so
+    // last entry IS last week (no "current week" entry).
+    if (w1.length >= 1) {
+      const prevWeek = w1[w1.length - 1]
+      if (Math.abs(prevWeek.high - refPrice) <= tolerance) {
+        out.push({ price: prevWeek.high, label: 'Макс прошл. недели', kind: 'PWH' })
+      }
+      if (Math.abs(prevWeek.low - refPrice) <= tolerance) {
+        out.push({ price: prevWeek.low, label: 'Мин прошл. недели', kind: 'PWL' })
+      }
     }
 
     // Today's session high/low — built live from m5 (PDH/PDL only have prev day).
-    // Useful context: chart shows what the current day has done so far.
     const todayStart = new Date()
     todayStart.setUTCHours(0, 0, 0, 0)
     const todayStartMs = todayStart.getTime()
