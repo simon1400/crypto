@@ -40,7 +40,7 @@ function paperTradeToPosition(
       closedAt: c.closedAt,
       isSL: c.reason === 'SL',
     })),
-    keyLevels: keyLevels?.map(k => ({ price: k.price, label: k.label, kind: k.kind })),
+    keyLevels: keyLevels?.map(k => ({ price: k.price, label: k.label, kind: k.kind, isSignal: k.isSignal })),
     title: `${t.symbol} ${t.side === 'BUY' ? 'LONG' : 'SHORT'} (DEMO #${t.id})`,
   }
 }
@@ -159,15 +159,20 @@ export default function LevelsPaper() {
 
   useEffect(() => { loadAll() }, [loadAll])
 
-  // Fetch key reference levels (PDH/PDL/PWH/PWL + nearby fractals) when opening chart
+  // Fetch key reference levels (PDH/PDL/PWH/PWL + the signal's own level)
+  // when opening chart. Uses the signalId to look up the signal's source/level
+  // so we can highlight which exact level fired the trade.
   useEffect(() => {
     if (!chartTrade) { setChartKeyLevels([]); return }
     let cancelled = false
-    getKeyLevels(chartTrade.symbol, chartTrade.entryPrice)
+    const sig = signals.find(s => s.id === chartTrade.signalId)
+    const signalLevel = sig?.level
+    const signalSource = sig?.source
+    getKeyLevels(chartTrade.symbol, chartTrade.entryPrice, signalLevel, signalSource)
       .then(r => { if (!cancelled) setChartKeyLevels(r.levels) })
       .catch(() => { if (!cancelled) setChartKeyLevels([]) })
     return () => { cancelled = true }
-  }, [chartTrade])
+  }, [chartTrade, signals])
   useEffect(() => {
     const t = setInterval(loadAll, 30_000)
     return () => clearInterval(t)

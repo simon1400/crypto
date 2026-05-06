@@ -263,19 +263,8 @@ export default function PositionChartModal({ position, onClose }: Props) {
       })
     })
 
-    // --- Structural reference levels (PDH/PDL/PWH/PWL + nearest M15/H1 fractals) ---
+    // --- Reference levels: structural (PDH/PDL/PWH/PWL grey) + signal-level highlighted ---
     if (position.keyLevels && position.keyLevels.length > 0) {
-      // Color per kind for quick recognition
-      const colorByKind: Record<string, string> = {
-        PDH: '#9ca3af',         // grey-400 — yesterday's high
-        PDL: '#9ca3af',
-        PWH: '#a78bfa',         // violet — last week's high (stronger)
-        PWL: '#a78bfa',
-        FRACTAL_H1: '#60a5fa',  // blue — H1 fractal (strong swing)
-        FRACTAL_M15: '#3b82f6', // blue-darker — M15 fractal
-        FRACTAL_5M: '#475569',
-        OTHER: '#475569',
-      }
       // Skip levels that overlap entry/SL/TP within ±0.05% — they're already drawn
       const eps = entry * 0.0005
       const drawn = [entry, stopLoss, ...takeProfits]
@@ -283,14 +272,27 @@ export default function PositionChartModal({ position, onClose }: Props) {
 
       for (const kl of position.keyLevels) {
         if (isOverlap(kl.price)) continue
-        candleSeries.createPriceLine({
-          price: kl.price,
-          color: colorByKind[kl.kind] ?? '#475569',
-          lineWidth: 1,
-          lineStyle: LineStyle.Dotted,
-          axisLabelVisible: true,
-          title: kl.label,
-        })
+        if (kl.isSignal) {
+          // The level that fired the trade — yellow accent, slightly bolder, dashed
+          candleSeries.createPriceLine({
+            price: kl.price,
+            color: '#f0b90b',
+            lineWidth: 2,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: kl.label,
+          })
+        } else {
+          // Daily/weekly references — muted grey, dotted
+          candleSeries.createPriceLine({
+            price: kl.price,
+            color: '#6b7280',
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            axisLabelVisible: true,
+            title: kl.label,
+          })
+        }
       }
     }
 

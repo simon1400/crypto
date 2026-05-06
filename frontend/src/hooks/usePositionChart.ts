@@ -16,8 +16,9 @@ export const INTERVAL_SECONDS: Record<ChartInterval, number> = {
 
 export interface KeyLevel {
   price: number
-  label: string                              // "PDH", "PDL", "PWH", "PWL", "Fractal H1 89.50" etc.
-  kind: 'PDH' | 'PDL' | 'PWH' | 'PWL' | 'FRACTAL_H1' | 'FRACTAL_M15' | 'FRACTAL_5M' | 'OTHER'
+  label: string                              // "PDH", "PDL", "PWH", "PWL", "Сигнал · M15" etc.
+  kind: 'PDH' | 'PDL' | 'PWH' | 'PWL' | 'SIGNAL'
+  isSignal?: boolean                         // true → highlighted line (the level that fired the trade)
 }
 
 export interface PositionChartPosition {

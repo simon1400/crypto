@@ -207,12 +207,20 @@ export async function closeLevelsSignalMarket(id: number): Promise<LevelsSignal>
 export interface KeyLevelDto {
   price: number
   label: string
-  kind: 'PDH' | 'PDL' | 'PWH' | 'PWL' | 'FRACTAL_H1' | 'FRACTAL_M15' | 'FRACTAL_5M' | 'OTHER'
+  kind: 'PDH' | 'PDL' | 'PWH' | 'PWL' | 'SIGNAL'
+  isSignal?: boolean
 }
 
-export async function getKeyLevels(symbol: string, entryPrice?: number): Promise<{ levels: KeyLevelDto[] }> {
+export async function getKeyLevels(
+  symbol: string,
+  entryPrice?: number,
+  signalLevel?: number,
+  signalSource?: string,
+): Promise<{ levels: KeyLevelDto[] }> {
   const p = new URLSearchParams()
   if (entryPrice !== undefined) p.set('entryPrice', String(entryPrice))
+  if (signalLevel !== undefined && signalLevel > 0) p.set('signalLevel', String(signalLevel))
+  if (signalSource) p.set('signalSource', signalSource)
   return handle(await fetch(`${BASE}/api/levels/key-levels/${encodeURIComponent(symbol)}?${p}`, { headers: getHeaders() }))
 }
 

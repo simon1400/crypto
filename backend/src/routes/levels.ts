@@ -332,58 +332,90 @@ router.post('/:id/cancel-pending', async (req, res) => {
 })
 
 /**
- * GET /api/levels/key-levels/:symbol?market=CRYPTO&entryPrice=88.81
- * Returns the structural reference levels (PDH/PDL/PWH/PWL + nearest fractals) to draw
- * on the position chart. Filters to levels within ±5% of entryPrice (or ±5% of latest close).
+ * GET /api/levels/key-levels/:symbol?entryPrice=88.81&signalLevel=88.5&signalSource=FRACTAL_HIGH_M15
+ *
+ * Returns ONLY:
+ *   - The exact level the signal fired from (kind=SIGNAL, isSignal=true)
+ *   - Structural daily/weekly references in ±2% window: PDH/PDL/PWH/PWL
+ *
+ * No M15/H1/5m fractals — they spam the chart and the user's mental model is
+ * "the signal level + structural daily/weekly context", not the engine's full
+ * fractal index.
  */
 router.get('/key-levels/:symbol', async (req, res) => {
   try {
     const symbol = req.params.symbol
     const entryPrice = parseFloat(req.query.entryPrice as string) || 0
+    const signalLevel = parseFloat(req.query.signalLevel as string) || 0
+    const signalSource = (req.query.signalSource as string) || ''
 
-    const m5  = await loadHistorical(symbol, '5m',  1, 'bybit', 'linear')
-    const m15 = await loadHistorical(symbol, '15m', 1, 'bybit', 'linear')
-    const h1  = await loadHistorical(symbol, '1h',  1, 'bybit', 'linear')
-    const d1  = await loadHistorical(symbol, '1d',  3, 'bybit', 'linear')
+    const m5 = await loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
+    const d1 = await loadHistorical(symbol, '1d', 3, 'bybit', 'linear')
     if (m5.length < 50) return res.json({ levels: [] })
 
     const w1 = aggregateDailyToWeekly(d1)
-    const cfg = { ...DEFAULT_LEVELS_V2, fiboMode: 'off' as const }
-    const pre = precomputeLevelsV2(m5, d1, w1, cfg, m15, h1)
+    // Skip M15/H1 loading — we no longer surface those fractals on the chart.
+    const cfg = {
+      ...DEFAULT_LEVELS_V2,
+      fiboMode: 'off' as const,
+      // Restrict precompute to PDH/PDL/PWH/PWL only — saves work
+      allowedSources: ['PDH', 'PDL', 'PWH', 'PWL'] as any,
+    }
+    const pre = precomputeLevelsV2(m5, d1, w1, cfg)
     const lastIdx = m5.length - 1
     const refPrice = entryPrice > 0 ? entryPrice : m5[lastIdx].close
-    const tolerance = refPrice * 0.05  // ±5% window
+    const tolerance = refPrice * 0.02
+
+    type Out = { price: number; label: string; kind: string; isSignal?: boolean }
+    const out: Out[] = []
+    const seen = new Set<string>()
+    // Russian labels — easier to scan on the right axis at a glance
+    const labelMap: Record<string, string> = {
+      PDH: 'Макс дня',
+      PDL: 'Мин дня',
+      PWH: 'Макс недели',
+      PWL: 'Мин недели',
+    }
 
     const activeIdxs = pre.activeAt[lastIdx] ?? []
-    const seen = new Set<string>()
-    type Out = { price: number; label: string; kind: string }
-    const out: Out[] = []
-    const labelMap: Record<string, { kind: string; label: string }> = {
-      PDH: { kind: 'PDH', label: 'PDH' },
-      PDL: { kind: 'PDL', label: 'PDL' },
-      PWH: { kind: 'PWH', label: 'PWH' },
-      PWL: { kind: 'PWL', label: 'PWL' },
-      FRACTAL_HIGH_H1: { kind: 'FRACTAL_H1', label: 'F H1' },
-      FRACTAL_LOW_H1: { kind: 'FRACTAL_H1', label: 'F H1' },
-      FRACTAL_HIGH_M15: { kind: 'FRACTAL_M15', label: 'F M15' },
-      FRACTAL_LOW_M15: { kind: 'FRACTAL_M15', label: 'F M15' },
-      FRACTAL_HIGH: { kind: 'FRACTAL_5M', label: 'F 5m' },
-      FRACTAL_LOW: { kind: 'FRACTAL_5M', label: 'F 5m' },
-    }
     for (const li of activeIdxs) {
       const lvl: LevelV2 = pre.levels[li]
-      const meta = labelMap[lvl.source]
-      if (!meta) continue
-      // Skip 5m fractals — too noisy for the chart; user wants the meaningful ones.
-      if (meta.kind === 'FRACTAL_5M') continue
-      // ±5% filter
+      const label = labelMap[lvl.source]
+      if (!label) continue
       if (Math.abs(lvl.price - refPrice) > tolerance) continue
-      const key = `${meta.kind}:${lvl.price.toFixed(8)}`
+      const key = `${lvl.source}:${lvl.price.toFixed(8)}`
       if (seen.has(key)) continue
       seen.add(key)
-      out.push({ price: lvl.price, label: meta.label, kind: meta.kind })
+      out.push({ price: lvl.price, label, kind: lvl.source })
     }
-    // Sort by price
+
+    // Add the signal level itself (highlighted). Strip 5m/M15/H1 fractals from
+    // the source so frontend can render any of them as just "Signal".
+    if (signalLevel > 0) {
+      // Friendly label for the signal source
+      const sourceLabel: Record<string, string> = {
+        FRACTAL_HIGH: 'Сигнал · 5м',
+        FRACTAL_LOW: 'Сигнал · 5м',
+        FRACTAL_HIGH_M15: 'Сигнал · 15м',
+        FRACTAL_LOW_M15: 'Сигнал · 15м',
+        FRACTAL_HIGH_H1: 'Сигнал · 1ч',
+        FRACTAL_LOW_H1: 'Сигнал · 1ч',
+        PDH: 'Сигнал · Макс дня',
+        PDL: 'Сигнал · Мин дня',
+        PWH: 'Сигнал · Макс недели',
+        PWL: 'Сигнал · Мин недели',
+      }
+      const label = sourceLabel[signalSource] ?? 'Сигнал'
+      // Avoid duplicate if the signal level happens to coincide with a PDH/PDL/PWH/PWL
+      const eps = refPrice * 0.0005
+      const dupIdx = out.findIndex(o => Math.abs(o.price - signalLevel) <= eps)
+      if (dupIdx >= 0) {
+        out[dupIdx] = { ...out[dupIdx], label, kind: 'SIGNAL', isSignal: true }
+      } else {
+        out.push({ price: signalLevel, label, kind: 'SIGNAL', isSignal: true })
+      }
+    }
+
     out.sort((a, b) => a.price - b.price)
     res.json({ levels: out })
   } catch (e: any) {
