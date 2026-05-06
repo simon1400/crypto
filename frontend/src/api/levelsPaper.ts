@@ -7,6 +7,7 @@ export interface PaperConfig {
   currentDepositUsd: number
   riskPctPerTrade: number
   feesRoundTripPct: number
+  autoTrailingSL: boolean
   dailyLossLimitPct: number
   weeklyLossLimitPct: number
   maxConcurrentPositions: number
@@ -29,7 +30,7 @@ export interface PaperClose {
   pnlR: number
   pnlUsd: number
   closedAt: string
-  reason: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED'
+  reason: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED' | 'MANUAL'
 }
 
 export interface PaperTrade {
@@ -53,6 +54,8 @@ export interface PaperTrade {
   realizedPnlUsd: number
   feesPaidUsd: number
   netPnlUsd: number
+  feesRoundTripPct: number | null
+  autoTrailingSL: boolean | null
   lastPriceCheck: number | null
   lastPriceCheckAt: string | null
   expiresAt: string | null
@@ -118,12 +121,27 @@ export async function editPaperTrade(id: number, patch: {
   entryPrice?: number
   stopLoss?: number
   currentStop?: number
+  initialStop?: number
   tpLadder?: number[]
+  feesRoundTripPct?: number | null
+  autoTrailingSL?: boolean | null
+  status?: string
+  closes?: PaperClose[]
+  positionUnits?: number
+  positionSizeUsd?: number
+  riskUsd?: number
 }): Promise<PaperTrade> {
   return handle(await fetch(`${BASE}/api/levels-paper/trades/${id}`, {
     method: 'PUT',
     headers: { ...getHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
+  }))
+}
+
+export async function deletePaperTrade(id: number): Promise<{ ok: true }> {
+  return handle(await fetch(`${BASE}/api/levels-paper/trades/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders(),
   }))
 }
 

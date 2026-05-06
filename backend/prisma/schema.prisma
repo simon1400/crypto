@@ -301,6 +301,9 @@ model LevelsPaperConfig {
   riskPctPerTrade     Float    @default(2.0)
   // Fees in % round-trip applied to the position notional
   feesRoundTripPct    Float    @default(0.04)   // 0.04% = forex broker; crypto Bybit ~0.08%
+  // If true, after TP1 hit SL moves to BE; after TP2 → TP1; etc. (legacy behavior).
+  // Default false = SL stays at initial until manually moved (closer to real Bybit).
+  autoTrailingSL      Boolean  @default(false)
   // Circuit breakers
   dailyLossLimitPct   Float    @default(5)      // pause for the day if hit
   weeklyLossLimitPct  Float    @default(15)     // pause for the week
@@ -344,6 +347,10 @@ model LevelsPaperTrade {
   realizedPnlUsd    Float     @default(0)                   // gross P&L in USD before fees
   feesPaidUsd       Float     @default(0)
   netPnlUsd         Float     @default(0)                   // gross - fees
+  // Per-trade fee override (null = use config default). Useful for matching real Bybit fees etc.
+  feesRoundTripPct  Float?
+  // Per-trade trailing-SL override (null = use config default).
+  autoTrailingSL    Boolean?
   // Tracking
   lastPriceCheck    Float?
   lastPriceCheckAt  DateTime?

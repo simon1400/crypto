@@ -34,18 +34,53 @@ interface SymbolSetup {
   fractalLR: 3 | 5
 }
 
-// Default setups — based on RECENT 90d diagnostics (2026-05-05).
-// Removed: GBPUSD (-6R), ETH SHORT (-58R), SOL SHORT (-54R) — regime change made them lose money.
-// Kept: XAUUSD LONG (+81R), BTCUSDT (+119R, mostly 1 outlier — monitor), EURUSD LONG (+1R, marginal but neutral).
+// Default setups — based on 365d backtest across 25+ symbols (2026-05-06).
+// FOREX uses loosened Fibo gate (see buildCfg) — needed because 8×ATR impulses are rare on slow forex.
+//
+// 365d backtest results (V2 levels, ladder 50/30/20, fees crypto 0.08% / forex 0.04%):
+// CRYPTO SHORTs (alt-bear regime 2025–2026):
+//   XRPUSDT SELL: 48 trades, +91.5R, +1.91 R/tr, WR 48%, PF 5.28 ★★★
+//   SEIUSDT SELL: 29 trades, +24.7R, +0.85 R/tr, WR 41%, PF 2.39 ★
+//   WIFUSDT SELL: 35 trades, +25.6R, +0.73 R/tr, WR 49%, PF 2.43 ★
+//   SOLUSDT SELL: 135 trades, +92.5R, +0.69 R/tr, WR 47%, PF 2.93 ★
+//   ARBUSDT SELL: 57 trades, +33.4R, +0.59 R/tr, WR 58%, PF 2.39 ✅
+//   AVAXUSDT SELL: 176 trades, +81.7R, +0.46 R/tr, WR 45%, PF 2.11 ✅
+//   1000PEPEUSDT SELL: 48 trades, +20.7R, +0.43 R/tr, WR 81%, PF 3.30 ✅
+//   ETHUSDT SELL: 196 trades, +59.5R, +0.30 R/tr, WR 40%, PF 1.58 ✅
+// CRYPTO LONG / BOTH:
+//   HYPEUSDT BUY: 80 trades, +60.6R, +0.76 R/tr, WR 40%, PF 2.62 ★ (единственный bullish-режим алт)
+//   ENAUSDT BOTH: 36 trades, +65.7R, +1.82 R/tr, WR 58%, PF 5.20 ★
+// Rejected: TON/NEAR/APT/SUI/BCH/LTC/DOGE/BNB/LINK/ADA/DOT/TRUMP/BONK any side,
+//           1000FLOKI BUY (WR 14% — лотерея, нестабильно).
+// Statistical tail (<25 trades): NEAR/APT/TIA SELL — выглядят жирно, но выборка мала.
+// XAGUSD / SHIBUSDT — недоступны (платный TwelveData / Bybit формат).
 export const DEFAULT_SETUPS: SymbolSetup[] = [
-  { symbol: 'XAUUSD',  market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // +1.19R/trade in 90d
-  { symbol: 'EURUSD',  market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // neutral, low sample
-  { symbol: 'BTCUSDT', market: 'CRYPTO', side: 'BOTH', fractalLR: 3 }, // +19.77R/trade in 90d (low n)
+  // Forex
+  { symbol: 'XAUUSD',       market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // +1.19R/trade in 90d
+  { symbol: 'EURUSD',       market: 'FOREX',  side: 'BUY',  fractalLR: 3 }, // neutral, low sample
+  // Crypto majors
+  { symbol: 'BTCUSDT',      market: 'CRYPTO', side: 'BOTH', fractalLR: 3 }, // +19.77R/trade in 90d (low n)
+  // Crypto SHORTs (alt-bear regime 2025-2026)
+  { symbol: 'XRPUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +1.91 R/tr 365d ★
+  { symbol: 'SEIUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.85 R/tr 365d
+  { symbol: 'WIFUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.73 R/tr 365d
+  { symbol: 'SOLUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.69 R/tr 365d
+  { symbol: 'ARBUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.59 R/tr 365d
+  { symbol: 'AVAXUSDT',     market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.46 R/tr 365d
+  { symbol: '1000PEPEUSDT', market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.43 R/tr 365d
+  { symbol: 'ETHUSDT',      market: 'CRYPTO', side: 'SELL', fractalLR: 3 }, // +0.30 R/tr 365d
+  // Crypto LONG / BOTH outliers
+  { symbol: 'HYPEUSDT',     market: 'CRYPTO', side: 'BUY',  fractalLR: 3 }, // +0.76 R/tr 365d
+  { symbol: 'ENAUSDT',      market: 'CRYPTO', side: 'BOTH', fractalLR: 3 }, // +1.82 R/tr 365d
 ]
 
 const DEDUP_WINDOW_MS = 60 * 60_000 // 1h: don't fire 2 signals on same level within 1h
 
-function buildCfg(fractalLR: 3 | 5): LevelsV2Config {
+function buildCfg(fractalLR: 3 | 5, market: 'FOREX' | 'CRYPTO' = 'CRYPTO'): LevelsV2Config {
+  // Crypto = high volatility (BTC easily makes 8×ATR impulses).
+  // Forex = lower volatility, especially in quiet sessions — 8×ATR rarely happens.
+  // Loosen the fibo gate for forex so we don't starve XAU/EUR/etc. of signals.
+  const isForex = market === 'FOREX'
   return {
     ...DEFAULT_LEVELS_V2,
     fractalLeft: fractalLR, fractalRight: fractalLR,
@@ -55,8 +90,10 @@ function buildCfg(fractalLR: 3 | 5): LevelsV2Config {
     cooldownBars: 12,
     allowRangePlay: false,
     fiboMode: 'filter',
-    fiboZoneFrom: 0.5, fiboZoneTo: 0.618,
-    fiboImpulseLookback: 100, fiboImpulseMinAtr: 8,
+    fiboZoneFrom: isForex ? 0.382 : 0.5,
+    fiboZoneTo:   isForex ? 0.786 : 0.618,
+    fiboImpulseLookback: 100,
+    fiboImpulseMinAtr: isForex ? 3.5 : 8,
   }
 }
 
@@ -166,7 +203,7 @@ async function scanSymbol(setup: SymbolSetup, expiryHours: number): Promise<numb
       return 0
     }
     const w1 = aggregateDailyToWeekly(d1)
-    const cfg = buildCfg(setup.fractalLR)
+    const cfg = buildCfg(setup.fractalLR, setup.market)
     const pre = precomputeLevelsV2(m5, d1, w1, cfg, m15, h1)
 
     // Replay last few bars to populate signal state (pending pierces)

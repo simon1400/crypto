@@ -164,6 +164,22 @@ export default function LevelsPaper() {
               onChange={(v) => handleConfigSave({ riskPctPerTrade: v })} step={0.5} min={0.1} max={10} />
             <ConfigField label="Комиссия round-trip (%)" value={config.feesRoundTripPct}
               onChange={(v) => handleConfigSave({ feesRoundTripPct: v })} step={0.01} min={0} max={1} />
+            <div>
+              <label className="block text-xs text-text-secondary mb-1">Авто-перенос SL (TP1→BE)</label>
+              <button
+                onClick={() => handleConfigSave({ autoTrailingSL: !config.autoTrailingSL })}
+                className={`w-full px-3 py-2 rounded font-medium text-sm ${config.autoTrailingSL
+                  ? 'bg-long/15 text-long border border-long/40'
+                  : 'bg-card border border-input'}`}
+              >
+                {config.autoTrailingSL ? '● Включён' : '○ Отключён'}
+              </button>
+              <div className="text-xs text-text-secondary mt-1">
+                {config.autoTrailingSL
+                  ? 'После TP1 → SL в BE, после TP2 → SL в TP1'
+                  : 'SL стоит на initial до ручного переноса (как Bybit)'}
+              </div>
+            </div>
             <ConfigField label="Daily loss limit (%)" value={config.dailyLossLimitPct}
               onChange={(v) => handleConfigSave({ dailyLossLimitPct: v })} step={1} min={1} max={50} />
             <ConfigField label="Weekly loss limit (%)" value={config.weeklyLossLimitPct}
@@ -317,6 +333,11 @@ export default function LevelsPaper() {
             getPaperStats().then(setStats).catch(() => {})
             getPaperConfig().then(setConfig).catch(() => {})
           }}
+          onDelete={(id) => {
+            setTrades(prev => prev.filter(t => t.id !== id))
+            getPaperStats().then(setStats).catch(() => {})
+            getPaperConfig().then(setConfig).catch(() => {})
+          }}
         />
       )}
     </div>
@@ -336,7 +357,7 @@ function Stat({ label, value, sub, tone }: { label: string; value: string; sub?:
 function FilterButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button onClick={onClick} className={`px-3 py-1.5 rounded text-sm font-medium ${
-      active ? 'bg-accent text-bg-primary'
+      active ? 'bg-accent text-primary'
              : 'bg-card border border-input text-text-secondary hover:text-text-primary'}`}>
       {children}
     </button>

@@ -27,6 +27,7 @@ interface PaperConfig {
   currentDepositUsd: number
   riskPctPerTrade: number
   feesRoundTripPct: number
+  autoTrailingSL: boolean
   dailyLossLimitPct: number
   weeklyLossLimitPct: number
   maxConcurrentPositions: number
@@ -168,6 +169,9 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<number> {
         riskUsd: pos.riskUsd,
         positionSizeUsd: pos.positionSizeUsd,
         positionUnits: pos.positionUnits,
+        // Snapshot config defaults — user can override per-trade later
+        feesRoundTripPct: cfg.feesRoundTripPct,
+        autoTrailingSL: cfg.autoTrailingSL,
         status: 'OPEN',
         expiresAt: sig.expiresAt,
       },
@@ -281,9 +285,13 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Pr
         reason: tpName,
       })
       remainingFrac -= fillFrac
-      // Trailing SL
-      if (nextTpIdx === 0) currentStop = entry
-      else currentStop = tpLadder[nextTpIdx - 1]
+      // Trailing SL — only if enabled (per-trade override falls back to config default).
+      // Default OFF: SL stays at initial until manually moved (matches real Bybit behavior).
+      const trailEnabled = trade.autoTrailingSL ?? cfg.autoTrailingSL
+      if (trailEnabled) {
+        if (nextTpIdx === 0) currentStop = entry
+        else currentStop = tpLadder[nextTpIdx - 1]
+      }
       status = nextTpIdx === 0 ? 'TP1_HIT' : nextTpIdx === 1 ? 'TP2_HIT' : 'TP3_HIT'
       statusChanged = true
       nextTpIdx++
@@ -315,14 +323,14 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Pr
     statusChanged = true
   }
 
-  // Deduct fees on each fill that happened in this cycle
-  // Fees are charged on the notional traded (positionUnits * tp_or_sl * frac * feePct)
-  // We compute total notional newly closed in this cycle and charge once.
+  // Deduct fees on each fill that happened in this cycle.
+  // Fee rate: per-trade override → fallback to config default.
+  const feeRatePct = trade.feesRoundTripPct ?? cfg.feesRoundTripPct
   const newFills = fills.slice((trade.closes as any[]).length)
   let newFeesUsd = 0
   for (const f of newFills) {
     const notional = positionUnits * f.price * (f.percent / 100)
-    newFeesUsd += notional * (cfg.feesRoundTripPct / 100)
+    newFeesUsd += notional * (feeRatePct / 100)
   }
   const totalFeesUsd = (trade.feesPaidUsd ?? 0) + newFeesUsd
   const netPnlUsd = realizedPnlUsd - totalFeesUsd

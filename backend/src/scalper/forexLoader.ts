@@ -20,6 +20,7 @@ const API_KEY = process.env.TWELVE_DATA_API_KEY || ''
 
 const SYMBOL_MAP: Record<string, string> = {
   XAUUSD: 'XAU/USD',
+  XAGUSD: 'XAG/USD',
   EURUSD: 'EUR/USD',
   GBPUSD: 'GBP/USD',
   USDJPY: 'USD/JPY',
@@ -44,7 +45,8 @@ const INTERVAL_MS: Record<string, number> = {
 }
 
 const TD_BATCH_SIZE = 5000
-const TD_SLEEP_MS = 8000 // 8 sec between requests → 7.5 req/min < 8/min limit
+const TD_SLEEP_MS = 10000 // 10s between requests → 6 req/min, safely under 8/min limit
+const TD_RATE_LIMIT_RECOVERY_MS = 70_000 // wait full minute on rate-limit error
 
 interface CacheFile {
   source: 'twelvedata'
@@ -72,13 +74,21 @@ async function fetchTdBatch(
   tdInterval: string,
   startMs: number,
   endMs: number,
+  retryAttempt = 0,
 ): Promise<OHLCV[]> {
   const url = `${BASE}/time_series?symbol=${encodeURIComponent(tdSymbol)}&interval=${tdInterval}&start_date=${encodeURIComponent(fmtDateUTC(startMs))}&end_date=${encodeURIComponent(fmtDateUTC(endMs))}&outputsize=${TD_BATCH_SIZE}&order=asc&timezone=UTC&apikey=${API_KEY}`
   const res = await fetch(url)
   if (!res.ok) throw new Error(`TwelveData HTTP ${res.status}`)
   const data = (await res.json()) as TdResponse
   if (data.status === 'error' || data.code) {
-    throw new Error(`TwelveData error: ${data.message || 'unknown'}`)
+    const msg = data.message || 'unknown'
+    // On rate-limit, wait a full minute and retry up to 3 times
+    if (msg.includes('API credits') && retryAttempt < 3) {
+      console.warn(`[Loader/td] rate-limit hit, sleeping ${TD_RATE_LIMIT_RECOVERY_MS}ms then retrying (attempt ${retryAttempt + 1}/3)`)
+      await new Promise((r) => setTimeout(r, TD_RATE_LIMIT_RECOVERY_MS))
+      return fetchTdBatch(tdSymbol, tdInterval, startMs, endMs, retryAttempt + 1)
+    }
+    throw new Error(`TwelveData error: ${msg}`)
   }
   const values = data.values ?? []
   return values.map((v) => ({

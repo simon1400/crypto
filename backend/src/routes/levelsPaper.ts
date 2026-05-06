@@ -56,7 +56,7 @@ router.get('/config', async (_req, res) => {
 router.put('/config', async (req, res) => {
   try {
     const {
-      enabled, riskPctPerTrade, feesRoundTripPct,
+      enabled, riskPctPerTrade, feesRoundTripPct, autoTrailingSL,
       dailyLossLimitPct, weeklyLossLimitPct,
       maxConcurrentPositions, maxPositionsPerSymbol,
     } = req.body
@@ -66,6 +66,7 @@ router.put('/config', async (req, res) => {
         ...(enabled !== undefined ? { enabled } : {}),
         ...(riskPctPerTrade !== undefined ? { riskPctPerTrade } : {}),
         ...(feesRoundTripPct !== undefined ? { feesRoundTripPct } : {}),
+        ...(autoTrailingSL !== undefined ? { autoTrailingSL } : {}),
         ...(dailyLossLimitPct !== undefined ? { dailyLossLimitPct } : {}),
         ...(weeklyLossLimitPct !== undefined ? { weeklyLossLimitPct } : {}),
         ...(maxConcurrentPositions !== undefined ? { maxConcurrentPositions } : {}),
@@ -178,13 +179,32 @@ router.get('/trades/:id', async (req, res) => {
  * Edit paper trade — adjust entry/SL/currentStop/tpLadder. Recalculates position size
  * if entry or SL change AND no fills yet, otherwise keeps existing position size.
  */
+/**
+ * Recalculate fees + net pnl for a trade given a new feeRate (% round-trip).
+ * Walks the closes log and sums notional * feeRate per fill.
+ */
+function recalcFees(trade: any, feeRatePct: number): { feesPaidUsd: number; netPnlUsd: number } {
+  const closes = ((trade.closes as any[]) ?? []) as Array<{ price: number; percent: number }>
+  let feesPaidUsd = 0
+  for (const c of closes) {
+    const notional = trade.positionUnits * c.price * (c.percent / 100)
+    feesPaidUsd += notional * (feeRatePct / 100)
+  }
+  const netPnlUsd = (trade.realizedPnlUsd ?? 0) - feesPaidUsd
+  return { feesPaidUsd, netPnlUsd }
+}
+
 router.put('/trades/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
     const trade = await prisma.levelsPaperTrade.findUnique({ where: { id } })
     if (!trade) return res.status(404).json({ error: 'Not found' })
 
-    const { entryPrice, stopLoss, currentStop, tpLadder } = req.body
+    const {
+      entryPrice, stopLoss, currentStop, initialStop, tpLadder,
+      feesRoundTripPct, autoTrailingSL,
+      status, closes, positionUnits, positionSizeUsd, riskUsd,
+    } = req.body
     const data: any = {}
     const fills = (trade.closes as any[]) ?? []
     const noFillsYet = fills.length === 0
@@ -195,12 +215,27 @@ router.put('/trades/:id', async (req, res) => {
       if (noFillsYet) data.initialStop = stopLoss
       data.currentStop = stopLoss
     }
+    if (typeof initialStop === 'number' && initialStop > 0) data.initialStop = initialStop
     if (typeof currentStop === 'number' && currentStop > 0) data.currentStop = currentStop
     if (Array.isArray(tpLadder) && tpLadder.every((p) => typeof p === 'number' && p > 0)) {
       data.tpLadder = tpLadder
     }
+
+    // Per-trade overrides (null clears override → falls back to config default).
+    if (feesRoundTripPct === null) data.feesRoundTripPct = null
+    else if (typeof feesRoundTripPct === 'number' && feesRoundTripPct >= 0) data.feesRoundTripPct = feesRoundTripPct
+    if (autoTrailingSL === null) data.autoTrailingSL = null
+    else if (typeof autoTrailingSL === 'boolean') data.autoTrailingSL = autoTrailingSL
+
+    // Manual override of derived fields (full edit mode)
+    if (typeof status === 'string') data.status = status
+    if (Array.isArray(closes)) data.closes = closes
+    if (typeof positionUnits === 'number' && positionUnits > 0) data.positionUnits = positionUnits
+    if (typeof positionSizeUsd === 'number' && positionSizeUsd > 0) data.positionSizeUsd = positionSizeUsd
+    if (typeof riskUsd === 'number' && riskUsd > 0) data.riskUsd = riskUsd
+
     // If editing entry/SL with no fills yet → recalc position size
-    if (noFillsYet && (data.entryPrice || data.stopLoss)) {
+    if (noFillsYet && (data.entryPrice || data.stopLoss) && data.positionUnits === undefined) {
       const newEntry = data.entryPrice ?? trade.entryPrice
       const newSL = data.initialStop ?? trade.initialStop
       const slDist = Math.abs(newEntry - newSL)
@@ -211,11 +246,65 @@ router.put('/trades/:id', async (req, res) => {
       }
     }
 
+    // If closes were edited manually, recompute realizedR / realizedPnlUsd from the log.
+    if (data.closes) {
+      const newCloses = data.closes as Array<any>
+      const initialRisk = Math.abs((data.entryPrice ?? trade.entryPrice) - (data.initialStop ?? trade.initialStop))
+      let realizedR = 0
+      let realizedPnlUsd = 0
+      for (const c of newCloses) {
+        if (typeof c.pnlR === 'number') realizedR += c.pnlR
+        else if (initialRisk > 0 && typeof c.price === 'number' && typeof c.percent === 'number') {
+          const isLong = trade.side === 'BUY'
+          const entry = data.entryPrice ?? trade.entryPrice
+          realizedR += ((isLong ? c.price - entry : entry - c.price) / initialRisk) * (c.percent / 100)
+        }
+        if (typeof c.pnlUsd === 'number') realizedPnlUsd += c.pnlUsd
+      }
+      data.realizedR = realizedR
+      data.realizedPnlUsd = realizedPnlUsd
+    }
+
+    // Recompute fees/netPnl whenever fees-affecting fields change.
+    const feesAffected = data.feesRoundTripPct !== undefined || data.closes !== undefined ||
+                         data.positionUnits !== undefined || data.realizedPnlUsd !== undefined
+    if (feesAffected) {
+      const merged = { ...trade, ...data }
+      const feeRate = merged.feesRoundTripPct ?? null
+      // If null → look up config default
+      let rate: number = feeRate
+      if (rate === null) {
+        const cfg = await prisma.levelsPaperConfig.findUnique({ where: { id: 1 } })
+        rate = cfg ? cfg.feesRoundTripPct : 0
+      }
+      const { feesPaidUsd, netPnlUsd } = recalcFees(merged, rate)
+      data.feesPaidUsd = feesPaidUsd
+      data.netPnlUsd = netPnlUsd
+    }
+
     if (Object.keys(data).length === 0) {
       return res.status(400).json({ error: 'No valid fields' })
     }
     const updated = await prisma.levelsPaperTrade.update({ where: { id }, data })
+    // Recompute deposit if a closed trade was edited
+    if (['CLOSED', 'SL_HIT', 'EXPIRED'].includes(updated.status)) {
+      await recomputeDepositAndStats()
+    }
     res.json(updated)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/** Delete paper trade. Recomputes deposit/stats after. */
+router.delete('/trades/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const trade = await prisma.levelsPaperTrade.findUnique({ where: { id } })
+    if (!trade) return res.status(404).json({ error: 'Not found' })
+    await prisma.levelsPaperTrade.delete({ where: { id } })
+    await recomputeDepositAndStats()
+    res.json({ ok: true })
   } catch (e: any) {
     res.status(500).json({ error: e.message })
   }
@@ -250,7 +339,8 @@ router.post('/trades/:id/close-market', async (req, res) => {
     })
     // Apply fees on this fill
     const cfg = await prisma.levelsPaperConfig.findUnique({ where: { id: 1 } })
-    const feeRate = cfg ? cfg.feesRoundTripPct / 100 : 0
+    const feePct = trade.feesRoundTripPct ?? (cfg ? cfg.feesRoundTripPct : 0)
+    const feeRate = feePct / 100
     const notional = trade.positionUnits * price * remainingFrac
     const newFeeUsd = notional * feeRate
     const totalFeesUsd = trade.feesPaidUsd + newFeeUsd
@@ -308,7 +398,8 @@ router.post('/trades/:id/close-manual', async (req, res) => {
       reason: 'MANUAL',
     })
     const cfg = await prisma.levelsPaperConfig.findUnique({ where: { id: 1 } })
-    const feeRate = cfg ? cfg.feesRoundTripPct / 100 : 0
+    const feePct = trade.feesRoundTripPct ?? (cfg ? cfg.feesRoundTripPct : 0)
+    const feeRate = feePct / 100
     const notional = trade.positionUnits * price * fillFrac
     const newFeeUsd = notional * feeRate
     const totalFeesUsd = trade.feesPaidUsd + newFeeUsd
