@@ -153,8 +153,8 @@ export const DEFAULT_LEVELS_V2: LevelsV2Config = {
   slBufferAtr: 0.5,
   fallbackSlAtr: 1.5,
   tpMinAtr: 0,  // 0 = disabled (use nearest level as TP1, even if very close)
-  minRR: 1.5,   // reject signals with TP1/risk < 1.5 — bad geometry
-  maxRR: 8,     // reject lottery setups with TP1/risk > 8 — SL likely too tight
+  minRR: 0,     // disabled — sweep showed it removes profitable setups (R/tr drops from 1.09 to 0.64)
+  maxRR: 8,     // reject lottery setups with TP1/risk > 8 (SL too tight, e.g. SEI 2026-05-06)
   cooldownBars: 4,
   allowReaction: true,
   allowBreakoutRetest: true,

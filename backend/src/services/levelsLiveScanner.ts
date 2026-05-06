@@ -125,9 +125,10 @@ function buildCfg(
     fiboImpulseLookback: 100,
     fiboImpulseMinAtr: isLowVol ? 3.5 : 8,
     tpMinAtr,
-    // R:R guards: reject signals where TP1 is too close vs SL (<1.5R) or SL is too
-    // tight vs TP1 (>8R, lottery setup like SEI 2026-05-06 with SL 0.6% and TP1 9%).
-    minRR: 1.5,
+    // R:R guard: reject lottery setups where SL is too tight vs TP1 (>8R = SEI case
+    // 2026-05-06 with SL 0.6% and TP1 9%). minRR is DISABLED (sweep 2026-05-06 showed
+    // it removes profitable setups: R/tr drops from +1.09 to +0.64).
+    minRR: 0,
     maxRR: 8,
   }
 }
