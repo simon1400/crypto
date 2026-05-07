@@ -335,6 +335,9 @@ router.delete('/trades/:id', async (req, res) => {
     const id = parseInt(req.params.id, 10)
     const trade = await prisma.breakoutPaperTrade.findUnique({ where: { id } })
     if (!trade) return res.status(404).json({ error: 'Not found' })
+    // Delete the originating signal too — otherwise the paper cron re-opens this
+    // trade on the next cycle (signal stays NEW/ACTIVE through the UTC day).
+    await prisma.breakoutSignal.deleteMany({ where: { id: trade.signalId } })
     await prisma.breakoutPaperTrade.delete({ where: { id } })
     await recomputeDepositAndStats()
     res.json({ ok: true })
