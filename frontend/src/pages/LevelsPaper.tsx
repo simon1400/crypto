@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   getPaperConfig, updatePaperConfig, resetPaper,
   getPaperTrades, getPaperStats, runPaperCycleNow,
@@ -66,8 +66,9 @@ function PaperStatusBadge({ status, pnl }: { status: string; pnl?: number }) {
   return <span className={`px-2 py-0.5 rounded text-xs font-medium ${s.bg} ${s.text}`}>{s.label}</span>
 }
 
-function formatElapsed(openedAt: string): string {
-  const ms = Date.now() - new Date(openedAt).getTime()
+function formatElapsed(openedAt: string, closedAt?: string | null): string {
+  const endMs = closedAt ? new Date(closedAt).getTime() : Date.now()
+  const ms = endMs - new Date(openedAt).getTime()
   if (ms < 0) return '0м'
   const mins = Math.floor(ms / 60000)
   const hours = Math.floor(mins / 60)
@@ -300,6 +301,18 @@ export default function LevelsPaper() {
     setConfig(updated)
   }
 
+  // Sort: closed/all view → by closedAt DESC (закрытые сверху по времени закрытия);
+  // open view → by openedAt DESC (как раньше). Открытые без closedAt остаются по openedAt.
+  // ВАЖНО: useMemo должен быть ДО любых early returns ниже (Rules of Hooks).
+  const sortedTrades = useMemo(() => {
+    if (statusFilter === 'OPEN') return trades
+    return [...trades].sort((a, b) => {
+      const aKey = a.closedAt ? new Date(a.closedAt).getTime() : new Date(a.openedAt).getTime()
+      const bKey = b.closedAt ? new Date(b.closedAt).getTime() : new Date(b.openedAt).getTime()
+      return bKey - aKey
+    })
+  }, [trades, statusFilter])
+
   if (!config && loading) return <div className="text-text-secondary">Загрузка...</div>
   if (!config) {
     return (
@@ -321,7 +334,18 @@ export default function LevelsPaper() {
   const returnPct = stats?.returnPct ?? 0
   const totalTrades = config.totalTrades
   const winRate = stats?.winRate ?? 0
-  const openCount = trades.filter(t => ['OPEN','TP1_HIT','TP2_HIT'].includes(t.status)).length
+  const openTrades = trades.filter(t => ['OPEN','TP1_HIT','TP2_HIT'].includes(t.status))
+  const openCount = openTrades.length
+  // Активная маржа = сумма (remaining position size / leverage) по всем открытым сделкам.
+  // Leverage = positionSize / depositAtEntry, capped 1..100x — та же формула что в строке таблицы.
+  const activeMarginUsd = openTrades.reduce((sum, t) => {
+    const closedFrac = (t.closes ?? []).reduce((a, c) => a + c.percent, 0) / 100
+    const remainingPos = t.positionSizeUsd * Math.max(0, 1 - closedFrac)
+    const lev = t.depositAtEntryUsd > 0 && t.positionSizeUsd > 0
+      ? Math.min(100, Math.max(1, t.positionSizeUsd / t.depositAtEntryUsd))
+      : 1
+    return sum + remainingPos / lev
+  }, 0)
 
   return (
     <div>
@@ -383,7 +407,7 @@ export default function LevelsPaper() {
         <Stat label="Win Rate" value={`${(winRate * 100).toFixed(0)}%`}
           sub={`${config.totalWins}W / ${config.totalLosses}L`} />
         <Stat label="Открытых" value={openCount.toString()}
-          sub={`Max DD ${config.maxDrawdownPct.toFixed(1)}%`} />
+          sub={openCount > 0 ? `маржа $${activeMarginUsd.toFixed(2)} · Max DD ${config.maxDrawdownPct.toFixed(1)}%` : `Max DD ${config.maxDrawdownPct.toFixed(1)}%`} />
       </div>
 
       {/* Settings panel */}
@@ -456,6 +480,7 @@ export default function LevelsPaper() {
                 <th className="text-right px-3 py-2">Вход</th>
                 <th className="text-right px-3 py-2">Цена</th>
                 <th className="text-right px-3 py-2">Размер</th>
+                <th className="text-right px-3 py-2">Маржа</th>
                 <th className="text-right px-3 py-2">SL</th>
                 <th className="text-right px-3 py-2">TP</th>
                 <th className="text-right px-3 py-2">Рлз.</th>
@@ -464,15 +489,15 @@ export default function LevelsPaper() {
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={11} className="text-center py-12 text-text-secondary">Загрузка...</td></tr>}
+              {loading && <tr><td colSpan={12} className="text-center py-12 text-text-secondary">Загрузка...</td></tr>}
               {!loading && trades.length === 0 && (
-                <tr><td colSpan={11} className="text-center py-12 text-text-secondary">
+                <tr><td colSpan={12} className="text-center py-12 text-text-secondary">
                   {config.enabled
                     ? 'Сделок ещё нет. Демо-счёт работает — виртуальные сделки появятся когда сканер найдёт сигналы.'
                     : 'Демо-счёт выключен. Включи кнопкой ● Выключен сверху.'}
                 </td></tr>
               )}
-              {!loading && trades.map(t => {
+              {!loading && sortedTrades.map(t => {
                 const live = livePrices[t.id]
                 const isOpen = ['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(t.status)
                 const closedFrac = (t.closes ?? []).reduce((a, c) => a + c.percent, 0) / 100
@@ -503,9 +528,20 @@ export default function LevelsPaper() {
                   <tr key={t.id}
                     className="border-t border-input hover:bg-input/50 cursor-pointer transition-colors"
                     onClick={() => setSelectedTrade(t)}>
-                    <td className="px-3 py-2 text-text-secondary whitespace-nowrap">{formatDate(t.openedAt)}</td>
+                    <td className="px-3 py-2 text-text-secondary whitespace-nowrap leading-tight">
+                      {isFinished && t.closedAt ? (
+                        <>
+                          <div className="text-text-primary text-[11px]" title="Время закрытия">{formatDate(t.closedAt)}</div>
+                          <div className="text-[10px] text-text-secondary" title="Время открытия">откр: {formatDate(t.openedAt)}</div>
+                        </>
+                      ) : (
+                        formatDate(t.openedAt)
+                      )}
+                    </td>
                     <td className="px-3 py-2 font-mono text-accent">
-                      {isOpen ? <LiveTimer openedAt={t.openedAt} /> : <span className="text-text-secondary">{formatElapsed(t.openedAt)}</span>}
+                      {isOpen
+                        ? <LiveTimer openedAt={t.openedAt} />
+                        : <span className="text-text-secondary" title="Длительность сделки">{formatElapsed(t.openedAt, t.closedAt)}</span>}
                     </td>
                     <td className="px-3 py-2 font-mono font-medium text-text-primary">
                       <span className="flex items-center gap-2">
@@ -539,6 +575,30 @@ export default function LevelsPaper() {
                           )}
                         </>
                       )}
+                      {t.depositAtEntryUsd > 0 && t.positionSizeUsd > 0 && (
+                        <div className="text-[10px] text-accent/80" title="Рекомендуемое плечо при текущем риске">
+                          ×{Math.min(100, Math.max(1, t.positionSizeUsd / t.depositAtEntryUsd)).toFixed(1)}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono leading-tight">
+                      {(() => {
+                        const lev = t.depositAtEntryUsd > 0 && t.positionSizeUsd > 0
+                          ? Math.min(100, Math.max(1, t.positionSizeUsd / t.depositAtEntryUsd))
+                          : 1
+                        const marginFull = t.positionSizeUsd / lev
+                        const marginRemaining = remainingPositionUsd / lev
+                        return isFinished ? (
+                          <span className="text-text-secondary" title="Маржа сделки (размер / плечо)">${fmt2(marginFull)}</span>
+                        ) : (
+                          <>
+                            <span className="text-text-primary" title="Маржа = размер / плечо">${fmt2(marginRemaining)}</span>
+                            {closedPctNum > 0 && closedPctNum < 100 && (
+                              <div className="text-[10px] text-text-secondary">было ${fmt2(marginFull)}</div>
+                            )}
+                          </>
+                        )
+                      })()}
                     </td>
                     <td className="px-3 py-2 text-right font-mono leading-tight">
                       <span className="text-short">${fmtPrice(t.currentStop, t.symbol, t.market)}</span>
