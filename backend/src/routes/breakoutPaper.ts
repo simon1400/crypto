@@ -65,6 +65,7 @@ router.put('/config', async (req, res) => {
   try {
     const {
       enabled, riskPctPerTrade, feesRoundTripPct, autoTrailingSL,
+      targetMarginPct, marginGuardEnabled, marginGuardAutoClose,
       dailyLossLimitPct, weeklyLossLimitPct,
       maxConcurrentPositions, maxPositionsPerSymbol,
     } = req.body
@@ -75,6 +76,9 @@ router.put('/config', async (req, res) => {
         ...(riskPctPerTrade !== undefined ? { riskPctPerTrade } : {}),
         ...(feesRoundTripPct !== undefined ? { feesRoundTripPct } : {}),
         ...(autoTrailingSL !== undefined ? { autoTrailingSL } : {}),
+        ...(targetMarginPct !== undefined ? { targetMarginPct } : {}),
+        ...(marginGuardEnabled !== undefined ? { marginGuardEnabled } : {}),
+        ...(marginGuardAutoClose !== undefined ? { marginGuardAutoClose } : {}),
         ...(dailyLossLimitPct !== undefined ? { dailyLossLimitPct } : {}),
         ...(weeklyLossLimitPct !== undefined ? { weeklyLossLimitPct } : {}),
         ...(maxConcurrentPositions !== undefined ? { maxConcurrentPositions } : {}),

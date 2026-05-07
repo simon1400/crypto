@@ -14,6 +14,7 @@
 import { prisma } from '../db/prisma'
 import { OHLCV, fetchPricesBatch } from './market'
 import { loadHistorical } from '../scalper/historicalLoader'
+import { computeSizing, evaluateOpenWithGuard, ExistingTrade, getMaxLeverage } from './marginGuard'
 
 const SPLITS = [0.5, 0.3, 0.2]
 
@@ -25,6 +26,9 @@ interface PaperConfig {
   riskPctPerTrade: number
   feesRoundTripPct: number
   autoTrailingSL: boolean
+  targetMarginPct: number
+  marginGuardEnabled: boolean
+  marginGuardAutoClose: boolean
   dailyLossLimitPct: number
   weeklyLossLimitPct: number
   maxConcurrentPositions: number
@@ -43,7 +47,7 @@ interface CloseRecord {
   pnlR: number
   pnlUsd: number
   closedAt: string
-  reason: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED'
+  reason: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED' | 'MARGIN'
 }
 
 async function getOrCreateConfig(): Promise<PaperConfig | null> {
@@ -62,16 +66,91 @@ async function loadRecent5m(symbol: string): Promise<OHLCV[]> {
   return loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
 }
 
-function calcPosition(deposit: number, riskPct: number, entry: number, sl: number) {
-  const riskUsd = (deposit * riskPct) / 100
-  const slDist = Math.abs(entry - sl)
-  if (slDist <= 0) return { riskUsd, positionUnits: 0, positionSizeUsd: 0 }
-  const positionUnits = riskUsd / slDist
-  const positionSizeUsd = entry * positionUnits
-  return { riskUsd, positionUnits, positionSizeUsd }
+function buildExistingTrade(t: any): ExistingTrade {
+  const closes = (t.closes as any[]) ?? []
+  const closedFrac = closes.reduce((a: number, c: any) => a + (c.percent ?? 0), 0) / 100
+  const lev = t.leverage && t.leverage > 0
+    ? t.leverage
+    : (t.depositAtEntryUsd > 0 && t.positionSizeUsd > 0
+      ? Math.max(1, Math.min(100, t.positionSizeUsd / t.depositAtEntryUsd))
+      : 1)
+  const initialRisk = Math.abs(t.entryPrice - t.initialStop)
+  const ref = t.lastPriceCheck ?? t.entryPrice
+  const unrealizedR = initialRisk > 0
+    ? (t.side === 'BUY' ? (ref - t.entryPrice) : (t.entryPrice - ref)) / initialRisk
+    : 0
+  return {
+    id: t.id,
+    symbol: t.symbol,
+    status: t.status,
+    positionSizeUsd: t.positionSizeUsd,
+    closedFrac,
+    leverage: lev,
+    unrealizedR,
+    hasTP1: t.status === 'TP1_HIT' || t.status === 'TP2_HIT',
+    hasTP2: t.status === 'TP2_HIT',
+  }
 }
 
-async function openNewPaperTrades(cfg: PaperConfig): Promise<number> {
+/**
+ * Market-close a trade's remaining position at last known price with reason='MARGIN'.
+ * Used by margin guard to free capacity for new signals.
+ */
+async function marketCloseForMargin(tradeId: number, cfg: PaperConfig): Promise<number> {
+  const t = await prisma.breakoutPaperTrade.findUnique({ where: { id: tradeId } })
+  if (!t) return 0
+  if (!['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(t.status)) return 0
+
+  const closes = ((t.closes as any[]) ?? []) as CloseRecord[]
+  const closedFrac = closes.reduce((a, c) => a + c.percent, 0) / 100
+  const remainingFrac = Math.max(0, 1 - closedFrac)
+  if (remainingFrac < 1e-6) return 0
+
+  const closePrice = t.lastPriceCheck ?? t.entryPrice
+  const isLong = t.side === 'BUY'
+  const initialRisk = Math.abs(t.entryPrice - t.initialStop)
+  const fillUnits = t.positionUnits * remainingFrac
+  const pnlUsd = (isLong ? closePrice - t.entryPrice : t.entryPrice - closePrice) * fillUnits
+  const pnlR = initialRisk > 0
+    ? ((isLong ? closePrice - t.entryPrice : t.entryPrice - closePrice) / initialRisk) * remainingFrac
+    : 0
+
+  closes.push({
+    price: closePrice,
+    percent: remainingFrac * 100,
+    pnlR, pnlUsd,
+    closedAt: new Date().toISOString(),
+    reason: 'MARGIN',
+  })
+
+  // Add fees on this fill
+  const feeRatePct = t.feesRoundTripPct ?? cfg.feesRoundTripPct
+  const newFeesUsd = fillUnits * closePrice * (feeRatePct / 100)
+  const totalFeesUsd = (t.feesPaidUsd ?? 0) + newFeesUsd
+  const realizedR = (t.realizedR ?? 0) + pnlR
+  const realizedPnlUsd = (t.realizedPnlUsd ?? 0) + pnlUsd
+  const netPnlUsd = realizedPnlUsd - totalFeesUsd
+
+  await prisma.breakoutPaperTrade.update({
+    where: { id: tradeId },
+    data: {
+      status: 'CLOSED',
+      realizedR,
+      realizedPnlUsd,
+      feesPaidUsd: totalFeesUsd,
+      netPnlUsd,
+      closes: closes as any,
+      closedAt: new Date(),
+    },
+  })
+
+  console.log(`[BreakoutPaper] margin-close trade #${tradeId} ${t.symbol} ${t.side} @ $${closePrice.toFixed(6)} pnl $${pnlUsd.toFixed(2)} (${pnlR.toFixed(2)}R)`)
+
+  // Return net P&L delta to apply to deposit
+  return pnlUsd - newFeesUsd
+}
+
+async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; depositDelta: number }> {
   const since = new Date(Date.now() - 24 * 60 * 60_000)
   const signals = await prisma.breakoutSignal.findMany({
     where: {
@@ -80,7 +159,7 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<number> {
     },
     orderBy: { createdAt: 'asc' },
   })
-  if (signals.length === 0) return 0
+  if (signals.length === 0) return { opened: 0, depositDelta: 0 }
 
   const existingTrades = await prisma.breakoutPaperTrade.findMany({
     where: { signalId: { in: signals.map(s => s.id) } },
@@ -88,23 +167,56 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<number> {
   })
   const existingIds = new Set(existingTrades.map(t => t.signalId))
 
-  // Count current OPEN trades for maxConcurrent guard
-  const openCount = await prisma.breakoutPaperTrade.count({
-    where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
-  })
-
   let opened = 0
-  let availableSlots = Math.max(0, cfg.maxConcurrentPositions - openCount)
+  let depositDelta = 0
 
   for (const sig of signals) {
     if (existingIds.has(sig.id)) continue
-    if (availableSlots <= 0) {
+
+    // Re-read open trades each iteration since previous opens / margin-closes mutate state.
+    const openTrades = await prisma.breakoutPaperTrade.findMany({
+      where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+    })
+    if (openTrades.length >= cfg.maxConcurrentPositions) {
       console.log(`[BreakoutPaper] skip sig ${sig.id} — maxConcurrent=${cfg.maxConcurrentPositions} reached`)
       continue
     }
 
-    const pos = calcPosition(cfg.currentDepositUsd, cfg.riskPctPerTrade, sig.entryPrice, sig.stopLoss)
-    if (pos.positionUnits <= 0) continue
+    // Use current deposit (deposit may have shifted via prior margin-closes this cycle).
+    const fresh = await prisma.breakoutPaperConfig.findUnique({ where: { id: 1 } })
+    const deposit = fresh?.currentDepositUsd ?? cfg.currentDepositUsd
+
+    const sizing = computeSizing({
+      symbol: sig.symbol,
+      deposit,
+      riskPct: cfg.riskPctPerTrade,
+      targetMarginPct: cfg.targetMarginPct,
+      entry: sig.entryPrice,
+      sl: sig.stopLoss,
+    })
+    if (!sizing || sizing.positionUnits <= 0) continue
+
+    if (cfg.marginGuardEnabled) {
+      const existing: ExistingTrade[] = openTrades.map(buildExistingTrade)
+      const guard = evaluateOpenWithGuard(deposit, sizing.marginUsd, existing)
+
+      if (!guard.canOpen) {
+        console.log(`[BreakoutPaper] skip sig ${sig.id} ${sig.symbol} — ${guard.reason} (need $${guard.marginRequired.toFixed(2)}, free $${guard.marginAvailableBefore.toFixed(2)})`)
+        continue
+      }
+
+      if (guard.toClose.length > 0) {
+        if (!cfg.marginGuardAutoClose) {
+          console.log(`[BreakoutPaper] skip sig ${sig.id} ${sig.symbol} — would need to close ${guard.toClose.length} but auto-close disabled`)
+          continue
+        }
+        console.log(`[BreakoutPaper] margin guard: ${guard.reason} for sig ${sig.id} ${sig.symbol}`)
+        for (const tid of guard.toClose) {
+          const delta = await marketCloseForMargin(tid, cfg)
+          depositDelta += delta
+        }
+      }
+    }
 
     const entryAt = new Date(sig.createdAt)
     await prisma.breakoutPaperTrade.create({
@@ -118,10 +230,12 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<number> {
         currentStop: sig.currentStop,
         tpLadder: sig.tpLadder as any,
         openedAt: entryAt,
-        depositAtEntryUsd: cfg.currentDepositUsd,
-        riskUsd: pos.riskUsd,
-        positionSizeUsd: pos.positionSizeUsd,
-        positionUnits: pos.positionUnits,
+        depositAtEntryUsd: deposit,
+        riskUsd: sizing.riskUsd,
+        positionSizeUsd: sizing.positionSizeUsd,
+        positionUnits: sizing.positionUnits,
+        leverage: sizing.leverage,
+        marginUsd: sizing.marginUsd,
         feesRoundTripPct: cfg.feesRoundTripPct,
         autoTrailingSL: cfg.autoTrailingSL,
         status: 'OPEN',
@@ -129,10 +243,10 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<number> {
       },
     })
     opened++
-    availableSlots--
-    console.log(`[BreakoutPaper] opened virtual trade for sig ${sig.id} ${sig.symbol} ${sig.side} risk $${pos.riskUsd.toFixed(2)} pos $${pos.positionSizeUsd.toFixed(2)}`)
+    const lvNote = sizing.cappedByMaxLeverage ? ` (capped at ${getMaxLeverage(sig.symbol)}x)` : ''
+    console.log(`[BreakoutPaper] opened sig ${sig.id} ${sig.symbol} ${sig.side} risk $${sizing.riskUsd.toFixed(2)} pos $${sizing.positionSizeUsd.toFixed(2)} lev ${sizing.leverage.toFixed(1)}x margin $${sizing.marginUsd.toFixed(2)}${lvNote}`)
   }
-  return opened
+  return { opened, depositDelta }
 }
 
 async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Promise<{ pnlDelta: number; statusChanged: boolean }> {
@@ -354,11 +468,22 @@ export async function runBreakoutPaperCycle(): Promise<{ opened: number; updated
   if (!cfg.enabled) return { opened: 0, updated: 0, depositDelta: 0, deposit: cfg.currentDepositUsd }
 
   const opened = await openNewPaperTrades(cfg)
-  const updated = await trackOpenPaperTrades(cfg)
-  if (updated.depositDelta !== 0) await applyDepositDelta(cfg, updated.depositDelta)
+  // Apply any margin-close P&L from the open phase BEFORE tracking, so subsequent reads see fresh deposit.
+  if (opened.depositDelta !== 0) {
+    const fresh = await getOrCreateConfig()
+    if (fresh) await applyDepositDelta(fresh, opened.depositDelta)
+  }
+  const cfgAfterOpens = await getOrCreateConfig() ?? cfg
+  const updated = await trackOpenPaperTrades(cfgAfterOpens)
+  if (updated.depositDelta !== 0) await applyDepositDelta(cfgAfterOpens, updated.depositDelta)
 
   const final = await getOrCreateConfig()
-  return { opened, updated: updated.updated, depositDelta: updated.depositDelta, deposit: final?.currentDepositUsd ?? 0 }
+  return {
+    opened: opened.opened,
+    updated: updated.updated,
+    depositDelta: updated.depositDelta + opened.depositDelta,
+    deposit: final?.currentDepositUsd ?? 0,
+  }
 }
 
 export async function runBreakoutPaperCycleFast(): Promise<{ updated: number; depositDelta: number }> {

@@ -321,6 +321,10 @@ model BreakoutPaperConfig {
   feesRoundTripPct    Float    @default(0.08)                // 0.08% Bybit crypto round-trip
   // Trailing: только TP1 → BE (не TP2 → TP1 как в Levels)
   autoTrailingSL      Boolean  @default(false)
+  // Margin guard
+  targetMarginPct     Float    @default(10)                  // target margin per trade as % of deposit
+  marginGuardEnabled  Boolean  @default(true)
+  marginGuardAutoClose Boolean @default(false)               // auto-close winners (off by default — backtest showed lower edge)
   // Circuit breakers
   dailyLossLimitPct   Float    @default(5)
   weeklyLossLimitPct  Float    @default(15)
@@ -354,6 +358,8 @@ model BreakoutPaperTrade {
   riskUsd           Float
   positionSizeUsd   Float
   positionUnits     Float
+  leverage          Float?                                   // chosen leverage at entry
+  marginUsd         Float?                                   // initial margin = positionSizeUsd / leverage
   // Lifecycle
   status            String    @default("OPEN")
   closes            Json      @default("[]")

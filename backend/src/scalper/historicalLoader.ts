@@ -48,22 +48,40 @@ async function fetchBybitBatch(
   const bybitInt = BYBIT_INTERVAL[interval]
   if (!bybitInt) throw new Error(`Bybit: unsupported interval ${interval}`)
   const url = `${BYBIT_BASE}?category=${category}&symbol=${symbol}&interval=${bybitInt}&start=${startTime}&end=${endTime}&limit=${BYBIT_LIMIT}`
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`Bybit ${res.status} ${res.statusText} on ${symbol} ${interval}`)
-  const json = (await res.json()) as { retCode: number; retMsg: string; result?: { list?: any[][] } }
-  if (json.retCode !== 0) throw new Error(`Bybit retCode=${json.retCode} retMsg=${json.retMsg}`)
-  const list = json.result?.list ?? []
-  // Bybit returns newest-first; reverse to chronological
-  const candles: OHLCV[] = list.map((k) => ({
-    time: parseInt(k[0]),
-    open: parseFloat(k[1]),
-    high: parseFloat(k[2]),
-    low: parseFloat(k[3]),
-    close: parseFloat(k[4]),
-    volume: parseFloat(k[5]),
-  })).sort((a, b) => a.time - b.time)
-  return candles
+
+  // Retry with exponential backoff on rate-limit (retCode=10006) and transient HTTP errors.
+  let lastErr: Error | null = null
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`Bybit ${res.status} ${res.statusText} on ${symbol} ${interval}`)
+      const json = (await res.json()) as { retCode: number; retMsg: string; result?: { list?: any[][] } }
+      if (json.retCode === 10006) throw new Error(`Bybit retCode=10006 retMsg=${json.retMsg}`)
+      if (json.retCode !== 0) throw new Error(`Bybit retCode=${json.retCode} retMsg=${json.retMsg}`)
+      const list = json.result?.list ?? []
+      // success — break out and process below
+      return list.map((k) => ({
+        time: parseInt(k[0]),
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[3]),
+        close: parseFloat(k[4]),
+        volume: parseFloat(k[5]),
+      })).sort((a, b) => a.time - b.time)
+    } catch (e: any) {
+      lastErr = e
+      const msg = String(e?.message ?? e)
+      const isRateLimit = msg.includes('10006') || msg.includes('Rate Limit')
+      const isTransient = msg.includes('429') || msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('504') || msg.includes('ETIMEDOUT') || msg.includes('ECONNRESET')
+      if (!isRateLimit && !isTransient) throw e
+      const wait = isRateLimit ? Math.min(60_000, 2_000 * Math.pow(2, attempt)) : Math.min(10_000, 500 * Math.pow(2, attempt))
+      console.warn(`[Loader/bybit] ${symbol} ${interval}: ${isRateLimit ? 'rate-limit' : 'transient'} (attempt ${attempt + 1}/6), waiting ${wait}ms`)
+      await new Promise((r) => setTimeout(r, wait))
+    }
+  }
+  throw lastErr ?? new Error(`Bybit fetch failed after retries`)
 }
+
 
 async function fetchBinanceBatch(
   symbol: string,
@@ -168,7 +186,7 @@ export async function loadHistorical(
       if (fresh.length % 10000 < BYBIT_LIMIT) {
         console.log(`[Loader/bybit] ${symbol} ${interval}: ${fresh.length} new (down to ${new Date(oldest).toISOString()})`)
       }
-      await new Promise((r) => setTimeout(r, 200))
+      await new Promise((r) => setTimeout(r, 400))
     }
   } else {
     // Binance: forward-walking

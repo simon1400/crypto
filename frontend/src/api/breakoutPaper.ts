@@ -30,7 +30,7 @@ export interface BreakoutClose {
   pnlR: number
   pnlUsd: number
   closedAt: string
-  reason: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED' | 'MANUAL'
+  reason: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED' | 'MANUAL' | 'MARGIN'
 }
 
 export interface BreakoutTrade {
@@ -47,6 +47,8 @@ export interface BreakoutTrade {
   riskUsd: number
   positionSizeUsd: number
   positionUnits: number
+  leverage: number | null
+  marginUsd: number | null
   status: string
   closes: BreakoutClose[]
   realizedR: number
