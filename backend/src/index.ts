@@ -29,9 +29,16 @@ import { prisma } from './db/prisma'
 import klinesRouter from './routes/klines'
 import levelsRouter from './routes/levels'
 import levelsPaperRouter from './routes/levelsPaper'
+import breakoutRouter from './routes/breakout'
+import breakoutPaperRouter from './routes/breakoutPaper'
+// Levels v2 services kept available для UI fallback, но cron'ы отключены 2026-05-07
+// (заменены на Daily Breakout — backtest показал TEST R/tr +0.34 vs Levels TEST -63%).
 import { startLevelsScanner, stopLevelsScanner } from './services/levelsLiveScanner'
 import { startLevelsTracker, stopLevelsTracker } from './services/levelsTracker'
 import { startLevelsPaperTrader, stopLevelsPaperTrader } from './services/levelsPaperTrader'
+import { startBreakoutLiveScanner, stopBreakoutLiveScanner } from './services/dailyBreakoutLiveScanner'
+import { startBreakoutTracker, stopBreakoutTracker } from './services/dailyBreakoutTracker'
+import { startBreakoutPaperTrader, stopBreakoutPaperTrader } from './services/dailyBreakoutPaperTrader'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -62,6 +69,8 @@ app.use('/api/trading', tradingRouter)
 app.use('/api/klines', klinesRouter)
 app.use('/api/levels', levelsRouter)
 app.use('/api/levels-paper', levelsPaperRouter)
+app.use('/api/breakout', breakoutRouter)
+app.use('/api/breakout-paper', breakoutPaperRouter)
 
 // Module-level interval references for graceful shutdown
 let signalTrackerInterval: NodeJS.Timeout
@@ -132,10 +141,21 @@ const server = app.listen(PORT, () => {
   // Background auto-scanner — runs on interval when enabled in settings
   startAutoScanner()
 
-  // === Levels strategy live scanner & tracker (V2 + Fibo) ===
-  startLevelsScanner()
-  startLevelsTracker()
-  startLevelsPaperTrader()
+  // === Levels strategy DISABLED 2026-05-07 ===
+  // Backtest показал что Levels TEST R/tr -0.06 (убыток в out-of-sample),
+  // Daily Breakout TEST R/tr +0.34 на тех же монетах. Переключились на Daily Breakout.
+  // Старые маршруты /api/levels* остались для просмотра прошлых данных, но cron'ы выключены.
+  // startLevelsScanner()
+  // startLevelsTracker()
+  // startLevelsPaperTrader()
+
+  // === Daily Breakout strategy live scanner & tracker ===
+  // Optimal config (backtest 365d): 3h range, vol×2.0, 11 monetах,
+  // full trailing TP1→BE/TP2→TP1, splits 50/30/20.
+  // TRAIN R/tr +0.16 (n=667), TEST R/tr +0.34 (n=358) at 0.05% slippage.
+  startBreakoutLiveScanner()
+  startBreakoutTracker()
+  startBreakoutPaperTrader()
 })
 
 async function gracefulShutdown(signal: string) {
@@ -156,6 +176,9 @@ async function gracefulShutdown(signal: string) {
   stopLevelsScanner()
   stopLevelsTracker()
   stopLevelsPaperTrader()
+  stopBreakoutLiveScanner()
+  stopBreakoutTracker()
+  stopBreakoutPaperTrader()
   stopHealthCheck()
 
   // 3. Close WebSocket connections

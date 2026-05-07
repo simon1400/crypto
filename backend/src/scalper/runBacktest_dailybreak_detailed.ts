@@ -107,8 +107,8 @@ function runOne(symbol: string, m5: OHLCV[], cfg: BreakoutCfg, slippage: number,
   }
   const ladderCfg: LadderConfig = {
     ...DEFAULT_LADDER, exitMode: 'wick', splits: [0.5, 0.3, 0.2],
-    trailing: true, feesRoundTrip: 0.0008,
-    slippagePerSide: slippage,
+    trailing: true,  // full trailing: TP1→BE, TP2→TP1, TP3→TP2
+    feesRoundTrip: 0.0008, slippagePerSide: slippage,
   }
   return runLadderBacktest(periodCandles, (i) => sigByIdx.get(i) ?? null, ladderCfg).trades
 }

@@ -1,0 +1,224 @@
+/**
+ * Daily Breakout Tracker — отслеживает открытые BreakoutSignals на новых 5m свечах.
+ *
+ * Trailing (full, как в Levels): TP1→BE, TP2→TP1, TP3→TP2.
+ * Splits: 50/30/20.
+ *
+ * Statuses: NEW → ACTIVE → TP1_HIT → TP2_HIT → TP3_HIT → CLOSED / SL_HIT / EXPIRED
+ */
+
+import { prisma } from '../db/prisma'
+import { OHLCV } from './market'
+import { loadHistorical } from '../scalper/historicalLoader'
+import { sendNotification } from './notifier'
+
+const SPLITS = [0.5, 0.3, 0.2]
+
+interface CloseRecord {
+  price: number
+  percent: number
+  pnlR: number
+  closedAt: string
+  reason: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED'
+}
+
+async function loadRecent5m(symbol: string): Promise<OHLCV[]> {
+  return loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
+}
+
+async function getUsdContext(signalId: number): Promise<{
+  pnlUsdForR: (rValue: number) => number
+  realizedPnlUsd: number
+  depositUsd: number
+} | null> {
+  try {
+    const paperCfg = await prisma.breakoutPaperConfig.findUnique({ where: { id: 1 } })
+    if (!paperCfg) return null
+    const trade = await prisma.breakoutPaperTrade.findFirst({ where: { signalId } })
+    if (!trade) return null
+    return {
+      pnlUsdForR: (rValue: number) => rValue * trade.riskUsd,
+      realizedPnlUsd: trade.netPnlUsd,
+      depositUsd: paperCfg.currentDepositUsd,
+    }
+  } catch {
+    return null
+  }
+}
+
+async function trackOne(sig: any, recentCandles: OHLCV[]): Promise<void> {
+  const sinceMs = sig.lastPriceCheckAt
+    ? new Date(sig.lastPriceCheckAt).getTime()
+    : new Date(sig.createdAt).getTime()
+  const newCandles = recentCandles.filter(c => c.time > sinceMs)
+  if (newCandles.length === 0) return
+
+  const tpLadder: number[] = (sig.tpLadder as any[]) ?? []
+  const isLong = sig.side === 'BUY'
+  const entry = sig.entryPrice
+  const initialRisk = Math.abs(entry - sig.initialStop)
+
+  // Determine current ladder position
+  let nextTpIdx = 0
+  let remainingFrac = 1
+  const fills: CloseRecord[] = ((sig.closes as any[]) ?? []).map((c) => c as CloseRecord)
+  for (const f of fills) {
+    remainingFrac -= f.percent / 100
+    if (f.reason === 'TP1') nextTpIdx = Math.max(nextTpIdx, 1)
+    else if (f.reason === 'TP2') nextTpIdx = Math.max(nextTpIdx, 2)
+    else if (f.reason === 'TP3') nextTpIdx = Math.max(nextTpIdx, 3)
+  }
+  if (remainingFrac < 1e-6) return
+
+  let currentStop: number = sig.currentStop
+  let realizedR: number = sig.realizedR ?? 0
+  let status: string = sig.status
+
+  for (const c of newCandles) {
+    // SL hit (intra-bar)
+    const slHit = isLong ? c.low <= currentStop : c.high >= currentStop
+    if (slHit) {
+      const pnlR = ((isLong ? currentStop - entry : entry - currentStop) / initialRisk) * remainingFrac
+      realizedR += pnlR
+      fills.push({
+        price: currentStop, percent: remainingFrac * 100, pnlR,
+        closedAt: new Date(c.time).toISOString(),
+        reason: 'SL',
+      })
+      remainingFrac = 0
+      status = nextTpIdx === 0 ? 'SL_HIT' : 'CLOSED'
+      const usdCtx = await getUsdContext(sig.id)
+      try {
+        await sendNotification('BREAKOUT_SL_HIT' as any, {
+          id: sig.id, symbol: sig.symbol, side: sig.side,
+          entryPrice: entry, slPrice: currentStop, realizedR,
+          reasonText: nextTpIdx === 0 ? 'Initial SL' : `Trailing SL after TP${nextTpIdx}`,
+          ...(usdCtx ? { realizedPnlUsd: usdCtx.pnlUsdForR(realizedR), depositUsd: usdCtx.depositUsd } : {}),
+        })
+      } catch {}
+      break
+    }
+
+    // Walk through TPs
+    while (nextTpIdx < tpLadder.length && remainingFrac > 1e-6) {
+      const tp = tpLadder[nextTpIdx]
+      const tpHit = isLong ? c.high >= tp : c.low <= tp
+      if (!tpHit) break
+
+      const splitFrac = SPLITS[nextTpIdx] ?? remainingFrac
+      const fillFrac = Math.min(splitFrac, remainingFrac)
+      const pnlR = ((isLong ? tp - entry : entry - tp) / initialRisk) * fillFrac
+      realizedR += pnlR
+      const tpName = (`TP${nextTpIdx + 1}`) as 'TP1' | 'TP2' | 'TP3'
+      fills.push({
+        price: tp, percent: fillFrac * 100, pnlR,
+        closedAt: new Date(c.time).toISOString(),
+        reason: tpName,
+      })
+      remainingFrac -= fillFrac
+
+      // Full trailing (как в backtest): TP1→BE, TP2→TP1, TP3→TP2
+      if (nextTpIdx === 0) currentStop = entry
+      else currentStop = tpLadder[nextTpIdx - 1]
+
+      status = (nextTpIdx === 0 ? 'TP1_HIT' : nextTpIdx === 1 ? 'TP2_HIT' : 'TP3_HIT')
+
+      const usdCtx = await getUsdContext(sig.id)
+      try {
+        await sendNotification(`BREAKOUT_${tpName}_HIT` as any, {
+          id: sig.id, symbol: sig.symbol, side: sig.side,
+          entryPrice: entry, tpPrice: tp, percent: fillFrac * 100, pnlR, realizedR,
+          ...(usdCtx ? { pnlUsd: usdCtx.pnlUsdForR(pnlR), realizedPnlUsd: usdCtx.pnlUsdForR(realizedR), depositUsd: usdCtx.depositUsd } : {}),
+        })
+      } catch {}
+      nextTpIdx++
+
+      if (remainingFrac < 1e-6) {
+        status = 'CLOSED'
+        break
+      }
+    }
+    if (status === 'CLOSED' || status === 'SL_HIT') break
+    if (status === 'NEW') status = 'ACTIVE'
+  }
+
+  // Expiry: end of UTC day (23:55)
+  if (status !== 'CLOSED' && status !== 'SL_HIT' && sig.expiresAt && new Date(sig.expiresAt) < new Date()) {
+    if (remainingFrac > 1e-6) {
+      const lastPrice = newCandles[newCandles.length - 1].close
+      const pnlR = ((isLong ? lastPrice - entry : entry - lastPrice) / initialRisk) * remainingFrac
+      realizedR += pnlR
+      fills.push({
+        price: lastPrice, percent: remainingFrac * 100, pnlR,
+        closedAt: new Date().toISOString(), reason: 'EXPIRED',
+      })
+    }
+    status = 'EXPIRED'
+    const usdCtx = await getUsdContext(sig.id)
+    try {
+      await sendNotification('BREAKOUT_EXPIRED' as any, {
+        id: sig.id, symbol: sig.symbol, side: sig.side, entryPrice: entry, realizedR,
+        ...(usdCtx ? { realizedPnlUsd: usdCtx.pnlUsdForR(realizedR) } : {}),
+      })
+    } catch {}
+  }
+
+  const lastCandle = newCandles[newCandles.length - 1]
+  await prisma.breakoutSignal.update({
+    where: { id: sig.id },
+    data: {
+      status,
+      currentStop,
+      realizedR,
+      closes: fills as any,
+      lastPriceCheck: lastCandle.close,
+      lastPriceCheckAt: new Date(lastCandle.time),
+      ...(status === 'CLOSED' || status === 'SL_HIT' || status === 'EXPIRED'
+        ? { closedAt: new Date() } : {}),
+    },
+  })
+}
+
+export async function runBreakoutTrackerCycle(): Promise<number> {
+  const open = await prisma.breakoutSignal.findMany({
+    where: { status: { in: ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT'] } },
+  })
+  if (open.length === 0) return 0
+
+  const bySymbol = new Map<string, any[]>()
+  for (const s of open) {
+    const list = bySymbol.get(s.symbol) ?? []
+    list.push(s)
+    bySymbol.set(s.symbol, list)
+  }
+
+  let processed = 0
+  for (const [symbol, sigs] of bySymbol) {
+    try {
+      const candles = await loadRecent5m(symbol)
+      for (const sig of sigs) {
+        await trackOne(sig, candles)
+        processed++
+      }
+    } catch (e: any) {
+      console.error(`[BreakoutTracker] ${symbol} failed:`, e.message)
+    }
+  }
+  return processed
+}
+
+let trackerInterval: NodeJS.Timeout | null = null
+export function startBreakoutTracker(): void {
+  if (trackerInterval) return
+  console.log('[BreakoutTracker] starting (5min cron)')
+  setTimeout(() => {
+    runBreakoutTrackerCycle().catch(e => console.error('[BreakoutTracker] init error:', e.message))
+  }, 60_000)
+  trackerInterval = setInterval(() => {
+    runBreakoutTrackerCycle().catch(e => console.error('[BreakoutTracker] tick error:', e.message))
+  }, 5 * 60_000)
+}
+
+export function stopBreakoutTracker(): void {
+  if (trackerInterval) { clearInterval(trackerInterval); trackerInterval = null }
+}

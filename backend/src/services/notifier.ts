@@ -371,6 +371,102 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
       ].filter((l) => l !== '').join('\n')
     }
 
+    case 'BREAKOUT_NEW' as any: {
+      const sideEmoji = d.side === 'BUY' ? '🟢' : '🔴'
+      const sideText = d.side === 'BUY' ? 'LONG' : 'SHORT'
+      const sym = d.symbol
+      const dec = sym.includes('USDT') ? 2 : 5
+      const tps: number[] = (d.tpLadder as number[] || []).slice(0, 3)
+      const tpLines = tps.map((tp, i) => {
+        const pct = d.entryPrice ? (((tp - d.entryPrice) / d.entryPrice) * 100 * (d.side === 'BUY' ? 1 : -1)).toFixed(2) : '?'
+        const pctClose = i === 0 ? '50%' : i === 1 ? '30%' : '20%'
+        return `   ├ TP${i + 1}  <code>${tp.toFixed(dec)}</code>  (+${pct}%)  [${pctClose}]`
+      }).join('\n')
+      const slPctVal = d.entryPrice ? (((d.stopLoss - d.entryPrice) / d.entryPrice) * 100 * (d.side === 'BUY' ? 1 : -1)).toFixed(2) : '?'
+
+      let sizingBlock = ''
+      if (typeof d.depositUsd === 'number' && typeof d.riskPctPerTrade === 'number' && d.depositUsd > 0) {
+        const riskUsd = (d.depositUsd * d.riskPctPerTrade) / 100
+        const slDist = Math.abs(d.entryPrice - d.stopLoss)
+        const positionUnits = slDist > 0 ? riskUsd / slDist : 0
+        const positionSizeUsd = d.entryPrice * positionUnits
+        const leverage = positionSizeUsd > 0 && d.depositUsd > 0
+          ? Math.min(100, Math.max(1, positionSizeUsd / d.depositUsd))
+          : 1
+        sizingBlock = [
+          ``,
+          `💰 Депо:    <code>$${d.depositUsd.toFixed(2)}</code>  · Риск ${d.riskPctPerTrade}% (<code>$${riskUsd.toFixed(2)}</code>)`,
+          `📐 Размер   <code>$${positionSizeUsd.toFixed(2)}</code>  · ${positionUnits.toFixed(6)} ${sym.replace('USDT', '')}`,
+          `⚡ Плечо    <code>${leverage.toFixed(1)}x</code>  (рекомендуемое для риска ${d.riskPctPerTrade}%)`,
+        ].join('\n')
+      }
+
+      return [
+        `${sideEmoji} <b>${sym}</b> <b>${sideText}</b>  · 🚀 Daily Breakout`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `📐 Range    <code>${(d.rangeLow as number).toFixed(dec)}</code> – <code>${(d.rangeHigh as number).toFixed(dec)}</code>`,
+        `📍 Вход     <code>${(d.entryPrice as number).toFixed(dec)}</code>`,
+        `🛑 SL       <code>${(d.stopLoss as number).toFixed(dec)}</code>  (${slPctVal}%)`,
+        ``,
+        `🎯 Тейки:`,
+        tpLines,
+        sizingBlock,
+        ``,
+        `<i>${d.reason ?? ''}</i>`,
+      ].filter((l) => l !== '').join('\n')
+    }
+
+    case 'BREAKOUT_TP1_HIT' as any:
+    case 'BREAKOUT_TP2_HIT' as any:
+    case 'BREAKOUT_TP3_HIT' as any: {
+      const n = String(action).replace('BREAKOUT_TP', '').replace('_HIT', '')
+      const sym = d.symbol
+      const dec = sym.includes('USDT') ? 2 : 5
+      // Full trailing: TP1→BE, TP2→TP1, TP3→TP2
+      const beNote = n === '1' ? '\n🛡 SL → BE' : `\n🛡 SL → TP${parseInt(n) - 1}`
+      const pnlUsdLine = typeof d.pnlUsd === 'number'
+        ? `\n💵 $        <b>${d.pnlUsd >= 0 ? '+' : ''}$${d.pnlUsd.toFixed(2)}</b>` : ''
+      const totalUsdLine = typeof d.realizedPnlUsd === 'number'
+        ? `\nΣ $       ${d.realizedPnlUsd >= 0 ? '+' : ''}$${d.realizedPnlUsd.toFixed(2)}` : ''
+      const depoLine = typeof d.depositUsd === 'number'
+        ? `\n💼 Депо    <code>$${d.depositUsd.toFixed(2)}</code>` : ''
+      return [
+        `✅ <b>${sym}</b>  TP${n} сработал`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `💰 Цена   <code>${(d.tpPrice as number).toFixed(dec)}</code>`,
+        `📊 Закрыто  ${(d.percent as number).toFixed(0)}%`,
+        `📈 R        <b>${d.pnlR >= 0 ? '+' : ''}${(d.pnlR as number).toFixed(2)}R</b>${pnlUsdLine}`,
+        `Σ R       ${d.realizedR >= 0 ? '+' : ''}${(d.realizedR as number).toFixed(2)}R${totalUsdLine}${depoLine}${beNote}`,
+      ].join('\n')
+    }
+
+    case 'BREAKOUT_SL_HIT' as any: {
+      const sym = d.symbol
+      const dec = sym.includes('USDT') ? 2 : 5
+      const isBE = d.realizedR >= 0
+      const totalUsdLine = typeof d.realizedPnlUsd === 'number'
+        ? `\n💵 Σ $    <b>${d.realizedPnlUsd >= 0 ? '+' : ''}$${d.realizedPnlUsd.toFixed(2)}</b>` : ''
+      const depoLine = typeof d.depositUsd === 'number'
+        ? `\n💼 Депо   <code>$${d.depositUsd.toFixed(2)}</code>` : ''
+      return [
+        `${isBE ? '🟡' : '🔴'} <b>${sym}</b>  ${d.reasonText ?? 'SL'}`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `📍 Цена   <code>${(d.slPrice as number).toFixed(dec)}</code>`,
+        `📊 Σ R    <b>${d.realizedR >= 0 ? '+' : ''}${(d.realizedR as number).toFixed(2)}R</b>${totalUsdLine}${depoLine}`,
+      ].join('\n')
+    }
+
+    case 'BREAKOUT_EXPIRED' as any: {
+      const sym = d.symbol
+      const totalUsdLine = typeof d.realizedPnlUsd === 'number'
+        ? `\n💵 Σ $    ${d.realizedPnlUsd >= 0 ? '+' : ''}$${d.realizedPnlUsd.toFixed(2)}` : ''
+      return [
+        `⏱ <b>${sym}</b>  истёк (конец дня)`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `📊 Σ R    <b>${d.realizedR >= 0 ? '+' : ''}${(d.realizedR as number).toFixed(2)}R</b>${totalUsdLine}`,
+      ].join('\n')
+    }
+
     default:
       return `📋 ${action}: ${JSON.stringify(d)}`
   }

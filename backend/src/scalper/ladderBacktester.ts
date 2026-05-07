@@ -48,6 +48,12 @@ export interface LadderConfig {
   exitMode: LadderExitMode
   /** After TP1, move SL to entry; after TPn, move SL to TP(n-1). */
   trailing: boolean
+  /**
+   * Trailing mode (only relevant if trailing=true):
+   *   'full'   — TP1→BE, TP2→TP1, TP3→TP2 (default, classic trailing)
+   *   'tp1Only' — TP1→BE only, TP2/TP3 do NOT move SL further (let runners run)
+   */
+  trailingMode?: 'full' | 'tp1Only'
   maxHoldBars: number // 0 = no limit
   /**
    * Override: if set, ignore `splits` and close 100% of position on this TP index.
@@ -199,11 +205,13 @@ export function runLadderBacktest(
 
             // Trailing SL
             if (cfg.trailing) {
+              const mode = cfg.trailingMode ?? 'full'
               if (tpIdx === 0) {
-                pos.trailingSL = pos.fillPrice // BE
-              } else {
+                pos.trailingSL = pos.fillPrice // BE — applies to both modes
+              } else if (mode === 'full') {
                 pos.trailingSL = pos.sig.tpLadder[tpIdx - 1]
               }
+              // tp1Only: do NOT move SL further after TP1
             }
           }
           pos.nextTpIdx++
