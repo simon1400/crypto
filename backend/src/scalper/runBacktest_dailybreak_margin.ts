@@ -39,10 +39,18 @@ const SPLITS = [0.5, 0.3, 0.2]
 
 const CACHE_DIR = path.join(__dirname, '../../data/backtest')
 
+// Match DEFAULT_BREAKOUT_SETUPS in dailyBreakoutLiveScanner.ts (32 symbols).
 const PROD_SYMBOLS = [
+  // Original 11
   'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'AVAXUSDT', 'ARBUSDT',
   'AAVEUSDT', 'ENAUSDT', 'HYPEUSDT', '1000PEPEUSDT', 'SEIUSDT', 'BLURUSDT',
+  // Universe expansion 21 ACCEPT (sorted by TEST R/tr desc)
+  'MUSDT', 'LDOUSDT', 'DYDXUSDT', 'ZECUSDT', 'STXUSDT',
+  'IPUSDT', 'SANDUSDT', 'ORDIUSDT', 'ARUSDT', 'DOGEUSDT',
+  'TRUMPUSDT', 'STRKUSDT', 'KASUSDT', 'SHIB1000USDT', 'FARTCOINUSDT',
+  'AEROUSDT', 'ETCUSDT', 'IOUSDT', 'POLUSDT', 'TSTBSCUSDT', 'VVVUSDT',
 ]
+const MAX_CONCURRENT = 10  // как в проде
 
 function sliceLastDays(arr: OHLCV[], days: number): OHLCV[] {
   const cutoff = Date.now() - (days + BUFFER_DAYS) * 24 * 60 * 60_000
@@ -248,6 +256,9 @@ function simulate(allTrades: PortfolioTrade[], mode: Mode, deposit: number): Sim
     const pt = sorted[ev.tradeIdx!]
     const slDist = Math.abs(pt.entryPrice - pt.sl)
     if (slDist <= 0 || currentDeposit <= 0) { skipped++; continue }
+
+    // Match prod maxConcurrentPositions=10
+    if (active.length >= MAX_CONCURRENT) { skipped++; continue }
 
     if (mode === 'baseline') {
       // Risk 2%, position computed risk/sl-dist; leverage so margin = full deposit
