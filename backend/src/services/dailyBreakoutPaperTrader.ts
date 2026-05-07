@@ -15,6 +15,7 @@ import { prisma } from '../db/prisma'
 import { OHLCV, fetchPricesBatch } from './market'
 import { loadHistorical } from '../scalper/historicalLoader'
 import { computeSizing, evaluateOpenWithGuard, ExistingTrade, getMaxLeverage } from './marginGuard'
+import { sendNotification } from './notifier'
 
 const SPLITS = [0.5, 0.3, 0.2]
 
@@ -350,6 +351,12 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Pr
   let totalPnlDeltaUsd = 0
   let statusChanged = false
 
+  type FillEvent =
+    | { kind: 'TP'; tpIdx: 1 | 2 | 3; price: number; percent: number; pnlR: number; pnlUsd: number }
+    | { kind: 'SL'; price: number; pnlR: number; pnlUsd: number; isBE: boolean }
+    | { kind: 'EXPIRED'; price: number; pnlR: number; pnlUsd: number }
+  const events: FillEvent[] = []
+
   for (const c of newCandles) {
     // SL
     const slHit = isLong ? c.low <= currentStop : c.high >= currentStop
@@ -364,6 +371,7 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Pr
         price: currentStop, percent: remainingFrac * 100, pnlR, pnlUsd,
         closedAt: new Date(c.time).toISOString(), reason: 'SL',
       })
+      events.push({ kind: 'SL', price: currentStop, pnlR, pnlUsd, isBE: realizedR >= 0 })
       remainingFrac = 0
       status = nextTpIdx === 0 ? 'SL_HIT' : 'CLOSED'
       statusChanged = true
@@ -388,6 +396,10 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Pr
       fills.push({
         price: tp, percent: fillFrac * 100, pnlR, pnlUsd,
         closedAt: new Date(c.time).toISOString(), reason: tpName,
+      })
+      events.push({
+        kind: 'TP', tpIdx: (nextTpIdx + 1) as 1 | 2 | 3,
+        price: tp, percent: fillFrac * 100, pnlR, pnlUsd,
       })
       remainingFrac -= fillFrac
 
@@ -421,6 +433,7 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Pr
         price: lastPrice, percent: remainingFrac * 100, pnlR, pnlUsd,
         closedAt: new Date().toISOString(), reason: 'EXPIRED',
       })
+      events.push({ kind: 'EXPIRED', price: lastPrice, pnlR, pnlUsd })
     }
     status = 'EXPIRED'
     statusChanged = true
@@ -463,6 +476,51 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Pr
       isTerminal ? new Date() : null,
       fills,
     )
+  }
+
+  // Telegram notifications: one per fill event (TP1/TP2/TP3/SL/EXPIRED).
+  // Cumulative R/PnL grow event-by-event; final values match post-update DB state.
+  if (events.length > 0) {
+    const freshCfg = await prisma.breakoutPaperConfig.findUnique({ where: { id: 1 } })
+    const depositUsd = (freshCfg?.currentDepositUsd ?? cfg.currentDepositUsd) + (totalPnlDeltaUsd - newFeesUsd)
+    let cumR = trade.realizedR ?? 0
+    let cumPnlUsd = trade.realizedPnlUsd ?? 0
+    for (const ev of events) {
+      cumR += ev.pnlR
+      cumPnlUsd += ev.pnlUsd
+      try {
+        if (ev.kind === 'TP') {
+          await sendNotification(`BREAKOUT_TP${ev.tpIdx}_HIT` as any, {
+            symbol: trade.symbol,
+            tpPrice: ev.price,
+            percent: ev.percent,
+            pnlR: ev.pnlR,
+            pnlUsd: ev.pnlUsd,
+            realizedR: cumR,
+            realizedPnlUsd: cumPnlUsd,
+            depositUsd,
+          })
+        } else if (ev.kind === 'SL') {
+          await sendNotification('BREAKOUT_SL_HIT' as any, {
+            symbol: trade.symbol,
+            slPrice: ev.price,
+            realizedR: cumR,
+            realizedPnlUsd: cumPnlUsd,
+            depositUsd,
+            reasonText: ev.isBE ? 'SL → BE' : 'SL hit',
+          })
+        } else {
+          await sendNotification('BREAKOUT_EXPIRED' as any, {
+            symbol: trade.symbol,
+            realizedR: cumR,
+            realizedPnlUsd: cumPnlUsd,
+            depositUsd,
+          })
+        }
+      } catch (e: any) {
+        console.error(`[BreakoutPaper] notify ${ev.kind} failed for ${trade.symbol}#${trade.id}: ${e.message}`)
+      }
+    }
   }
 
   return { pnlDelta: totalPnlDeltaUsd - newFeesUsd, statusChanged }
