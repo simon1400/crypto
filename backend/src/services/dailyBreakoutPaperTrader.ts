@@ -144,10 +144,40 @@ async function marketCloseForMargin(tradeId: number, cfg: PaperConfig): Promise<
     },
   })
 
+  if (t.signalId) {
+    await syncSignalStatus(t.signalId, 'CLOSED', realizedR, closePrice, new Date(), closes)
+  }
+
   console.log(`[BreakoutPaper] margin-close trade #${tradeId} ${t.symbol} ${t.side} @ $${closePrice.toFixed(6)} pnl $${pnlUsd.toFixed(2)} (${pnlR.toFixed(2)}R)`)
 
   // Return net P&L delta to apply to deposit
   return pnlUsd - newFeesUsd
+}
+
+/**
+ * Sync BreakoutSignal.status to mirror what paper trade did. Replaces the separate
+ * dailyBreakoutTracker cron — paper trader is the single source of truth for
+ * live tracking, since we already pull klines / last-prices for it.
+ */
+export async function syncSignalStatus(
+  signalId: number,
+  newStatus: 'ACTIVE' | 'TP1_HIT' | 'TP2_HIT' | 'TP3_HIT' | 'CLOSED' | 'SL_HIT' | 'EXPIRED',
+  realizedR: number | null,
+  lastPriceCheck: number | null,
+  closedAt: Date | null,
+  closes: any[] | null,
+): Promise<void> {
+  try {
+    const data: any = { status: newStatus }
+    if (realizedR != null) data.realizedR = realizedR
+    if (lastPriceCheck != null) {
+      data.lastPriceCheck = lastPriceCheck
+      data.lastPriceCheckAt = new Date()
+    }
+    if (closedAt) data.closedAt = closedAt
+    if (closes) data.closes = closes
+    await prisma.breakoutSignal.update({ where: { id: signalId }, data })
+  } catch { /* signal may have been deleted manually — ignore */ }
 }
 
 async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; depositDelta: number }> {
@@ -264,6 +294,8 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
     const lvNote = sizing.cappedByMaxLeverage ? ` (capped at ${getMaxLeverage(sig.symbol)}x)` : ''
     console.log(`[BreakoutPaper] opened sig ${sig.id} ${sig.symbol} ${sig.side} risk $${sizing.riskUsd.toFixed(2)} pos $${sizing.positionSizeUsd.toFixed(2)} lev ${sizing.leverage.toFixed(1)}x margin $${sizing.marginUsd.toFixed(2)}${lvNote}`)
     await markPaperStatus(sig.id, 'OPENED', `lev ${sizing.leverage.toFixed(1)}x · margin $${sizing.marginUsd.toFixed(2)}${lvNote}`)
+    // Mirror to BreakoutSignal so /api/breakout/signals reflects live state without separate tracker.
+    await syncSignalStatus(sig.id, 'ACTIVE', null, null, null, null)
   }
   return { opened, depositDelta }
 }
@@ -400,6 +432,20 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Pr
         ? { closedAt: new Date() } : {}),
     },
   })
+
+  // Mirror status / closes / lastPrice to the originating BreakoutSignal so the
+  // signals tab + Telegram tracker stay in sync without a separate cron.
+  if (statusChanged && trade.signalId) {
+    const isTerminal = status === 'CLOSED' || status === 'SL_HIT' || status === 'EXPIRED'
+    await syncSignalStatus(
+      trade.signalId,
+      status as any,
+      realizedR,
+      lastCandle.close,
+      isTerminal ? new Date() : null,
+      fills,
+    )
+  }
 
   return { pnlDelta: totalPnlDeltaUsd - newFeesUsd, statusChanged }
 }

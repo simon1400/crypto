@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { prisma } from '../db/prisma'
 import {
-  runBreakoutPaperCycle, resetBreakoutPaperAccount,
+  runBreakoutPaperCycle, resetBreakoutPaperAccount, syncSignalStatus,
 } from '../services/dailyBreakoutPaperTrader'
 import { loadHistorical } from '../scalper/historicalLoader'
 import { fetchPricesBatch } from '../services/market'
@@ -393,6 +393,9 @@ router.post('/trades/:id/close-market', async (req, res) => {
         lastPriceCheckAt: new Date(),
       },
     })
+    if (trade.signalId) {
+      await syncSignalStatus(trade.signalId, 'CLOSED', realizedR, price, new Date(), fills)
+    }
     await recomputeDepositAndStats()
     const fresh = await prisma.breakoutPaperTrade.findUnique({ where: { id } })
     res.json(fresh)
@@ -452,6 +455,17 @@ router.post('/trades/:id/close-manual', async (req, res) => {
         lastPriceCheckAt: new Date(),
       },
     })
+    if (trade.signalId) {
+      const isTerminal = status === 'CLOSED'
+      await syncSignalStatus(
+        trade.signalId,
+        status as any,
+        realizedR,
+        price,
+        isTerminal ? new Date() : null,
+        fills,
+      )
+    }
     await recomputeDepositAndStats()
     const fresh = await prisma.breakoutPaperTrade.findUnique({ where: { id } })
     res.json(fresh)

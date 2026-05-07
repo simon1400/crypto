@@ -30,7 +30,6 @@ import klinesRouter from './routes/klines'
 import breakoutRouter from './routes/breakout'
 import breakoutPaperRouter from './routes/breakoutPaper'
 import { startBreakoutLiveScanner, stopBreakoutLiveScanner } from './services/dailyBreakoutLiveScanner'
-import { startBreakoutTracker, stopBreakoutTracker } from './services/dailyBreakoutTracker'
 import { startBreakoutPaperTrader, stopBreakoutPaperTrader } from './services/dailyBreakoutPaperTrader'
 
 const app = express()
@@ -138,7 +137,6 @@ const server = app.listen(PORT, () => {
   // TRAIN R/tr +0.16 (n=667), TEST R/tr +0.34 (n=358) at 0.05% slippage.
   // Заменил Levels v2 (TEST R/tr -0.06) после strategy comparison backtest 2026-05-07.
   startBreakoutLiveScanner()
-  startBreakoutTracker()
   startBreakoutPaperTrader()
 })
 
@@ -158,7 +156,6 @@ async function gracefulShutdown(signal: string) {
   stopFundingTracker()
   stopAutoScanner()
   stopBreakoutLiveScanner()
-  stopBreakoutTracker()
   stopBreakoutPaperTrader()
   stopHealthCheck()
 

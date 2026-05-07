@@ -3,7 +3,7 @@ import { prisma } from '../db/prisma'
 import {
   runBreakoutScanCycleNow, DEFAULT_BREAKOUT_SETUPS,
 } from '../services/dailyBreakoutLiveScanner'
-import { runBreakoutTrackerCycle } from '../services/dailyBreakoutTracker'
+import { runBreakoutPaperCycle } from '../services/dailyBreakoutPaperTrader'
 
 const router = Router()
 
@@ -86,10 +86,12 @@ router.post('/scan-now', async (_req, res) => {
   }
 })
 
+// Manual track trigger — runs the paper cycle which now also syncs BreakoutSignal status
+// (the dedicated tracker cron was removed; paper trader is the single source of truth).
 router.post('/track-now', async (_req, res) => {
   try {
-    const processed = await runBreakoutTrackerCycle()
-    res.json({ processed })
+    const r = await runBreakoutPaperCycle()
+    res.json({ processed: r.updated, opened: r.opened, deposit: r.deposit })
   } catch (e: any) {
     res.status(500).json({ error: e.message })
   }
