@@ -10,7 +10,33 @@ import {
   type BreakoutTradeLive as PaperTradeLive,
   type BreakoutConfig as ScannerCfg,
 } from '../api/breakoutPaper'
+import BreakoutPaperTradeModal from '../components/BreakoutPaperTradeModal'
+import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
 import { formatDate, pnlColor, fmt2, fmt2Signed, fmtPrice as fmtPriceShared } from '../lib/formatters'
+
+function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): PositionChartPosition {
+  const closes = t.closes || []
+  const effectivePrice = currentPrice != null
+    ? currentPrice
+    : (closes.length > 0 ? closes[closes.length - 1].price : null)
+  return {
+    coin: t.symbol,
+    type: t.side === 'BUY' ? 'LONG' : 'SHORT',
+    entry: t.entryPrice,
+    stopLoss: t.currentStop,
+    takeProfits: (t.tpLadder || []).slice(0, 3),
+    openedAt: t.openedAt,
+    closedAt: t.closedAt,
+    currentPrice: effectivePrice,
+    partialCloses: closes.map(c => ({
+      price: c.price,
+      percent: c.percent,
+      closedAt: c.closedAt,
+      isSL: c.reason === 'SL',
+    })),
+    title: `${t.symbol} ${t.side === 'BUY' ? 'LONG' : 'SHORT'} (DEMO #${t.id})`,
+  }
+}
 
 type StatusFilter = 'OPEN' | 'CLOSED' | 'ALL'
 
@@ -99,6 +125,8 @@ export default function BreakoutPaper() {
   const [cycleRunning, setCycleRunning] = useState(false)
   const [scanRunning, setScanRunning] = useState(false)
   const [livePrices, setLivePrices] = useState<Record<number, PaperTradeLive>>({})
+  const [selectedTrade, setSelectedTrade] = useState<PaperTrade | null>(null)
+  const [chartTrade, setChartTrade] = useState<PaperTrade | null>(null)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -222,9 +250,11 @@ export default function BreakoutPaper() {
   const activeMarginUsd = openTrades.reduce((sum, t) => {
     const closedFrac = (t.closes ?? []).reduce((a, c) => a + c.percent, 0) / 100
     const remainingPos = t.positionSizeUsd * Math.max(0, 1 - closedFrac)
-    const lev = t.depositAtEntryUsd > 0 && t.positionSizeUsd > 0
-      ? Math.min(100, Math.max(1, t.positionSizeUsd / t.depositAtEntryUsd))
-      : 1
+    const lev = t.leverage && t.leverage > 0
+      ? t.leverage
+      : (t.depositAtEntryUsd > 0 && t.positionSizeUsd > 0
+        ? Math.min(100, Math.max(1, t.positionSizeUsd / t.depositAtEntryUsd))
+        : 1)
     return sum + remainingPos / lev
   }, 0)
 
@@ -393,14 +423,20 @@ export default function BreakoutPaper() {
                 const sideColorCls = t.side === 'BUY' ? 'text-long' : 'text-short'
                 const closedPctNum = Math.round(closedFrac * 100)
                 const isFinished = ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT'].includes(t.status)
-                const lev = t.depositAtEntryUsd > 0 && t.positionSizeUsd > 0
-                  ? Math.min(100, Math.max(1, t.positionSizeUsd / t.depositAtEntryUsd))
-                  : 1
-                const marginFull = t.positionSizeUsd / lev
+                const lev = t.leverage && t.leverage > 0
+                  ? t.leverage
+                  : (t.depositAtEntryUsd > 0 && t.positionSizeUsd > 0
+                    ? Math.min(100, Math.max(1, t.positionSizeUsd / t.depositAtEntryUsd))
+                    : 1)
+                const marginFull = t.marginUsd ?? (t.positionSizeUsd / lev)
                 const marginRemaining = remainingPositionUsd / lev
 
                 return (
-                  <tr key={t.id} className="border-t border-input hover:bg-input/50 transition-colors">
+                  <tr
+                    key={t.id}
+                    className="border-t border-input hover:bg-input/50 cursor-pointer transition-colors"
+                    onClick={() => setSelectedTrade(t)}
+                  >
                     <td className="px-3 py-2 text-text-secondary whitespace-nowrap leading-tight">
                       {isFinished && t.closedAt ? (
                         <>
@@ -420,6 +456,13 @@ export default function BreakoutPaper() {
                       <span className="flex items-center gap-2">
                         <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent" title="Demo paper trade">D</span>
                         <span className={sideColorCls}>{t.symbol.replace('USDT', '')}</span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setChartTrade(t) }}
+                          className="text-text-secondary hover:text-accent transition-colors"
+                          title="График позиции"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+                        </button>
                       </span>
                     </td>
                     <td className="px-3 py-2 text-right font-mono text-text-primary">${fmtPrice(t.entryPrice)}</td>
@@ -548,6 +591,28 @@ export default function BreakoutPaper() {
             </table>
           </div>
         </div>
+      )}
+
+      {selectedTrade && (
+        <BreakoutPaperTradeModal
+          trade={selectedTrade}
+          onClose={() => setSelectedTrade(null)}
+          onUpdate={(updated) => {
+            setSelectedTrade(updated)
+            setTrades(prev => prev.map(t => t.id === updated.id ? updated : t))
+          }}
+          onDelete={(id) => {
+            setSelectedTrade(null)
+            setTrades(prev => prev.filter(t => t.id !== id))
+          }}
+        />
+      )}
+
+      {chartTrade && (
+        <PositionChartModal
+          position={paperTradeToPosition(chartTrade, livePrices[chartTrade.id]?.currentPrice ?? null)}
+          onClose={() => setChartTrade(null)}
+        />
       )}
     </div>
   )
