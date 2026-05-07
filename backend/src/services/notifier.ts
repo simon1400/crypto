@@ -1,5 +1,6 @@
 import { prisma } from '../db/prisma'
 import { OrderAction } from '../trading/types'
+import { computeSizing, getMaxLeverage } from './marginGuard'
 
 const NOTIFY_ACTIONS: Set<OrderAction> = new Set([
   'ORDER_FILLED',
@@ -189,19 +190,26 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
 
       let sizingBlock = ''
       if (typeof d.depositUsd === 'number' && typeof d.riskPctPerTrade === 'number' && d.depositUsd > 0) {
-        const riskUsd = (d.depositUsd * d.riskPctPerTrade) / 100
-        const slDist = Math.abs(d.entryPrice - d.stopLoss)
-        const positionUnits = slDist > 0 ? riskUsd / slDist : 0
-        const positionSizeUsd = d.entryPrice * positionUnits
-        const leverage = positionSizeUsd > 0 && d.depositUsd > 0
-          ? Math.min(100, Math.max(1, positionSizeUsd / d.depositUsd))
-          : 1
-        sizingBlock = [
-          ``,
-          `💰 Депо:    <code>$${d.depositUsd.toFixed(2)}</code>  · Риск ${d.riskPctPerTrade}% (<code>$${riskUsd.toFixed(2)}</code>)`,
-          `📐 Размер   <code>$${positionSizeUsd.toFixed(2)}</code>  · ${positionUnits.toFixed(6)} ${sym.replace('USDT', '')}`,
-          `⚡ Плечо    <code>${leverage.toFixed(1)}x</code>  (рекомендуемое для риска ${d.riskPctPerTrade}%)`,
-        ].join('\n')
+        const targetMarginPct = typeof d.targetMarginPct === 'number' ? d.targetMarginPct : 10
+        const sizing = computeSizing({
+          symbol: sym,
+          deposit: d.depositUsd,
+          riskPct: d.riskPctPerTrade,
+          targetMarginPct,
+          entry: d.entryPrice,
+          sl: d.stopLoss,
+        })
+        if (sizing) {
+          const maxLev = getMaxLeverage(sym)
+          const lvNote = sizing.cappedByMaxLeverage ? ` (max ${maxLev}x)` : ''
+          sizingBlock = [
+            ``,
+            `💰 Депо:    <code>$${d.depositUsd.toFixed(2)}</code>  · Риск ${d.riskPctPerTrade}% (<code>$${sizing.riskUsd.toFixed(2)}</code>)`,
+            `📐 Размер   <code>$${sizing.positionSizeUsd.toFixed(2)}</code>  · ${sizing.positionUnits.toFixed(6)} ${sym.replace('USDT', '')}`,
+            `🪙 Маржа    <code>$${sizing.marginUsd.toFixed(2)}</code>  (~${targetMarginPct}% депо)`,
+            `⚡ Плечо    <code>${sizing.leverage.toFixed(1)}x</code>${lvNote}`,
+          ].join('\n')
+        }
       }
 
       return [

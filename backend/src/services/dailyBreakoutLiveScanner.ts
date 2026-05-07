@@ -111,11 +111,13 @@ async function saveAndNotify(
   // Telegram notification — include position sizing if paper trading is configured
   let depositUsd: number | undefined
   let riskPctPerTrade: number | undefined
+  let targetMarginPct: number | undefined
   try {
     const paperCfg = await prisma.breakoutPaperConfig.findUnique({ where: { id: 1 } })
     if (paperCfg) {
       depositUsd = paperCfg.currentDepositUsd
       riskPctPerTrade = paperCfg.riskPctPerTrade
+      targetMarginPct = paperCfg.targetMarginPct
     }
   } catch {}
 
@@ -133,6 +135,7 @@ async function saveAndNotify(
       reason: sig.reason,
       depositUsd,
       riskPctPerTrade,
+      targetMarginPct,
     })
     await prisma.breakoutSignal.update({
       where: { id: created.id },
