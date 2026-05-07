@@ -17,14 +17,25 @@ async function getCurrentPrice(symbol: string): Promise<number | null> {
 async function recomputeDepositAndStats(): Promise<void> {
   const cfg = await prisma.breakoutPaperConfig.findUnique({ where: { id: 1 } })
   if (!cfg) return
-  const closed = await prisma.breakoutPaperTrade.findMany({
-    where: { status: { in: ['CLOSED', 'SL_HIT', 'EXPIRED'] } },
-    select: { netPnlUsd: true, openedAt: true, closedAt: true },
+  // Берём все сделки с реализованной частью: полностью закрытые + открытые с partial closes (TP1_HIT/TP2_HIT и т.п.)
+  const trades = await prisma.breakoutPaperTrade.findMany({
+    where: {
+      OR: [
+        { status: { in: ['CLOSED', 'SL_HIT', 'EXPIRED'] } },
+        { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] }, NOT: { closes: { equals: [] } } },
+      ],
+    },
+    select: { status: true, netPnlUsd: true, realizedPnlUsd: true, feesPaidUsd: true },
   })
-  const totalTrades = closed.length
-  const totalWins = closed.filter(t => t.netPnlUsd > 0).length
-  const totalLosses = closed.filter(t => t.netPnlUsd < 0).length
-  const totalPnLUsd = closed.reduce((a, t) => a + t.netPnlUsd, 0)
+  const closedStatuses = new Set(['CLOSED', 'SL_HIT', 'EXPIRED'])
+  const closedOnly = trades.filter(t => closedStatuses.has(t.status))
+  const totalTrades = closedOnly.length
+  const totalWins = closedOnly.filter(t => t.netPnlUsd > 0).length
+  const totalLosses = closedOnly.filter(t => t.netPnlUsd < 0).length
+  const totalPnLUsd = trades.reduce((a, t) => {
+    const realizedNet = closedStatuses.has(t.status) ? t.netPnlUsd : (t.realizedPnlUsd - t.feesPaidUsd)
+    return a + realizedNet
+  }, 0)
   const newDeposit = cfg.startingDepositUsd + totalPnLUsd
   const newPeak = Math.max(cfg.peakDepositUsd, newDeposit)
   const newDD = newPeak > 0 ? Math.max(cfg.maxDrawdownPct, ((newPeak - newDeposit) / newPeak) * 100) : 0
@@ -194,17 +205,38 @@ router.get('/stats', async (_req, res) => {
     const cfg = await prisma.breakoutPaperConfig.upsert({
       where: { id: 1 }, update: {}, create: { id: 1 },
     })
+    // Полностью закрытые — для winRate и счётчика сделок по символу
     const closed = await prisma.breakoutPaperTrade.findMany({
       where: { status: { in: ['CLOSED', 'SL_HIT', 'EXPIRED'] } },
       select: { netPnlUsd: true, openedAt: true, closedAt: true, symbol: true },
     })
     const winRate = closed.length > 0 ? closed.filter(t => t.netPnlUsd > 0).length / closed.length : 0
 
+    // Для P&L (equity curve, bySymbol pnl) — итерируем по partial closes всех сделок,
+    // включая ещё открытые с реализованной частью (TP1_HIT/TP2_HIT).
+    const allWithCloses = await prisma.breakoutPaperTrade.findMany({
+      where: { NOT: { closes: { equals: [] } } },
+      select: {
+        symbol: true, closes: true, positionUnits: true,
+        feesRoundTripPct: true, openedAt: true,
+      },
+    })
+
     const byDay: Record<string, number> = {}
-    for (const t of closed) {
-      const day = (t.closedAt ?? t.openedAt).toISOString().slice(0, 10)
-      byDay[day] = (byDay[day] ?? 0) + t.netPnlUsd
+    const bySymbolPnl: Record<string, number> = {}
+    for (const t of allWithCloses) {
+      const closesArr = ((t.closes as any[]) ?? []) as Array<{ price: number; percent: number; pnlUsd: number; closedAt: string }>
+      const feeRatePct = t.feesRoundTripPct ?? cfg.feesRoundTripPct ?? 0
+      for (const c of closesArr) {
+        const notional = t.positionUnits * c.price * (c.percent / 100)
+        const fee = notional * (feeRatePct / 100)
+        const net = (c.pnlUsd ?? 0) - fee
+        const day = (c.closedAt ? new Date(c.closedAt) : t.openedAt).toISOString().slice(0, 10)
+        byDay[day] = (byDay[day] ?? 0) + net
+        bySymbolPnl[t.symbol] = (bySymbolPnl[t.symbol] ?? 0) + net
+      }
     }
+
     const equityCurve: Array<{ date: string; pnl: number; equity: number }> = []
     let running = cfg.startingDepositUsd
     for (const date of Object.keys(byDay).sort()) {
@@ -212,12 +244,16 @@ router.get('/stats', async (_req, res) => {
       equityCurve.push({ date, pnl: byDay[date], equity: running })
     }
 
+    // Кол-во и wins считаем только по полностью закрытым; pnl — net по всем partial closes.
     const bySymbol: Record<string, { trades: number; wins: number; pnl: number }> = {}
     for (const t of closed) {
       bySymbol[t.symbol] = bySymbol[t.symbol] ?? { trades: 0, wins: 0, pnl: 0 }
       bySymbol[t.symbol].trades++
-      bySymbol[t.symbol].pnl += t.netPnlUsd
       if (t.netPnlUsd > 0) bySymbol[t.symbol].wins++
+    }
+    for (const sym of Object.keys(bySymbolPnl)) {
+      bySymbol[sym] = bySymbol[sym] ?? { trades: 0, wins: 0, pnl: 0 }
+      bySymbol[sym].pnl = bySymbolPnl[sym]
     }
     res.json({
       config: cfg, winRate,

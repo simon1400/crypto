@@ -509,14 +509,26 @@ async function applyDepositDelta(cfg: PaperConfig, delta: number): Promise<void>
   const newPeak = Math.max(cfg.peakDepositUsd, newDeposit)
   const newDD = newPeak > 0 ? Math.max(cfg.maxDrawdownPct, ((newPeak - newDeposit) / newPeak) * 100) : 0
 
-  const closed = await prisma.breakoutPaperTrade.findMany({
-    where: { status: { in: ['CLOSED', 'SL_HIT', 'EXPIRED'] } },
-    select: { netPnlUsd: true },
+  // Учитываем и полностью закрытые, и реализованную часть открытых (TP1_HIT/TP2_HIT) —
+  // иначе Total P&L отстаёт от депозита (депозит обновляется на каждый partial close).
+  const trades = await prisma.breakoutPaperTrade.findMany({
+    where: {
+      OR: [
+        { status: { in: ['CLOSED', 'SL_HIT', 'EXPIRED'] } },
+        { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] }, NOT: { closes: { equals: [] } } },
+      ],
+    },
+    select: { status: true, netPnlUsd: true, realizedPnlUsd: true, feesPaidUsd: true },
   })
-  const totalTrades = closed.length
-  const totalWins = closed.filter(t => t.netPnlUsd > 0).length
-  const totalLosses = closed.filter(t => t.netPnlUsd < 0).length
-  const totalPnLUsd = closed.reduce((a, t) => a + t.netPnlUsd, 0)
+  const closedStatuses = new Set(['CLOSED', 'SL_HIT', 'EXPIRED'])
+  const closedOnly = trades.filter(t => closedStatuses.has(t.status))
+  const totalTrades = closedOnly.length
+  const totalWins = closedOnly.filter(t => t.netPnlUsd > 0).length
+  const totalLosses = closedOnly.filter(t => t.netPnlUsd < 0).length
+  const totalPnLUsd = trades.reduce((a, t) => {
+    const realizedNet = closedStatuses.has(t.status) ? t.netPnlUsd : (t.realizedPnlUsd - t.feesPaidUsd)
+    return a + realizedNet
+  }, 0)
 
   await prisma.breakoutPaperConfig.update({
     where: { id: 1 },

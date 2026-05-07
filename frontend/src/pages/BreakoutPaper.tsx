@@ -15,7 +15,7 @@ import {
 import BreakoutPaperTradeModal from '../components/BreakoutPaperTradeModal'
 import BreakoutSignalModal from '../components/BreakoutSignalModal'
 import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
-import { formatDate, pnlColor, fmt2, fmt2Signed, fmtPrice as fmtPriceShared } from '../lib/formatters'
+import { formatDate, pnlColor, fmt2, fmt2Signed, formatPrice } from '../lib/formatters'
 
 function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): PositionChartPosition {
   const closes = t.closes || []
@@ -86,7 +86,7 @@ function fmtUsd(n: number): string {
   return `${n >= 0 ? '+' : ''}$${Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2)}`
 }
 function fmtPrice(n: number, _symbol?: string, _market?: string): string {
-  return fmtPriceShared(n)
+  return formatPrice(n)
 }
 
 function FilterButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
