@@ -227,12 +227,27 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
     const fresh = await prisma.breakoutPaperConfig.findUnique({ where: { id: 1 } })
     const deposit = fresh?.currentDepositUsd ?? cfg.currentDepositUsd
 
+    // Realistic market fill: use the live last-trade price at the moment we open,
+    // not the close of the breakout candle (which may be 1–5 min old by the time
+    // the slow loop opens the trade — causing an instant unrealized loss when
+    // price has moved away from c.close). Fallback to sig.entryPrice if the live
+    // fetch fails. SL/TP are unchanged (anchored to range geometry); sizing is
+    // recomputed against the new entry so risk = riskPct × deposit holds.
+    let entryPrice = sig.entryPrice
+    try {
+      const prices = await fetchPricesBatch([sig.symbol])
+      const live = prices[sig.symbol]
+      if (live && live > 0) entryPrice = live
+    } catch (e: any) {
+      console.warn(`[BreakoutPaper] live price fetch failed for ${sig.symbol}, using signal entry: ${e.message}`)
+    }
+
     const sizing = computeSizing({
       symbol: sig.symbol,
       deposit,
       riskPct: cfg.riskPctPerTrade,
       targetMarginPct: cfg.targetMarginPct,
-      entry: sig.entryPrice,
+      entry: entryPrice,
       sl: sig.stopLoss,
     })
     if (!sizing || sizing.positionUnits <= 0) {
@@ -266,13 +281,13 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
       }
     }
 
-    const entryAt = new Date(sig.createdAt)
+    const entryAt = new Date()
     await prisma.breakoutPaperTrade.create({
       data: {
         signalId: sig.id,
         symbol: sig.symbol,
         side: sig.side,
-        entryPrice: sig.entryPrice,
+        entryPrice,
         stopLoss: sig.stopLoss,
         initialStop: sig.initialStop,
         currentStop: sig.currentStop,
@@ -292,7 +307,10 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
     })
     opened++
     const lvNote = sizing.cappedByMaxLeverage ? ` (capped at ${getMaxLeverage(sig.symbol)}x)` : ''
-    console.log(`[BreakoutPaper] opened sig ${sig.id} ${sig.symbol} ${sig.side} risk $${sizing.riskUsd.toFixed(2)} pos $${sizing.positionSizeUsd.toFixed(2)} lev ${sizing.leverage.toFixed(1)}x margin $${sizing.marginUsd.toFixed(2)}${lvNote}`)
+    const entryNote = entryPrice !== sig.entryPrice
+      ? ` entry ${entryPrice.toFixed(4)} (sig was ${sig.entryPrice.toFixed(4)})`
+      : ` entry ${entryPrice.toFixed(4)}`
+    console.log(`[BreakoutPaper] opened sig ${sig.id} ${sig.symbol} ${sig.side}${entryNote} risk $${sizing.riskUsd.toFixed(2)} pos $${sizing.positionSizeUsd.toFixed(2)} lev ${sizing.leverage.toFixed(1)}x margin $${sizing.marginUsd.toFixed(2)}${lvNote}`)
     await markPaperStatus(sig.id, 'OPENED', `lev ${sizing.leverage.toFixed(1)}x · margin $${sizing.marginUsd.toFixed(2)}${lvNote}`)
     // Mirror to BreakoutSignal so /api/breakout/signals reflects live state without separate tracker.
     await syncSignalStatus(sig.id, 'ACTIVE', null, null, null, null)
