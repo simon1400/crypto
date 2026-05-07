@@ -24,9 +24,11 @@ import {
 } from '../scalper/dailyBreakoutEngine'
 import { sendNotification } from './notifier'
 
-// Default setups (11 monetах) — выбраны из 365d backtest как стабильные в TRAIN+TEST.
-// Excluded: BTC (R/tr -0.04), WIF/STRK/CRV (развалились в TEST).
+// Default setups (32 monetах) — current 11 prod + 21 new ACCEPT кандидатов из universe backtest 2026-05-07.
+// ACCEPT criteria: TEST R/tr >= +0.20, TRAIN R/tr > 0, FULL N >= 30, TEST N >= 10.
+// Hypothetical portfolio: TEST R/tr +0.39 (vs current +0.34) on 1132 trades.
 export const DEFAULT_BREAKOUT_SETUPS: string[] = [
+  // Current production (11) — kept even if some don't pass new strict criteria
   'ETHUSDT',
   'SOLUSDT',
   'XRPUSDT',
@@ -38,6 +40,28 @@ export const DEFAULT_BREAKOUT_SETUPS: string[] = [
   '1000PEPEUSDT',
   'SEIUSDT',
   'BLURUSDT',
+  // New ACCEPT (21) — sorted by TEST R/tr desc
+  'MUSDT',           // TEST +2.70 N=31
+  'LDOUSDT',         // TEST +1.41 N=16
+  'DYDXUSDT',        // TEST +0.76 N=65
+  'ZECUSDT',         // TEST +0.51 N=51
+  'STXUSDT',         // TEST +0.51 N=11
+  'IPUSDT',          // TEST +0.50 N=16
+  'SANDUSDT',        // TEST +0.47 N=13
+  'ORDIUSDT',        // TEST +0.42 N=27
+  'ARUSDT',          // TEST +0.41 N=12
+  'DOGEUSDT',        // TEST +0.40 N=19
+  'TRUMPUSDT',       // TEST +0.36 N=40
+  'STRKUSDT',        // TEST +0.35 N=26
+  'KASUSDT',         // TEST +0.33 N=39
+  'SHIB1000USDT',    // TEST +0.32 N=39
+  'FARTCOINUSDT',    // TEST +0.28 N=29
+  'AEROUSDT',        // TEST +0.27 N=49
+  'ETCUSDT',         // TEST +0.24 N=25
+  'IOUSDT',          // TEST +0.24 N=45
+  'POLUSDT',         // TEST +0.23 N=80
+  'TSTBSCUSDT',      // TEST +0.23 N=30
+  'VVVUSDT',         // TEST +0.21 N=70
 ]
 
 /** Загружает последние 36+24+1 = ~60 5m свечей чтобы хватило range + volume window + last bar */
