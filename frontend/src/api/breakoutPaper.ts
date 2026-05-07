@@ -97,6 +97,9 @@ export interface BreakoutSignal {
   expiresAt: string | null
   closedAt: string | null
   createdAt: string
+  paperStatus: string | null    // 'OPENED' | 'SKIPPED' | null
+  paperReason: string | null
+  paperUpdatedAt: string | null
 }
 
 export interface BreakoutConfig {

@@ -4,13 +4,16 @@ import {
   getBreakoutPaperTrades, getBreakoutPaperStats, runBreakoutPaperCycleNow,
   getBreakoutPaperLivePrices, wipeAllBreakoutPaper,
   getBreakoutConfig, updateBreakoutConfig, scanBreakoutNow, getBreakoutSetups,
+  getBreakoutSignals,
   type BreakoutPaperConfig as PaperConfig,
   type BreakoutTrade as PaperTrade,
   type BreakoutStats as PaperStats,
   type BreakoutTradeLive as PaperTradeLive,
   type BreakoutConfig as ScannerCfg,
+  type BreakoutSignal,
 } from '../api/breakoutPaper'
 import BreakoutPaperTradeModal from '../components/BreakoutPaperTradeModal'
+import BreakoutSignalModal from '../components/BreakoutSignalModal'
 import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
 import { formatDate, pnlColor, fmt2, fmt2Signed, fmtPrice as fmtPriceShared } from '../lib/formatters'
 
@@ -38,7 +41,7 @@ function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): Posit
   }
 }
 
-type StatusFilter = 'OPEN' | 'CLOSED' | 'ALL'
+type StatusFilter = 'OPEN' | 'CLOSED' | 'ALL' | 'SIGNALS'
 
 const PAPER_STATUS_BADGE: Record<string, { bg: string; text: string; label: string }> = {
   OPEN:    { bg: 'bg-accent/15',     text: 'text-accent',     label: 'Открыта' },
@@ -127,26 +130,31 @@ export default function BreakoutPaper() {
   const [livePrices, setLivePrices] = useState<Record<number, PaperTradeLive>>({})
   const [selectedTrade, setSelectedTrade] = useState<PaperTrade | null>(null)
   const [chartTrade, setChartTrade] = useState<PaperTrade | null>(null)
+  const [signals, setSignals] = useState<BreakoutSignal[]>([])
+  const [selectedSignal, setSelectedSignal] = useState<BreakoutSignal | null>(null)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
+      const isSignalsTab = statusFilter === 'SIGNALS'
       const status = statusFilter === 'OPEN' ? ['OPEN', 'TP1_HIT', 'TP2_HIT']
                    : statusFilter === 'CLOSED' ? ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT']
                    : undefined
-      const [c, sc, su, t, s] = await Promise.all([
+      const [c, sc, su, t, s, sigs] = await Promise.all([
         getBreakoutPaperConfig(),
         getBreakoutConfig(),
         getBreakoutSetups(),
-        getBreakoutPaperTrades({ status, limit: 200 }),
+        isSignalsTab ? Promise.resolve({ data: [], total: 0 }) : getBreakoutPaperTrades({ status, limit: 200 }),
         getBreakoutPaperStats(),
+        isSignalsTab ? getBreakoutSignals({ limit: 200 }) : Promise.resolve({ data: [], total: 0 }),
       ])
       setConfig(c)
       setScannerCfg(sc)
       setSetups(su.setups)
       setTrades(t.data)
       setStats(s)
+      setSignals(sigs.data)
     } catch (e: any) {
       setError(e?.message ?? 'Failed to load')
     } finally {
@@ -370,13 +378,75 @@ export default function BreakoutPaper() {
       )}
 
       {/* Status filter */}
-      <div className="flex gap-2 mb-3">
+      <div className="flex gap-2 mb-3 flex-wrap">
         <FilterButton active={statusFilter === 'OPEN'} onClick={() => setStatusFilter('OPEN')}>Открытые</FilterButton>
         <FilterButton active={statusFilter === 'CLOSED'} onClick={() => setStatusFilter('CLOSED')}>Закрытые</FilterButton>
         <FilterButton active={statusFilter === 'ALL'} onClick={() => setStatusFilter('ALL')}>Все</FilterButton>
+        <FilterButton active={statusFilter === 'SIGNALS'} onClick={() => setStatusFilter('SIGNALS')}>Сигналы</FilterButton>
       </div>
 
+      {/* Signals table (only when SIGNALS filter is active) */}
+      {statusFilter === 'SIGNALS' && (
+        <div className="bg-card border border-input rounded overflow-hidden mb-6">
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs min-w-[800px]">
+              <thead className="bg-input text-text-secondary">
+                <tr>
+                  <th className="text-left px-3 py-2">Дата</th>
+                  <th className="text-left px-3 py-2">UTC date</th>
+                  <th className="text-left px-3 py-2">Монета</th>
+                  <th className="text-center px-3 py-2">Сторона</th>
+                  <th className="text-right px-3 py-2">Вход</th>
+                  <th className="text-right px-3 py-2">SL</th>
+                  <th className="text-right px-3 py-2">Vol×avg</th>
+                  <th className="text-center px-3 py-2">Status</th>
+                  <th className="text-center px-3 py-2">Paper</th>
+                  <th className="text-left px-3 py-2">Причина</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && <tr><td colSpan={10} className="text-center py-12 text-text-secondary">Загрузка...</td></tr>}
+                {!loading && signals.length === 0 && (
+                  <tr><td colSpan={10} className="text-center py-12 text-text-secondary">
+                    Сигналов пока нет.
+                  </td></tr>
+                )}
+                {!loading && signals.map(s => {
+                  const sideColorCls = s.side === 'BUY' ? 'text-long' : 'text-short'
+                  const volRatio = s.avgVolume > 0 ? s.volumeAtBreakout / s.avgVolume : 0
+                  const paperColor = s.paperStatus === 'OPENED' ? 'text-long'
+                    : s.paperStatus === 'SKIPPED' ? 'text-short' : 'text-text-secondary'
+                  const paperLabel = s.paperStatus === 'OPENED' ? '✓ Открыт'
+                    : s.paperStatus === 'SKIPPED' ? '✕ Skip' : '—'
+                  return (
+                    <tr
+                      key={s.id}
+                      className="border-t border-input hover:bg-input/50 cursor-pointer transition-colors"
+                      onClick={() => setSelectedSignal(s)}
+                    >
+                      <td className="px-3 py-2 text-text-secondary whitespace-nowrap">{formatDate(s.createdAt)}</td>
+                      <td className="px-3 py-2 text-text-secondary font-mono">{s.rangeDate}</td>
+                      <td className={`px-3 py-2 font-mono font-medium ${sideColorCls}`}>{s.symbol.replace('USDT', '')}</td>
+                      <td className={`px-3 py-2 text-center font-mono ${sideColorCls}`}>{s.side === 'BUY' ? 'LONG' : 'SHORT'}</td>
+                      <td className="px-3 py-2 text-right font-mono">${fmtPrice(s.entryPrice)}</td>
+                      <td className="px-3 py-2 text-right font-mono text-short">${fmtPrice(s.initialStop)}</td>
+                      <td className="px-3 py-2 text-right font-mono">{volRatio.toFixed(2)}×</td>
+                      <td className="px-3 py-2 text-center"><PaperStatusBadge status={s.status} pnl={s.realizedR} /></td>
+                      <td className={`px-3 py-2 text-center font-mono ${paperColor}`}>{paperLabel}</td>
+                      <td className="px-3 py-2 text-text-secondary text-[11px] max-w-[280px] truncate" title={s.paperReason ?? ''}>
+                        {s.paperReason ?? '—'}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Trades table */}
+      {statusFilter !== 'SIGNALS' && (
       <div className="bg-card border border-input rounded overflow-hidden mb-6">
         <div className="overflow-x-auto">
           <table className="w-full text-xs min-w-[900px]">
@@ -546,6 +616,7 @@ export default function BreakoutPaper() {
           </table>
         </div>
       </div>
+      )}
 
       {/* Per-symbol breakdown */}
       {stats && Object.keys(stats.bySymbol).length > 0 && (
@@ -612,6 +683,13 @@ export default function BreakoutPaper() {
         <PositionChartModal
           position={paperTradeToPosition(chartTrade, livePrices[chartTrade.id]?.currentPrice ?? null)}
           onClose={() => setChartTrade(null)}
+        />
+      )}
+
+      {selectedSignal && (
+        <BreakoutSignalModal
+          signal={selectedSignal}
+          onClose={() => setSelectedSignal(null)}
         />
       )}
     </div>

@@ -291,6 +291,10 @@ model BreakoutSignal {
   expiresAt         DateTime?                                // end of UTC day (23:55:00)
   closedAt          DateTime?
   createdAt         DateTime  @default(now())
+  // Paper-trader outcome: 'OPENED' if paper trade created; 'SKIPPED:<reason>' if guard rejected.
+  paperStatus       String?
+  paperReason       String?
+  paperUpdatedAt    DateTime?
 
   @@index([status, symbol])
   @@index([createdAt])

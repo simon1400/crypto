@@ -170,6 +170,15 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
   let opened = 0
   let depositDelta = 0
 
+  async function markPaperStatus(signalId: number, status: 'OPENED' | 'SKIPPED', reason: string | null) {
+    try {
+      await prisma.breakoutSignal.update({
+        where: { id: signalId },
+        data: { paperStatus: status, paperReason: reason, paperUpdatedAt: new Date() },
+      })
+    } catch { /* schema may pre-date column on first cycle after deploy */ }
+  }
+
   for (const sig of signals) {
     if (existingIds.has(sig.id)) continue
 
@@ -178,7 +187,9 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
       where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
     })
     if (openTrades.length >= cfg.maxConcurrentPositions) {
-      console.log(`[BreakoutPaper] skip sig ${sig.id} — maxConcurrent=${cfg.maxConcurrentPositions} reached`)
+      const r = `maxConcurrent=${cfg.maxConcurrentPositions} reached`
+      console.log(`[BreakoutPaper] skip sig ${sig.id} — ${r}`)
+      await markPaperStatus(sig.id, 'SKIPPED', r)
       continue
     }
 
@@ -194,20 +205,27 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
       entry: sig.entryPrice,
       sl: sig.stopLoss,
     })
-    if (!sizing || sizing.positionUnits <= 0) continue
+    if (!sizing || sizing.positionUnits <= 0) {
+      await markPaperStatus(sig.id, 'SKIPPED', 'sizing failed (zero position)')
+      continue
+    }
 
     if (cfg.marginGuardEnabled) {
       const existing: ExistingTrade[] = openTrades.map(buildExistingTrade)
       const guard = evaluateOpenWithGuard(deposit, sizing.marginUsd, existing)
 
       if (!guard.canOpen) {
-        console.log(`[BreakoutPaper] skip sig ${sig.id} ${sig.symbol} — ${guard.reason} (need $${guard.marginRequired.toFixed(2)}, free $${guard.marginAvailableBefore.toFixed(2)})`)
+        const r = `${guard.reason} (need $${guard.marginRequired.toFixed(2)}, free $${guard.marginAvailableBefore.toFixed(2)})`
+        console.log(`[BreakoutPaper] skip sig ${sig.id} ${sig.symbol} — ${r}`)
+        await markPaperStatus(sig.id, 'SKIPPED', r)
         continue
       }
 
       if (guard.toClose.length > 0) {
         if (!cfg.marginGuardAutoClose) {
-          console.log(`[BreakoutPaper] skip sig ${sig.id} ${sig.symbol} — would need to close ${guard.toClose.length} but auto-close disabled`)
+          const r = `would need to close ${guard.toClose.length} winning trade(s), but auto-close disabled`
+          console.log(`[BreakoutPaper] skip sig ${sig.id} ${sig.symbol} — ${r}`)
+          await markPaperStatus(sig.id, 'SKIPPED', r)
           continue
         }
         console.log(`[BreakoutPaper] margin guard: ${guard.reason} for sig ${sig.id} ${sig.symbol}`)
@@ -245,6 +263,7 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
     opened++
     const lvNote = sizing.cappedByMaxLeverage ? ` (capped at ${getMaxLeverage(sig.symbol)}x)` : ''
     console.log(`[BreakoutPaper] opened sig ${sig.id} ${sig.symbol} ${sig.side} risk $${sizing.riskUsd.toFixed(2)} pos $${sizing.positionSizeUsd.toFixed(2)} lev ${sizing.leverage.toFixed(1)}x margin $${sizing.marginUsd.toFixed(2)}${lvNote}`)
+    await markPaperStatus(sig.id, 'OPENED', `lev ${sizing.leverage.toFixed(1)}x · margin $${sizing.marginUsd.toFixed(2)}${lvNote}`)
   }
   return { opened, depositDelta }
 }
