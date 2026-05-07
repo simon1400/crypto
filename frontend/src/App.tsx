@@ -8,7 +8,6 @@ import ScannerForex from './pages/ScannerForex'
 import TradesForex from './pages/TradesForex'
 import Settings from './pages/Settings'
 import Calculator from './pages/Calculator'
-import LevelsPaper from './pages/LevelsPaper'
 import BreakoutPaper from './pages/BreakoutPaper'
 import Login from './pages/Login'
 import { setAuthToken } from './api/client'
@@ -28,11 +27,10 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
           <Route path="/trades-forex" element={<TradesForex />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/calculator" element={<Calculator />} />
-          {/* Levels v2 заменён на Daily Breakout 2026-05-07 — backtest показал TEST R/tr +0.34 vs Levels -0.06 */}
+          {/* Daily Breakout — strategy после Levels v2 (заменён 2026-05-07) */}
           <Route path="/levels" element={<BreakoutPaper />} />
           <Route path="/levels-paper" element={<BreakoutPaper />} />
           <Route path="/breakout" element={<BreakoutPaper />} />
-          <Route path="/levels-old" element={<LevelsPaper />} />
         </Routes>
       </main>
     </div>
