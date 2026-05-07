@@ -121,24 +121,42 @@ export function generateBreakoutSignal(
   const avgVolume = avgWindowBars.reduce((s, x) => s + x.volume, 0) / avgWindowBars.length
   if (c.volume < avgVolume * cfg.volumeMultiplier) return null
 
-  // Breakout check
+  // Breakout check.
+  // Entry = trigger candle close (live-realistic market fill at the moment of detection),
+  // not range edge — by the time the scanner runs, price may already have moved well past
+  // the range edge, making a rangeHigh/rangeLow fill physically impossible.
   let side: 'BUY' | 'SELL' | null = null
   let entryPrice = 0
   if (c.high > range.rangeHigh && c.close > range.rangeHigh) {
     side = 'BUY'
-    entryPrice = range.rangeHigh
+    entryPrice = c.close
   } else if (c.low < range.rangeLow && c.close < range.rangeLow) {
     side = 'SELL'
-    entryPrice = range.rangeLow
+    entryPrice = c.close
   }
   if (!side) return null
 
+  // SL stays at the opposite range edge (range invalidation).
   const sl = side === 'BUY' ? range.rangeLow : range.rangeHigh
-  const tpLadder = side === 'BUY'
-    ? [entryPrice + range.rangeSize * cfg.tp1Mult, entryPrice + range.rangeSize * cfg.tp2Mult, entryPrice + range.rangeSize * cfg.tp3Mult]
-    : [entryPrice - range.rangeSize * cfg.tp1Mult, entryPrice - range.rangeSize * cfg.tp2Mult, entryPrice - range.rangeSize * cfg.tp3Mult]
 
-  const reason = `Daily Breakout ${side} of ${range.rangeDate} range [${range.rangeLow.toFixed(4)} – ${range.rangeHigh.toFixed(4)}], vol ${(c.volume / avgVolume).toFixed(1)}× avg`
+  // TP ladder is anchored to the range edge (rangeHigh for BUY, rangeLow for SELL),
+  // so progress is measured from the edge — not from the (slipped) entry. This keeps
+  // the geometry consistent with the backtest where entry = rangeEdge.
+  const anchor = side === 'BUY' ? range.rangeHigh : range.rangeLow
+  const tpLadder = side === 'BUY'
+    ? [anchor + range.rangeSize * cfg.tp1Mult, anchor + range.rangeSize * cfg.tp2Mult, anchor + range.rangeSize * cfg.tp3Mult]
+    : [anchor - range.rangeSize * cfg.tp1Mult, anchor - range.rangeSize * cfg.tp2Mult, anchor - range.rangeSize * cfg.tp3Mult]
+
+  // Skip if price has already overshot TP1 by the time the scanner detects the breakout —
+  // there is no realistic edge left to capture (paper trader would instantly hit TP1 fake).
+  const overshoot = side === 'BUY' ? entryPrice >= tpLadder[0] : entryPrice <= tpLadder[0]
+  if (overshoot) return null
+
+  const slipPct = side === 'BUY'
+    ? ((entryPrice - range.rangeHigh) / range.rangeSize) * 100
+    : ((range.rangeLow - entryPrice) / range.rangeSize) * 100
+
+  const reason = `Daily Breakout ${side} of ${range.rangeDate} range [${range.rangeLow.toFixed(4)} – ${range.rangeHigh.toFixed(4)}], vol ${(c.volume / avgVolume).toFixed(1)}× avg, entry slip ${slipPct.toFixed(0)}% of range`
 
   return {
     side, triggerTime: c.time, triggerPrice: c.close,
