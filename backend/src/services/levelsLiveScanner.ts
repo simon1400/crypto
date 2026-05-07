@@ -172,6 +172,30 @@ async function symbolDedupHit(symbol: string, side: 'BUY' | 'SELL'): Promise<boo
   return !!existing
 }
 
+/**
+ * Cross-side block (Идея 1, 2026-05-07): для BOTH-сетапов (BTC, ENA) блокирует
+ * новый сигнал в противоположную сторону, ПОКА предыдущий не достиг TP1.
+ *
+ * После TP1_HIT/TP2_HIT SL уже в BE/выше → встречная позиция больше не угрожает
+ * капиталу, можно открывать другую сторону. Поэтому проверяем только статусы
+ * NEW/ACTIVE/PENDING/AWAITING_CONFIRM (до TP1).
+ *
+ * Backtest 365d (runBacktest_crossside_block.ts): на ENA R/tr +0.10 → +1.56
+ * (заблокировано 1084 конфликтных сигнала, дропнуто 137 убыточных трейдов).
+ * На BTC выборка мала (n=3), но фильтр отказывается только от негативного edge'а.
+ */
+async function crossSideBlock(symbol: string, newSide: 'BUY' | 'SELL'): Promise<boolean> {
+  const oppositeSide = newSide === 'BUY' ? 'SELL' : 'BUY'
+  const blocking = await prisma.levelsSignal.findFirst({
+    where: {
+      symbol,
+      side: oppositeSide,
+      status: { in: ['NEW', 'ACTIVE', 'PENDING', 'AWAITING_CONFIRM'] },
+    },
+  })
+  return !!blocking
+}
+
 /** Same dedup but checks active PENDING signal on the exact level for LIMIT mode (longer window). */
 async function pendingDedupHit(symbol: string, side: 'BUY' | 'SELL', level: number): Promise<boolean> {
   const eps = level * 0.0005
@@ -305,6 +329,11 @@ async function scanLimitPending(setup: SymbolSetup, m5: OHLCV[], m15: OHLCV[], h
       if (await pendingDedupHit(setup.symbol, side, lvl.price)) continue
       // Skip if any signal on this symbol+side is active in the last 30 min
       if (await symbolDedupHit(setup.symbol, side)) continue
+      // Cross-side block: для BOTH-сетапов (BTC, ENA) — блок встречного, пока активный не достиг TP1
+      if (setup.side === 'BOTH' && await crossSideBlock(setup.symbol, side)) {
+        console.log(`[LevelsScanner] ${setup.symbol} cross-side block: ${side} blocked by active opposite trade (not yet TP1)`)
+        continue
+      }
 
       // Compute SL & TP relative to limit price
       const opp = nearestOpposite(side, lvl.price, allPrices)
@@ -427,6 +456,11 @@ async function scanSymbol(setup: SymbolSetup, expiryHours: number): Promise<numb
     // Symbol dedup (any level, 30min window) — prevents stacking 3+ entries on same coin
     if (await symbolDedupHit(setup.symbol, sig.side)) {
       console.log(`[LevelsScanner] ${setup.symbol} symbol dedup: ${sig.side} signal already active in last 30 min`)
+      return 0
+    }
+    // Cross-side block: для BOTH-сетапов (BTC, ENA) — блок встречного сигнала, пока активный не достиг TP1
+    if (setup.side === 'BOTH' && await crossSideBlock(setup.symbol, sig.side)) {
+      console.log(`[LevelsScanner] ${setup.symbol} cross-side block: ${sig.side} blocked by active opposite trade (not yet TP1)`)
       return 0
     }
 
