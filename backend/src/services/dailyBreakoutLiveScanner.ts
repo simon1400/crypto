@@ -23,6 +23,7 @@ import {
   DEFAULT_BREAKOUT_CFG, BreakoutEngineConfig, BreakoutSignal,
 } from '../scalper/dailyBreakoutEngine'
 import { sendNotification } from './notifier'
+import { runBreakoutPaperCycle } from './dailyBreakoutPaperTrader'
 
 // Default setups (32 monetах) — current 11 prod + 21 new ACCEPT кандидатов из universe backtest 2026-05-07.
 // ACCEPT criteria: TEST R/tr >= +0.20, TRAIN R/tr > 0, FULL N >= 30, TEST N >= 10.
@@ -219,7 +220,19 @@ async function runOnce(): Promise<void> {
     where: { id: 1 },
     data: { lastScanAt: new Date(), lastScanResult: result },
   })
-  if (total > 0) console.log(`[BreakoutScanner] tick fired ${total} signals across ${enabledSymbols.length} symbols`)
+  if (total > 0) {
+    console.log(`[BreakoutScanner] tick fired ${total} signals across ${enabledSymbols.length} symbols`)
+    // Trigger paper cycle immediately so the trade opens on the same breakout candle
+    // (and the user sees it in the UI right after the Telegram alert).
+    try {
+      const r = await runBreakoutPaperCycle()
+      if (r.opened > 0) {
+        console.log(`[BreakoutScanner] inline paper open: opened=${r.opened} delta=${r.depositDelta.toFixed(2)} depo=$${r.deposit.toFixed(2)}`)
+      }
+    } catch (e: any) {
+      console.warn('[BreakoutScanner] inline paper cycle failed:', e?.message ?? e)
+    }
+  }
 }
 
 export { runOnce as runBreakoutScanCycleNow }
