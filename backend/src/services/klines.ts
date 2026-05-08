@@ -1,3 +1,5 @@
+import { fetchBingxKlines } from './bingxMarket'
+
 export interface BybitKline {
   time: number    // Unix timestamp in seconds (for lightweight-charts)
   open: number
@@ -17,13 +19,19 @@ const INTERVAL_MAP: Record<string, string> = {
   'M': 'M',
 }
 
+// BingX интервалы — для fallback на 403 от Bybit. 'M' (monthly) у BingX нет.
+const BINGX_INTERVAL_MAP: Record<string, string> = {
+  '1m': '1m',
+  '5m': '5m',
+  '15m': '15m',
+  '1h': '1h',
+  '4h': '4h',
+  '1D': '1d',
+}
+
 export const VALID_INTERVALS = Object.keys(INTERVAL_MAP)
 
-export async function fetchKlines(symbol: string, interval: string, count: number = 500): Promise<BybitKline[]> {
-  if (!INTERVAL_MAP[interval]) {
-    throw new Error(`Invalid interval '${interval}'. Valid: ${VALID_INTERVALS.join(', ')}`)
-  }
-
+async function fetchFromBybit(symbol: string, interval: string, count: number): Promise<BybitKline[]> {
   const bybitInterval = INTERVAL_MAP[interval]
   const batchSize = 1000
   const allCandles: BybitKline[] = []
@@ -80,4 +88,44 @@ export async function fetchKlines(symbol: string, interval: string, count: numbe
   unique.sort((a, b) => a.time - b.time)
 
   return unique.slice(-count)
+}
+
+async function fetchFromBingx(symbol: string, interval: string, count: number): Promise<BybitKline[]> {
+  const bingxInterval = BINGX_INTERVAL_MAP[interval]
+  if (!bingxInterval) {
+    throw new Error(`BingX fallback не поддерживает interval '${interval}'`)
+  }
+  // BingX limit per request is 1000; loop pagination is не нужна для type Daily ≤ 500
+  const candles = await fetchBingxKlines(symbol, bingxInterval, Math.min(count, 1000))
+  // BingX time уже в ms, конвертируем в seconds для lightweight-charts
+  return candles.map(c => ({
+    time: Math.floor(c.time / 1000),
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+  })).slice(-count)
+}
+
+export async function fetchKlines(symbol: string, interval: string, count: number = 500): Promise<BybitKline[]> {
+  if (!INTERVAL_MAP[interval]) {
+    throw new Error(`Invalid interval '${interval}'. Valid: ${VALID_INTERVALS.join(', ')}`)
+  }
+
+  // Bybit primary, BingX fallback. Bybit на VPS иногда возвращает 403 (geo / rate
+  // limit / temp ban). Без fallback график у пользователя ломается совсем.
+  try {
+    return await fetchFromBybit(symbol, interval, count)
+  } catch (e: any) {
+    const isBlocked = /403|Forbidden|429|ECONN|fetch failed/i.test(e?.message ?? '')
+    if (!isBlocked) throw e
+    console.warn(`[klines] Bybit failed for ${symbol} (${e.message}), falling back to BingX`)
+    try {
+      return await fetchFromBingx(symbol, interval, count)
+    } catch (e2: any) {
+      // Возвращаем оригинальную ошибку Bybit — она информативнее для пользователя.
+      throw new Error(`Bybit ${e.message}; BingX fallback also failed: ${e2.message}`)
+    }
+  }
 }
