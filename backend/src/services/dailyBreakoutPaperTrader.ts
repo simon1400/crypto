@@ -228,6 +228,21 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
     const fresh = await prisma.breakoutPaperConfig.findUnique({ where: { id: 1 } })
     const deposit = fresh?.currentDepositUsd ?? cfg.currentDepositUsd
 
+    // Stale signal guard: if the signal has been waiting > 30 min for a slot
+    // (concurrency cap or margin guard), the breakout setup is no longer valid —
+    // price has had time to retrace, geometry (SL/TP from rangeHigh/Low) is stale.
+    // Backtest assumes instant fill on the triggering candle; long delays make
+    // the live trade fundamentally different from what was simulated.
+    // Delete the signal entirely (don't keep as SKIPPED) — geometry is dead and
+    // cluttering the Signals tab adds no diagnostic value (unlike margin/sizing skips).
+    const STALE_MIN = 30
+    const ageMs = Date.now() - new Date(sig.createdAt).getTime()
+    if (ageMs > STALE_MIN * 60_000) {
+      console.log(`[BreakoutPaper] delete sig ${sig.id} ${sig.symbol} — stale (${Math.round(ageMs / 60_000)}min old)`)
+      await prisma.breakoutSignal.delete({ where: { id: sig.id } })
+      continue
+    }
+
     // Realistic market fill: use the live last-trade price at the moment we open,
     // not the close of the breakout candle (which may be 1–5 min old by the time
     // the slow loop opens the trade — causing an instant unrealized loss when
@@ -235,12 +250,32 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
     // fetch fails. SL/TP are unchanged (anchored to range geometry); sizing is
     // recomputed against the new entry so risk = riskPct × deposit holds.
     let entryPrice = sig.entryPrice
+    let livePrice: number | null = null
     try {
       const prices = await fetchPricesBatch([sig.symbol])
       const live = prices[sig.symbol]
-      if (live && live > 0) entryPrice = live
+      if (live && live > 0) {
+        entryPrice = live
+        livePrice = live
+      }
     } catch (e: any) {
       console.warn(`[BreakoutPaper] live price fetch failed for ${sig.symbol}, using signal entry: ${e.message}`)
+    }
+
+    // Retrace guard: if live price has come back inside the range, the breakout
+    // is invalidated — opening now is a counter-setup. Only check when we have a
+    // live price (no live → fallback to sig.entryPrice which by definition
+    // already broke the range). Delete the signal — same rationale as stale.
+    if (livePrice != null) {
+      const retraced = sig.side === 'BUY'
+        ? livePrice < sig.rangeHigh   // BUY: price pulled back below rangeHigh
+        : livePrice > sig.rangeLow    // SELL: price pulled back above rangeLow
+      if (retraced) {
+        const edge = sig.side === 'BUY' ? sig.rangeHigh : sig.rangeLow
+        console.log(`[BreakoutPaper] delete sig ${sig.id} ${sig.symbol} — retraced into range (live ${livePrice.toFixed(4)} vs edge ${edge.toFixed(4)})`)
+        await prisma.breakoutSignal.delete({ where: { id: sig.id } })
+        continue
+      }
     }
 
     const sizing = computeSizing({
