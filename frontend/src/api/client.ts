@@ -2,8 +2,6 @@
 // Domain modules live in separate files; this barrel preserves backward compatibility.
 export * from './base'
 export * from './signals'
-export * from './trades'
-export * from './scanner'
 export * from './scannerForex'
 export * from './forexTrades'
 export * from './settings'

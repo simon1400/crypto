@@ -512,7 +512,6 @@ curl -X POST http://localhost:3001/api/analyze \
 ## Key Dependencies
 - `@prisma/client` 6.4.1 - PostgreSQL ORM, all database access (`backend/src/db/prisma.ts`)
 - `prisma` 6.4.1 (dev) - Schema management and migrations
-- `openai` 4.85.0 - AI signal filtering via GPT-5.4 model (`backend/src/scanner/gptFilter.ts`)
 - `telegram` 2.26.22 - GramJS client for reading Telegram channels (`backend/src/services/telegram.ts`)
 - `@cryptography/aes` 0.1.1 - Required by telegram library for MTProto encryption
 - `react` 18.3.1 / `react-dom` 18.3.1 - UI framework
@@ -546,8 +545,9 @@ curl -X POST http://localhost:3001/api/analyze \
 - Schema: `backend/prisma/schema.prisma`
 - Client singleton: `backend/src/db/prisma.ts`
 - `Signal` - Telegram-sourced trading signals with price tracking
-- `GeneratedSignal` - AI scanner-generated signals with P&L tracking
+- `GeneratedSignal` - DEPRECATED, scanner module removed 2026-05-08; table retained for historical data only
 - `Trade` - Manual trade journal entries with partial close support
+- `BreakoutSignal` / `BreakoutPaperTrade` - Daily Breakout strategy live + paper trading
 ## Process Management
 - PM2 (`backend/ecosystem.config.js`)
 - Single instance, auto-restart, no file watching
@@ -558,7 +558,6 @@ curl -X POST http://localhost:3001/api/analyze \
 - Node.js with ES2022 support (v18+)
 - PostgreSQL database
 - Telegram API credentials (API ID + Hash + authenticated session)
-- OpenAI API key (for scanner GPT filter)
 - Ubuntu VPS
 - Nginx as reverse proxy (serves frontend static, proxies `/api` to backend)
 - PM2 for backend process management
@@ -580,20 +579,20 @@ curl -X POST http://localhost:3001/api/analyze \
 - `isolatedModules: true`, `noEmit: true` (Vite handles bundling)
 - `moduleResolution: bundler`
 ## Naming Patterns
-- Backend: camelCase for all `.ts` files (`signalParser.ts`, `coinScanner.ts`, `signalTracker.ts`)
-- Frontend pages: PascalCase (`Signals.tsx`, `Scanner.tsx`, `Trades.tsx`, `Login.tsx`)
+- Backend: camelCase for all `.ts` files (`signalParser.ts`, `signalTracker.ts`, `dailyBreakoutEngine.ts`)
+- Frontend pages: PascalCase (`Signals.tsx`, `Trades.tsx`, `BreakoutPaper.tsx`, `Calculator.tsx`, `Login.tsx`)
 - Frontend components: PascalCase (`SignalTable.tsx`, `SignalBadge.tsx`, `SignalChart.tsx`, `Navbar.tsx`)
 - Frontend API: camelCase (`client.ts`)
 - camelCase for all functions: `fetchOHLCV()`, `computeIndicators()`, `parseSignalMessage()`
 - Export functions directly with `export function` or `export async function`
 - React components: PascalCase function names (`SignalModal`, `ScoreBadge`, `StatusBadge`)
 - Private/internal helpers: camelCase, not exported (`round2()`, `computeMACD()`)
-- camelCase: `isScanning`, `symbolsCache`, `authToken`
-- Constants (module-level arrays/objects): UPPER_SNAKE_CASE (`SCAN_COINS`, `CHANNELS`, `NEAR512_CHANNELS`, `CACHE_TTL`)
-- PascalCase, no `I` prefix: `CoinIndicators`, `ParsedSignal`, `MarketOverview`, `ScanResult`
+- camelCase: `symbolsCache`, `authToken`
+- Constants (module-level arrays/objects): UPPER_SNAKE_CASE (`CHANNELS`, `NEAR512_CHANNELS`, `CACHE_TTL`)
+- PascalCase, no `I` prefix: `CoinIndicators`, `ParsedSignal`, `MarketOverview`
 - Use `interface` (not `type`) for object shapes
 - Use `type` only for union types in function parameters (e.g., `'LONG' | 'SHORT'`)
-- PascalCase model names: `Signal`, `GeneratedSignal`, `Trade`
+- PascalCase model names: `Signal`, `Trade`, `BreakoutSignal`, `BreakoutPaperTrade`
 - camelCase field names: `entryMin`, `stopLoss`, `takeProfits`, `closedPct`
 ## Code Style
 - No Prettier or ESLint configured in the project
@@ -618,7 +617,7 @@ curl -X POST http://localhost:3001/api/analyze \
 - All route handlers wrapped in try/catch
 - Errors typed as `any` (not `unknown`)
 - Error response: `{ error: string }` consistently
-- Logging with module prefix: `[Signals]`, `[Scanner]`, `[SignalTracker]`
+- Logging with module prefix: `[Signals]`, `[SignalTracker]`, `[BreakoutLive]`, `[BreakoutPaper]`
 - Services throw errors (not caught internally): `throw new Error('Symbol not found')`
 - External API calls use fallback defaults on failure (e.g., `fetchMarketOverview()` returns safe defaults)
 - Empty `catch` blocks used for non-critical failures (e.g., exchange fallbacks)
@@ -629,7 +628,7 @@ curl -X POST http://localhost:3001/api/analyze \
 - `400` for invalid input
 - `401` for unauthorized
 - `404` for not found
-- `409` for conflict (scanner already running)
+- `409` for conflict (e.g. operation already running)
 - `500` for server errors
 ## State Management (Frontend)
 - `useState` for data, loading, and error states
@@ -666,7 +665,7 @@ curl -X POST http://localhost:3001/api/analyze \
 - Dynamic classes via template literals: `` `text-${signal.type === 'LONG' ? 'long' : 'short'}` ``
 - Color mapping objects for status badges (defined inline in components)
 ## Logging
-- Module-prefixed messages: `console.log('[Scanner] Starting scan...')`
+- Module-prefixed messages: `console.log('[BreakoutLive] Detected breakout...')`
 - Error logging: `console.error('[ModuleName] Error:', err)`
 - Warning for degraded service: `console.warn('Fear&Greed API unavailable, using defaults')`
 ## Comments
@@ -687,32 +686,31 @@ curl -X POST http://localhost:3001/api/analyze \
 - Express REST API backend with route-service-DB layering
 - React SPA frontend with page-level state management (no global store)
 - PostgreSQL via Prisma ORM for persistence
-- Three functional modules: Signals, Scanner, Trades
-- Background timers for signal tracking and signal expiration (in-process, not external scheduler)
+- Functional modules: Signals (Telegram), Trades (manual journal), Daily Breakout (automated strategy), Forex Scanner, Calculator
+- Background timers for signal tracking and breakout live/paper trading (in-process, not external scheduler)
 - Password-based auth returning API secret token; all API routes protected by `X-Api-Secret` header
 ## Layers
 - Purpose: HTTP endpoint definitions, request validation, response formatting
 - Location: `backend/src/routes/`
 - Contains: Express Router definitions for each module
-- Depends on: Services, Prisma client, Scanner module
+- Depends on: Services, Prisma client
 - Used by: Frontend via REST API
-- Key files:
 - Purpose: External API calls, data transformation, business logic
 - Location: `backend/src/services/`
-- Contains: Market data fetching, technical indicators computation, Telegram integration, signal parsing/tracking
-- Depends on: External APIs (Binance, MEXC, CoinGecko, CryptoPanic, Alternative.me), Telegram MTProto
-- Used by: Routes, Scanner module
-- Key files:
-- Purpose: Automated market scanning, strategy execution, scoring, risk calculation, GPT filtering
-- Location: `backend/src/scanner/`
-- Contains: Multi-phase pipeline that scans 125 coins across 3 timeframes
-- Depends on: Services (market, indicators), OpenAI API, Prisma
-- Used by: Scanner routes
-- Key files:
+- Contains: Market data fetching, technical indicators computation, Telegram integration, signal parsing/tracking, Daily Breakout live + paper trader
+- Depends on: External APIs (Bybit, Binance, MEXC, CoinGecko), Telegram MTProto
+- Used by: Routes
+- Purpose: Daily Breakout automated strategy
+- Location: `backend/src/scalper/dailyBreakoutEngine.ts` + `services/dailyBreakoutLiveScanner.ts` + `services/dailyBreakoutPaperTrader.ts`
+- Contains: 3h range detection, vol×2.0 confirmation, full trailing TP1→BE/TP2→TP1, splits 50/30/20
+- Depends on: Services (market, indicators), Prisma
+- Purpose: Backtest infrastructure
+- Location: `backend/src/scalper/` (40+ scripts)
+- Contains: Historical loader (Bybit/Binance kline cache), various walk-forward backtest runners for breakout/levels/forex/etc.
 - Purpose: Prisma client singleton
 - Location: `backend/src/db/prisma.ts`
 - Contains: Single `PrismaClient` instance export
-- Used by: All routes and scanner
+- Used by: All routes and services
 - Purpose: Authentication
 - Location: `backend/src/middleware/auth.ts`
 - Contains: `X-Api-Secret` header check against `API_SECRET` env var
@@ -738,10 +736,10 @@ curl -X POST http://localhost:3001/api/analyze \
 - Model: `Signal` in `backend/prisma/schema.prisma`
 - Status lifecycle: `ENTRY_WAIT` -> `ACTIVE` -> `TP1_HIT`/`TP2_HIT`/.../`SL_HIT`
 - Tracking: Automated via `signalTracker.ts` with trailing SL (after TP1: SL moves to entry; after TPn: SL moves to TP(n-1))
-- Purpose: AI-generated trading signals from automated scanner
-- Model: `GeneratedSignal` in `backend/prisma/schema.prisma`
-- Status lifecycle: `NEW` -> `TAKEN` -> `PARTIALLY_CLOSED`/`CLOSED`/`SL_HIT` or `NEW` -> `EXPIRED`
-- Manual tracking: User records closes/SL hits via UI
+- Purpose: Daily Breakout automated trading signals
+- Model: `BreakoutSignal` (live) + `BreakoutPaperTrade` (paper sim) in `backend/prisma/schema.prisma`
+- Status lifecycle: `NEW` -> `TRIGGERED` -> `TP1_HIT`/`TP2_HIT`/`TP3_HIT`/`SL_HIT`/`EXPIRED`
+- Tracking: Automated via `dailyBreakoutPaperTrader.ts`, single source of truth (no separate tracker cron)
 - Purpose: User's manual trade log with P&L tracking
 - Model: `Trade` in `backend/prisma/schema.prisma`
 - Status lifecycle: `OPEN` -> `PARTIALLY_CLOSED`/`CLOSED`/`SL_HIT`/`CANCELLED`
@@ -753,21 +751,21 @@ curl -X POST http://localhost:3001/api/analyze \
 - Location: `backend/src/index.ts`
 - Starts Express server on `PORT` (default 3001)
 - Registers routes, auth middleware, login endpoint
-- Sets up two `setInterval` timers: signal tracking (1h), signal expiration (30m)
+- Sets up `setInterval` timers: signal tracking (1h), integrity monitoring (15m), position reconcile (60s), TTL checker (60s)
+- Starts Daily Breakout live scanner + paper trader on boot
 - Production: `backend/dist/index.js` run via PM2
 - Location: `frontend/src/main.tsx` -> `frontend/src/App.tsx`
 - React 18 with `createRoot`, wrapped in `StrictMode`
 - `App.tsx` handles auth gate: shows `Login` if no token, otherwise renders `BrowserRouter` with routes
-- Routes: `/` and `/signals` -> Signals, `/scanner` -> Scanner, `/trades` -> Trades
+- Routes: `/` and `/signals` -> Signals, `/breakout` -> BreakoutPaper, `/trades` -> Trades, `/scanner-forex` -> Forex, `/calculator` -> Calculator
 - Location: `backend/src/telegram-auth.ts`
 - Interactive script: `npx tsx src/telegram-auth.ts`
 - Saves session to `backend/.telegram-session`
 ## Error Handling
 - Routes: `try/catch` wrapping entire handler, returns `{ error: err.message }` with 500 status
 - External API calls: `try/catch` with fallback values (e.g., `fetchMarketOverview` uses defaults if APIs fail)
-- Market data: Binance-first with MEXC fallback in `fetchOHLCV()`
-- Scanner: Continues on per-coin errors, logs warnings, collects `fetchErrors` array
-- GPT filter: On failure, passes signal through with neutral review (`CONFIRM` with confidence 5)
+- Market data: Bybit-first with Binance/MEXC fallback in `fetchOHLCV()`
+- Daily Breakout: Continues on per-coin errors, logs warnings, never crashes the live scanner loop
 - Signal tracker: Per-signal `try/catch`, logs error, continues to next signal
 - Frontend: Silent `catch {}` in many places (no user-facing error for non-critical operations)
 ## Cross-Cutting Concerns

@@ -69,3 +69,14 @@ export async function getSignal(id: number): Promise<Signal> {
   if (!res.ok) throw new Error('Failed to fetch signal')
   return res.json()
 }
+
+export async function getSignalPrices(coins: string[]): Promise<Record<string, number | null>> {
+  const res = await fetch(`${BASE}/api/signals/prices`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ coins }),
+  })
+  if (!res.ok) return {}
+  const data = await res.json()
+  return data.prices
+}

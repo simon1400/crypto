@@ -16,6 +16,7 @@
   "exclude": [
     "node_modules",
     "dist",
+    "src/legacy",
     "src/scalper/runBacktest365.ts",
     "src/scalper/runBacktest365_crypto.ts",
     "src/scalper/runBacktest365_crypto_v2.ts",

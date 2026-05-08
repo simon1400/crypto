@@ -4,7 +4,6 @@ import { prisma } from '../db/prisma'
 import { encrypt, maskKey } from '../services/encryption'
 import { createBybitClient, validateBybitKeys } from '../services/bybit'
 import { startAutoListener, stopAutoListener } from '../trading/autoListener'
-import { restartAutoScanner } from '../services/autoScanner'
 import { getInstrumentInfo } from '../trading/instrumentCache'
 import { sendTestNotification, sendNotification } from '../services/notifier'
 import { getVirtualBalanceInfo, setVirtualBalance } from '../services/virtualBalance'
@@ -139,11 +138,6 @@ router.put('/', asyncHandler(async (req, res) => {
   // If apiKey is null/undefined, do NOT touch existing keys (Pitfall 4)
 
   const config = await prisma.botConfig.upsert({ where: { id: 1 }, update: updateData, create: createData })
-
-  // Restart auto scanner if any of its config fields changed
-  if (autoScanEnabled !== undefined || autoScanIntervalMin !== undefined || autoScanMinScore !== undefined) {
-    restartAutoScanner()
-  }
 
   // Start/stop auto listener based on tradingMode change
   if (tradingMode === 'auto') {
