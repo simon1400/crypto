@@ -139,6 +139,20 @@ export function generateBreakoutSignal(
   // SL stays at the opposite range edge (range invalidation).
   const sl = side === 'BUY' ? range.rangeLow : range.rangeHigh
 
+  // Min SL distance guard: узкий SL (< MIN_SL_DIST_PCT% от entry) приводит к двум проблемам
+  // в live trading — обе подтверждены backtest 2026-05-08 (runBacktest_dailybreak_sldist.ts):
+  //   1. Leverage упирается в Bybit max (×100 для XRP/ETH/SOL/etc) → liquidation
+  //      срабатывает раньше SL (для ×100 maintenance ≈ 0.5%, при slDist 0.19% SL и
+  //      ликвидация совпадают).
+  //   2. Position notional = riskUsd / slDist раздувается, fees (% от notional) едят
+  //      0.5–0.8% депо на одной сделке. Пример XRP #63: SL 0.19%, fees $4.25 vs риск $10.34
+  //      → SL = 2.82% депо вместо запланированных 2%.
+  // Backtest за 365 дней (2426 сделок): фильтр ≥0.4% отбрасывает 3 сделки (R/tr -0.87),
+  // edge не падает (даже +2.6 R), TRAIN/TEST оба чистые.
+  const MIN_SL_DIST_PCT = 0.4
+  const slDistPct = (Math.abs(entryPrice - sl) / entryPrice) * 100
+  if (slDistPct < MIN_SL_DIST_PCT) return null
+
   // TP ladder is anchored to the range edge (rangeHigh for BUY, rangeLow for SELL),
   // so progress is measured from the edge — not from the (slipped) entry. This keeps
   // the geometry consistent with the backtest where entry = rangeEdge.
