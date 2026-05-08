@@ -53,12 +53,61 @@ const PAPER_STATUS_BADGE: Record<string, { bg: string; text: string; label: stri
   EXPIRED: { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Истёк' },
 }
 
-function PaperStatusBadge({ status, pnl }: { status: string; pnl: number }) {
-  if (status === 'CLOSED' && pnl < 0) {
-    return <span className="px-2 py-0.5 rounded text-xs font-medium bg-short/10 text-short">Стоп</span>
+// Сжатый текст исхода: смотрит на массив closes и собирает «TP1 → TP2 → SL@TP1»,
+// «TP1 → EXP», «SL» и т.д. Это полезнее чем generic «Закрыта», потому что одной
+// меткой видно куда дошла сделка перед финальным выходом.
+function buildOutcomeLabel(status: string, closes?: Array<{ reason?: string }>): string {
+  const reasons = (closes ?? []).map(c => c.reason).filter(Boolean) as string[]
+  const tps = reasons.filter(r => r === 'TP1' || r === 'TP2' || r === 'TP3')
+  const finalReason = reasons[reasons.length - 1]
+
+  // Открытые статусы — рендерим как было (метки из BADGE)
+  if (status === 'OPEN' || status === 'TP1_HIT' || status === 'TP2_HIT') {
+    return PAPER_STATUS_BADGE[status]?.label ?? status
   }
-  const cfg = PAPER_STATUS_BADGE[status] ?? { bg: 'bg-input', text: 'text-text-secondary', label: status }
-  return <span className={`px-2 py-0.5 rounded text-xs font-medium ${cfg.bg} ${cfg.text}`}>{cfg.label}</span>
+
+  // Финальный TP3
+  if (status === 'TP3_HIT' || (status === 'CLOSED' && finalReason === 'TP3')) {
+    return tps.length > 1 ? `${tps.slice(0, -1).join(' → ')} → TP3 ✓` : 'TP3 ✓'
+  }
+
+  // SL после частичных TP — это и есть «SL@BE» или «SL@TP1» case
+  if (status === 'SL_HIT' || (status === 'CLOSED' && finalReason === 'SL')) {
+    if (tps.length === 0) return 'SL'
+    if (tps.length === 1) return `${tps[0]} → SL@BE`            // SL переехал в BE
+    return `${tps.join(' → ')} → SL@${tps[tps.length - 2]}`     // полный трейлинг
+  }
+
+  // Истёк (EOD UTC)
+  if (status === 'EXPIRED') {
+    return tps.length > 0 ? `${tps.join(' → ')} → EXP` : 'Истёк'
+  }
+
+  // Ручное закрытие / margin / fallback
+  if (status === 'CLOSED') {
+    if (finalReason === 'MANUAL') return tps.length > 0 ? `${tps.join(' → ')} → Manual` : 'Manual'
+    if (finalReason === 'MARGIN') return tps.length > 0 ? `${tps.join(' → ')} → Margin` : 'Margin'
+    return tps.length > 0 ? tps.join(' → ') : 'Закрыта'
+  }
+
+  return PAPER_STATUS_BADGE[status]?.label ?? status
+}
+
+function outcomeBadgeClasses(status: string, pnl: number): { bg: string; text: string } {
+  if (status === 'OPEN' || status === 'TP1_HIT' || status === 'TP2_HIT') {
+    return { bg: PAPER_STATUS_BADGE[status].bg, text: PAPER_STATUS_BADGE[status].text }
+  }
+  if (status === 'SL_HIT') return { bg: 'bg-short/15', text: 'text-short' }
+  // CLOSED / TP3_HIT / EXPIRED → цвет по знаку P&L
+  if (pnl > 0) return { bg: 'bg-long/15', text: 'text-long' }
+  if (pnl < 0) return { bg: 'bg-short/10', text: 'text-short' }
+  return { bg: 'bg-neutral/15', text: 'text-neutral' }
+}
+
+function PaperStatusBadge({ status, pnl, closes }: { status: string; pnl: number; closes?: Array<{ reason?: string }> }) {
+  const label = buildOutcomeLabel(status, closes)
+  const { bg, text } = outcomeBadgeClasses(status, pnl)
+  return <span className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${bg} ${text}`}>{label}</span>
 }
 
 function formatElapsed(openedAt: string, closedAt?: string | null): string {
@@ -119,8 +168,15 @@ export default function BreakoutPaper() {
   const [scannerCfg, setScannerCfg] = useState<ScannerCfg | null>(null)
   const [setups, setSetups] = useState<string[]>([])
   const [trades, setTrades] = useState<PaperTrade[]>([])
+  const [tradesTotal, setTradesTotal] = useState(0)
+  // Открытые сделки держим отдельно от `trades` — нужны для расчёта equity-with-unrealized
+  // в верхней статистике независимо от выбранной вкладки.
+  const [openTradesAll, setOpenTradesAll] = useState<PaperTrade[]>([])
   const [stats, setStats] = useState<PaperStats | null>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('OPEN')
+  // Пагинация только для вкладки "Закрытые" (открытых обычно <= 10 штук, лимит маленький)
+  const CLOSED_PAGE_SIZE = 20
+  const [closedPage, setClosedPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -141,11 +197,18 @@ export default function BreakoutPaper() {
       const status = statusFilter === 'OPEN' ? ['OPEN', 'TP1_HIT', 'TP2_HIT']
                    : statusFilter === 'CLOSED' ? ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT']
                    : undefined
+      // CLOSED tab: серверная пагинация по 20. Сортировка по closedAt чтобы
+      // страницы шли последовательно по дате выхода (иначе при разнице
+      // openedAt vs closedAt порядок между страницами рассыпается).
+      // Остальные вкладки — старый лимит 200, сортировка по openedAt по умолчанию.
+      const tradesQuery = statusFilter === 'CLOSED'
+        ? { status, limit: CLOSED_PAGE_SIZE, offset: (closedPage - 1) * CLOSED_PAGE_SIZE, orderBy: 'closedAt' as const }
+        : { status, limit: 200 }
       const [c, sc, su, t, s, sigs] = await Promise.all([
         getBreakoutPaperConfig(),
         getBreakoutConfig(),
         getBreakoutSetups(),
-        isSignalsTab ? Promise.resolve({ data: [], total: 0 }) : getBreakoutPaperTrades({ status, limit: 200 }),
+        isSignalsTab ? Promise.resolve({ data: [], total: 0 }) : getBreakoutPaperTrades(tradesQuery),
         getBreakoutPaperStats(),
         isSignalsTab ? getBreakoutSignals({ limit: 200 }) : Promise.resolve({ data: [], total: 0 }),
       ])
@@ -153,20 +216,31 @@ export default function BreakoutPaper() {
       setScannerCfg(sc)
       setSetups(su.setups)
       setTrades(t.data)
+      setTradesTotal(t.total)
       setStats(s)
       setSignals(sigs.data)
+      // Если активная вкладка — это OPEN, то t.data уже содержит открытые сделки
+      // и отдельный запрос не нужен. Иначе делаем дополнительный fetch.
+      if (statusFilter === 'OPEN') {
+        setOpenTradesAll(t.data)
+      } else {
+        try {
+          const openOnly = await getBreakoutPaperTrades({ status: ['OPEN', 'TP1_HIT', 'TP2_HIT'], limit: 100 })
+          setOpenTradesAll(openOnly.data)
+        } catch { /* keep stale */ }
+      }
     } catch (e: any) {
       setError(e?.message ?? 'Failed to load')
     } finally {
       setLoading(false)
     }
-  }, [statusFilter])
+  }, [statusFilter, closedPage])
 
   useEffect(() => { loadAll() }, [loadAll])
 
-  // Poll live prices every 3s for OPEN trades
+  // Poll live prices every 3s. Раньше работал только на вкладке OPEN, но теперь
+  // верхняя статистика "Депо с открытыми" нуждается в unrealized P&L на любой вкладке.
   useEffect(() => {
-    if (statusFilter !== 'OPEN') return
     let cancelled = false
     const tick = async () => {
       const controller = new AbortController()
@@ -181,7 +255,7 @@ export default function BreakoutPaper() {
     tick()
     const id = setInterval(tick, 3000)
     return () => { cancelled = true; clearInterval(id) }
-  }, [statusFilter])
+  }, [])
 
   const handleTogglePaperEnabled = async () => {
     if (!config) return
@@ -253,9 +327,11 @@ export default function BreakoutPaper() {
 
   const returnPct = stats?.returnPct ?? 0
   const winRate = stats?.winRate ?? 0
-  const openTrades = trades.filter(t => ['OPEN','TP1_HIT','TP2_HIT'].includes(t.status))
-  const openCount = openTrades.length
-  const activeMarginUsd = openTrades.reduce((sum, t) => {
+  // openTradesAll грузится отдельно и не зависит от выбранной вкладки. На вкладке
+  // "Открытые" он совпадает с trades. Используем его и для верхней статистики
+  // (число открытых, маржа, unrealized P&L) — иначе на других вкладках цифры теряются.
+  const openCount = openTradesAll.length
+  const activeMarginUsd = openTradesAll.reduce((sum, t) => {
     const closedFrac = (t.closes ?? []).reduce((a, c) => a + c.percent, 0) / 100
     const remainingPos = t.positionSizeUsd * Math.max(0, 1 - closedFrac)
     const lev = t.leverage && t.leverage > 0
@@ -265,6 +341,10 @@ export default function BreakoutPaper() {
         : 1)
     return sum + remainingPos / lev
   }, 0)
+  // Unrealized P&L по всем открытым сделкам — берём из livePrices (poll каждые 3с).
+  // Если для какой-то сделки live цены ещё нет, её unrealized = 0 (не врём в плюс/минус).
+  const unrealizedPnlUsd = openTradesAll.reduce((sum, t) => sum + (livePrices[t.id]?.unrealizedPnl ?? 0), 0)
+  const equityWithOpen = config.currentDepositUsd + unrealizedPnlUsd
 
   return (
     <div>
@@ -304,9 +384,17 @@ export default function BreakoutPaper() {
       </div>
 
       {/* Top stats */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
         <Stat label="Депозит" value={`$${config.currentDepositUsd.toFixed(2)}`}
           sub={`из $${config.startingDepositUsd}`} tone={config.currentDepositUsd >= config.startingDepositUsd ? 'long' : 'short'} />
+        <Stat
+          label="Депо с открытыми"
+          value={`$${equityWithOpen.toFixed(2)}`}
+          sub={openCount > 0
+            ? `${unrealizedPnlUsd >= 0 ? '+' : ''}$${unrealizedPnlUsd.toFixed(2)} unrealized`
+            : 'нет открытых'}
+          tone={equityWithOpen >= config.startingDepositUsd ? 'long' : 'short'}
+        />
         <Stat label="Доходность" value={`${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(1)}%`}
           tone={returnPct > 0 ? 'long' : returnPct < 0 ? 'short' : 'neutral'} />
         <Stat label="Total P&L" value={fmtUsd(config.totalPnLUsd)}
@@ -379,10 +467,10 @@ export default function BreakoutPaper() {
 
       {/* Status filter */}
       <div className="flex gap-2 mb-3 flex-wrap">
-        <FilterButton active={statusFilter === 'OPEN'} onClick={() => setStatusFilter('OPEN')}>Открытые</FilterButton>
-        <FilterButton active={statusFilter === 'CLOSED'} onClick={() => setStatusFilter('CLOSED')}>Закрытые</FilterButton>
-        <FilterButton active={statusFilter === 'ALL'} onClick={() => setStatusFilter('ALL')}>Все</FilterButton>
-        <FilterButton active={statusFilter === 'SIGNALS'} onClick={() => setStatusFilter('SIGNALS')}>Сигналы</FilterButton>
+        <FilterButton active={statusFilter === 'OPEN'} onClick={() => { setClosedPage(1); setStatusFilter('OPEN') }}>Открытые</FilterButton>
+        <FilterButton active={statusFilter === 'CLOSED'} onClick={() => { setClosedPage(1); setStatusFilter('CLOSED') }}>Закрытые</FilterButton>
+        <FilterButton active={statusFilter === 'ALL'} onClick={() => { setClosedPage(1); setStatusFilter('ALL') }}>Все</FilterButton>
+        <FilterButton active={statusFilter === 'SIGNALS'} onClick={() => { setClosedPage(1); setStatusFilter('SIGNALS') }}>Сигналы</FilterButton>
       </div>
 
       {/* Signals table (only when SIGNALS filter is active) */}
@@ -431,7 +519,7 @@ export default function BreakoutPaper() {
                       <td className="px-3 py-2 text-right font-mono">${fmtPrice(s.entryPrice)}</td>
                       <td className="px-3 py-2 text-right font-mono text-short">${fmtPrice(s.initialStop)}</td>
                       <td className="px-3 py-2 text-right font-mono">{volRatio.toFixed(2)}×</td>
-                      <td className="px-3 py-2 text-center"><PaperStatusBadge status={s.status} pnl={s.realizedR} /></td>
+                      <td className="px-3 py-2 text-center"><PaperStatusBadge status={s.status} pnl={s.realizedR} closes={s.closes} /></td>
                       <td className={`px-3 py-2 text-center font-mono ${paperColor}`}>{paperLabel}</td>
                       <td className="px-3 py-2 text-text-secondary text-[11px] max-w-[280px] truncate" title={s.paperReason ?? ''}>
                         {s.paperReason ?? '—'}
@@ -456,12 +544,12 @@ export default function BreakoutPaper() {
                 <th className="text-left px-3 py-2">⏱</th>
                 <th className="text-left px-3 py-2">Монета</th>
                 <th className="text-right px-3 py-2">Вход</th>
-                <th className="text-right px-3 py-2">Цена</th>
+                {statusFilter !== 'CLOSED' && <th className="text-right px-3 py-2">Цена</th>}
                 <th className="text-right px-3 py-2">Размер</th>
                 <th className="text-right px-3 py-2">Маржа</th>
                 <th className="text-right px-3 py-2">SL</th>
                 <th className="text-right px-3 py-2">TP</th>
-                <th className="text-right px-3 py-2">Рлз.</th>
+                {statusFilter !== 'CLOSED' && <th className="text-right px-3 py-2">Рлз.</th>}
                 <th className="text-right px-3 py-2">P&L</th>
                 <th className="text-center px-3 py-2">Статус</th>
               </tr>
@@ -536,13 +624,15 @@ export default function BreakoutPaper() {
                       </span>
                     </td>
                     <td className="px-3 py-2 text-right font-mono text-text-primary">${fmtPrice(t.entryPrice)}</td>
-                    <td className="px-3 py-2 text-right font-mono">
-                      {isOpen && live?.currentPrice != null ? (
-                        <span className={pnlColor(live.unrealizedPnl)}>${fmtPrice(live.currentPrice)}</span>
-                      ) : (
-                        <span className="text-text-secondary">—</span>
-                      )}
-                    </td>
+                    {statusFilter !== 'CLOSED' && (
+                      <td className="px-3 py-2 text-right font-mono">
+                        {isOpen && live?.currentPrice != null ? (
+                          <span className={pnlColor(live.unrealizedPnl)}>${fmtPrice(live.currentPrice)}</span>
+                        ) : (
+                          <span className="text-text-secondary">—</span>
+                        )}
+                      </td>
+                    )}
                     <td className="px-3 py-2 text-right font-mono leading-tight">
                       {isFinished ? (
                         <span className="text-text-secondary">${fmt2(t.positionSizeUsd)}</span>
@@ -584,22 +674,32 @@ export default function BreakoutPaper() {
                         <span className="text-text-secondary">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-right font-mono">
-                      {closedPctNum > 0 ? (
-                        <span className={pnlColor(t.realizedPnlUsd - t.feesPaidUsd)}>
-                          {fmt2Signed(t.realizedPnlUsd - t.feesPaidUsd)}$
-                        </span>
-                      ) : (
-                        <span className="text-text-secondary">—</span>
-                      )}
-                    </td>
+                    {statusFilter !== 'CLOSED' && (
+                      <td className="px-3 py-2 text-right font-mono">
+                        {closedPctNum > 0 ? (
+                          <span className={pnlColor(t.realizedPnlUsd - t.feesPaidUsd)}>
+                            {fmt2Signed(t.realizedPnlUsd - t.feesPaidUsd)}$
+                          </span>
+                        ) : (
+                          <span className="text-text-secondary">—</span>
+                        )}
+                      </td>
+                    )}
                     <td className="px-3 py-2 text-right font-mono leading-tight">
-                      {isOpen && live ? (
-                        <span className={pnlColor(live.unrealizedPnl)}>
-                          {fmt2Signed(live.unrealizedPnl)}$
-                          <div className="text-[10px] opacity-70">({fmt2Signed(live.unrealizedPnlPct)}%)</div>
-                        </span>
-                      ) : isFinished ? (
+                      {isOpen && live ? (() => {
+                        // Для частично закрытых (TP1_HIT/TP2_HIT) показываем P&L только
+                        // по остатку — реализованная часть видна в колонке "Рлз." и не
+                        // должна дублироваться здесь. Для полностью открытых (OPEN) — оба
+                        // значения равны (closedFrac=0), поэтому fallback не меняет UI.
+                        const pnl = live.remainingUnrealizedPnl ?? live.unrealizedPnl
+                        const pnlPct = live.remainingUnrealizedPnlPct ?? live.unrealizedPnlPct
+                        return (
+                          <span className={pnlColor(pnl)}>
+                            {fmt2Signed(pnl)}$
+                            <div className="text-[10px] opacity-70">({fmt2Signed(pnlPct)}%)</div>
+                          </span>
+                        )
+                      })() : isFinished ? (
                         <span className={pnlColor(t.netPnlUsd)} title={t.feesPaidUsd > 0 ? `Gross: ${fmt2Signed(t.realizedPnlUsd)}$ · Комиссии: -${fmt2(t.feesPaidUsd)}$` : undefined}>
                           {fmt2Signed(t.netPnlUsd)}$
                           {t.netPnlUsd !== 0 && <div className="text-[10px] opacity-70">({fmt2Signed(displayPnlPct)}%)</div>}
@@ -608,13 +708,37 @@ export default function BreakoutPaper() {
                         <span className="text-text-secondary">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-center"><PaperStatusBadge status={t.status} pnl={t.netPnlUsd} /></td>
+                    <td className="px-3 py-2 text-center"><PaperStatusBadge status={t.status} pnl={t.netPnlUsd} closes={t.closes} /></td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
         </div>
+        {/* Pagination — только для вкладки Закрытые (там часто > 20 записей) */}
+        {statusFilter === 'CLOSED' && tradesTotal > CLOSED_PAGE_SIZE && (() => {
+          const totalPages = Math.ceil(tradesTotal / CLOSED_PAGE_SIZE)
+          const from = (closedPage - 1) * CLOSED_PAGE_SIZE + 1
+          const to = Math.min(closedPage * CLOSED_PAGE_SIZE, tradesTotal)
+          return (
+            <div className="flex items-center justify-between px-3 py-2 border-t border-input text-xs text-text-secondary">
+              <div>{from}–{to} из {tradesTotal}</div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setClosedPage(p => Math.max(1, p - 1))}
+                  disabled={closedPage === 1 || loading}
+                  className="px-2 py-1 rounded bg-input hover:bg-input/70 disabled:opacity-40 disabled:cursor-not-allowed"
+                >‹ Назад</button>
+                <span className="font-mono">{closedPage} / {totalPages}</span>
+                <button
+                  onClick={() => setClosedPage(p => Math.min(totalPages, p + 1))}
+                  disabled={closedPage >= totalPages || loading}
+                  className="px-2 py-1 rounded bg-input hover:bg-input/70 disabled:opacity-40 disabled:cursor-not-allowed"
+                >Вперёд ›</button>
+              </div>
+            </div>
+          )
+        })()}
       </div>
       )}
 
@@ -626,9 +750,11 @@ export default function BreakoutPaper() {
             {Object.entries(stats.bySymbol).sort((a, b) => b[1].pnl - a[1].pnl).map(([sym, s]) => (
               <div key={sym} className="bg-card border border-input rounded p-2 text-xs">
                 <div className="font-medium text-text-primary">{sym}</div>
-                <div className="text-text-secondary">{s.trades} trades</div>
+                <div className="text-text-secondary">{s.trades} {s.trades === 1 ? 'trade' : 'trades'}</div>
                 <div className={pnlColor(s.pnl)}>{fmt2Signed(s.pnl)}$</div>
-                <div className="text-text-secondary">WR {((s.wins / s.trades) * 100).toFixed(0)}%</div>
+                <div className="text-text-secondary">
+                  {s.trades > 0 ? `WR ${((s.wins / s.trades) * 100).toFixed(0)}%` : 'WR —'}
+                </div>
               </div>
             ))}
           </div>

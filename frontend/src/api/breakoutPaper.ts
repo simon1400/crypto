@@ -152,12 +152,13 @@ export async function wipeAllBreakoutPaper(startingDepositUsd?: number): Promise
     body: JSON.stringify({ startingDepositUsd }),
   }))
 }
-export async function getBreakoutPaperTrades(opts: { status?: string[]; symbol?: string; limit?: number; offset?: number } = {}): Promise<{ data: BreakoutTrade[]; total: number }> {
+export async function getBreakoutPaperTrades(opts: { status?: string[]; symbol?: string; limit?: number; offset?: number; orderBy?: 'openedAt' | 'closedAt' } = {}): Promise<{ data: BreakoutTrade[]; total: number }> {
   const p = new URLSearchParams()
   if (opts.status?.length) p.set('status', opts.status.join(','))
   if (opts.symbol) p.set('symbol', opts.symbol)
   if (opts.limit) p.set('limit', String(opts.limit))
   if (opts.offset) p.set('offset', String(opts.offset))
+  if (opts.orderBy) p.set('orderBy', opts.orderBy)
   return handle(await fetch(`${BASE}/api/breakout-paper/trades?${p}`, { headers: getHeaders() }))
 }
 export async function getBreakoutPaperStats(): Promise<BreakoutStats> {
@@ -179,7 +180,10 @@ export async function editBreakoutPaperTrade(id: number, patch: {
 }
 export interface BreakoutTradeLive {
   id: number; status: string; currentPrice: number | null
+  // Полный P&L: реализованное + текущий остаток − все комиссии. Используется для "Депо с открытыми".
   unrealizedPnl: number; unrealizedPnlPct: number
+  // Только остаток (в игре сейчас). Реализованная часть отдельно в колонке "Рлз.".
+  remainingUnrealizedPnl?: number; remainingUnrealizedPnlPct?: number
 }
 export async function getBreakoutPaperLivePrices(signal?: AbortSignal): Promise<BreakoutTradeLive[]> {
   const res = await fetch(`${BASE}/api/breakout-paper/trades/live`, { headers: getHeaders(), signal })

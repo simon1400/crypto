@@ -157,7 +157,7 @@ router.get('/trades/live', async (_req, res) => {
       const closedPctSoFar = fills.reduce((a, c) => a + (c.percent ?? 0), 0)
       const remainingFrac = Math.max(0, 1 - closedPctSoFar / 100)
       if (remainingFrac < 1e-6) {
-        return { id: t.id, status: t.status, currentPrice: price, unrealizedPnl: 0, unrealizedPnlPct: 0 }
+        return { id: t.id, status: t.status, currentPrice: price, unrealizedPnl: 0, unrealizedPnlPct: 0, remainingUnrealizedPnl: 0, remainingUnrealizedPnlPct: 0 }
       }
       const isLong = t.side === 'BUY'
       const fillUnits = t.positionUnits * remainingFrac
@@ -165,13 +165,21 @@ router.get('/trades/live', async (_req, res) => {
       const feesPaidUsd = t.feesPaidUsd ?? 0
       const feeRatePct = t.feesRoundTripPct ?? 0.08
       const exitFeesIfClosedNow = t.positionUnits * price * remainingFrac * (feeRatePct / 100)
+      // Полный P&L всей сделки (реализованное + остаток) — нужен для расчёта "Депо с открытыми".
       const totalUnrealized = (t.realizedPnlUsd ?? 0) + unrealizedGross - feesPaidUsd - exitFeesIfClosedNow
       const unrealizedPnlPct = t.depositAtEntryUsd > 0
         ? (totalUnrealized / t.depositAtEntryUsd) * 100 : 0
+      // Только то, что сейчас в игре (по остатку позиции) — для колонки P&L в строке.
+      // Реализованная часть видна в колонке "Рлз." и не дублируется здесь.
+      const remainingUnrealized = unrealizedGross - exitFeesIfClosedNow
+      const remainingUnrealizedPnlPct = t.depositAtEntryUsd > 0
+        ? (remainingUnrealized / t.depositAtEntryUsd) * 100 : 0
       return {
         id: t.id, status: t.status, currentPrice: price,
         unrealizedPnl: Math.round(totalUnrealized * 100) / 100,
         unrealizedPnlPct: Math.round(unrealizedPnlPct * 100) / 100,
+        remainingUnrealizedPnl: Math.round(remainingUnrealized * 100) / 100,
+        remainingUnrealizedPnlPct: Math.round(remainingUnrealizedPnlPct * 100) / 100,
       }
     }))
     res.json(result)
@@ -182,13 +190,20 @@ router.get('/trades/live', async (_req, res) => {
 
 router.get('/trades', async (req, res) => {
   try {
-    const { status, symbol, limit = '100', offset = '0' } = req.query as Record<string, string>
+    const { status, symbol, limit = '100', offset = '0', orderBy = 'openedAt' } = req.query as Record<string, string>
     const where: any = {}
     if (status) where.status = { in: status.split(',') }
     if (symbol) where.symbol = symbol
+    // Для вкладки "Закрытые" фронт просит orderBy=closedAt — там пагинация
+    // должна идти по дате выхода, иначе страницы рассыпаются (entry-дата ≠ exit-дата
+    // у внутридневных сделок и при EOD-expiry многих сделок одновременно).
+    // closedAt у незакрытых — null → tiebreak по openedAt desc.
+    const order: any = orderBy === 'closedAt'
+      ? [{ closedAt: 'desc' }, { openedAt: 'desc' }]
+      : { openedAt: 'desc' }
     const [data, total] = await Promise.all([
       prisma.breakoutPaperTrade.findMany({
-        where, orderBy: { openedAt: 'desc' },
+        where, orderBy: order,
         skip: parseInt(offset, 10) || 0,
         take: Math.min(parseInt(limit, 10) || 100, 500),
       }),
