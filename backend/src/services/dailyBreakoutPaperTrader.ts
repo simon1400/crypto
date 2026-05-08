@@ -354,12 +354,12 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
   return { opened, depositDelta }
 }
 
-async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Promise<{ pnlDelta: number; statusChanged: boolean }> {
+async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Promise<{ pnlDelta: number; statusChanged: boolean; terminalClosed: boolean }> {
   const sinceMs = trade.lastPriceCheckAt
     ? new Date(trade.lastPriceCheckAt).getTime()
     : new Date(trade.openedAt).getTime()
   const newCandles = candles.filter(c => c.time > sinceMs)
-  if (newCandles.length === 0) return { pnlDelta: 0, statusChanged: false }
+  if (newCandles.length === 0) return { pnlDelta: 0, statusChanged: false, terminalClosed: false }
 
   const tpLadder: number[] = (trade.tpLadder as any[]) ?? []
   const isLong = trade.side === 'BUY'
@@ -375,7 +375,7 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Pr
     else if (f.reason === 'TP2') nextTpIdx = Math.max(nextTpIdx, 2)
     else if (f.reason === 'TP3') nextTpIdx = Math.max(nextTpIdx, 3)
   }
-  if (remainingFrac < 1e-6) return { pnlDelta: 0, statusChanged: false }
+  if (remainingFrac < 1e-6) return { pnlDelta: 0, statusChanged: false, terminalClosed: false }
 
   let currentStop: number = trade.currentStop
   let realizedR: number = trade.realizedR ?? 0
@@ -558,14 +558,18 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig): Pr
     }
   }
 
-  return { pnlDelta: totalPnlDeltaUsd - newFeesUsd, statusChanged }
+  // terminalClosed: сделка полностью завершилась (CLOSED/SL_HIT/EXPIRED) на этом
+  // тике — caller'у нужно немедленно запустить openNewPaperTrades, чтобы свежий
+  // сигнал занял освободившийся слот без ожидания следующего 5-min cron.
+  const terminalClosed = statusChanged && (status === 'CLOSED' || status === 'SL_HIT' || status === 'EXPIRED')
+  return { pnlDelta: totalPnlDeltaUsd - newFeesUsd, statusChanged, terminalClosed }
 }
 
-async function trackOpenPaperTrades(cfg: PaperConfig): Promise<{ updated: number; depositDelta: number }> {
+async function trackOpenPaperTrades(cfg: PaperConfig): Promise<{ updated: number; depositDelta: number; terminalClosed: number }> {
   const open = await prisma.breakoutPaperTrade.findMany({
     where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
   })
-  if (open.length === 0) return { updated: 0, depositDelta: 0 }
+  if (open.length === 0) return { updated: 0, depositDelta: 0, terminalClosed: 0 }
 
   const bySymbol = new Map<string, any[]>()
   for (const t of open) {
@@ -573,7 +577,7 @@ async function trackOpenPaperTrades(cfg: PaperConfig): Promise<{ updated: number
     list.push(t); bySymbol.set(t.symbol, list)
   }
 
-  let totalDelta = 0, updated = 0
+  let totalDelta = 0, updated = 0, terminalClosed = 0
   for (const [symbol, trades] of bySymbol) {
     try {
       const candles = await loadRecent5m(symbol)
@@ -581,24 +585,25 @@ async function trackOpenPaperTrades(cfg: PaperConfig): Promise<{ updated: number
         const r = await trackOnePaper(tr, candles, cfg)
         totalDelta += r.pnlDelta
         if (r.statusChanged) updated++
+        if (r.terminalClosed) terminalClosed++
       }
     } catch (e: any) {
       console.warn(`[BreakoutPaper] track ${symbol} failed: ${e.message}`)
     }
   }
-  return { updated, depositDelta: totalDelta }
+  return { updated, depositDelta: totalDelta, terminalClosed }
 }
 
-async function trackOpenPaperTradesFast(cfg: PaperConfig): Promise<{ updated: number; depositDelta: number }> {
+async function trackOpenPaperTradesFast(cfg: PaperConfig): Promise<{ updated: number; depositDelta: number; terminalClosed: number }> {
   const open = await prisma.breakoutPaperTrade.findMany({
     where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
   })
-  if (open.length === 0) return { updated: 0, depositDelta: 0 }
+  if (open.length === 0) return { updated: 0, depositDelta: 0, terminalClosed: 0 }
 
   const symbols = [...new Set(open.map(t => t.symbol))]
   const prices = await fetchPricesBatch(symbols)
   const now = Date.now()
-  let totalDelta = 0, updated = 0
+  let totalDelta = 0, updated = 0, terminalClosed = 0
   for (const tr of open) {
     const price = prices[tr.symbol]
     if (!price || price <= 0) continue
@@ -607,11 +612,12 @@ async function trackOpenPaperTradesFast(cfg: PaperConfig): Promise<{ updated: nu
       const r = await trackOnePaper(tr, [tick], cfg)
       totalDelta += r.pnlDelta
       if (r.statusChanged) updated++
+      if (r.terminalClosed) terminalClosed++
     } catch (e: any) {
       console.warn(`[BreakoutPaperFast] ${tr.symbol}#${tr.id} failed: ${e.message}`)
     }
   }
-  return { updated, depositDelta: totalDelta }
+  return { updated, depositDelta: totalDelta, terminalClosed }
 }
 
 async function applyDepositDelta(cfg: PaperConfig, delta: number): Promise<void> {
@@ -665,21 +671,61 @@ export async function runBreakoutPaperCycle(): Promise<{ opened: number; updated
   const updated = await trackOpenPaperTrades(cfgAfterOpens)
   if (updated.depositDelta !== 0) await applyDepositDelta(cfgAfterOpens, updated.depositDelta)
 
+  // If any trade fully closed during tracking, immediately try to fill the freed
+  // slot from a fresh signal (≤ 30 min old, retrace guard) instead of waiting for
+  // the next 5-min cron. This keeps maxConcurrent slots saturated.
+  let openedAgain = 0
+  let openedAgainDelta = 0
+  if (updated.terminalClosed > 0) {
+    const cfgFresh = await getOrCreateConfig() ?? cfgAfterOpens
+    const r2 = await openNewPaperTrades(cfgFresh)
+    openedAgain = r2.opened
+    openedAgainDelta = r2.depositDelta
+    if (openedAgainDelta !== 0) {
+      const cfgAfterR2 = await getOrCreateConfig()
+      if (cfgAfterR2) await applyDepositDelta(cfgAfterR2, openedAgainDelta)
+    }
+    if (openedAgain > 0) {
+      console.log(`[BreakoutPaper] slow: filled ${openedAgain} freed slot(s) inline after ${updated.terminalClosed} terminal close(s)`)
+    }
+  }
+
   const final = await getOrCreateConfig()
   return {
-    opened: opened.opened,
+    opened: opened.opened + openedAgain,
     updated: updated.updated,
-    depositDelta: updated.depositDelta + opened.depositDelta,
+    depositDelta: updated.depositDelta + opened.depositDelta + openedAgainDelta,
     deposit: final?.currentDepositUsd ?? 0,
   }
 }
 
-export async function runBreakoutPaperCycleFast(): Promise<{ updated: number; depositDelta: number }> {
+export async function runBreakoutPaperCycleFast(): Promise<{ updated: number; depositDelta: number; opened?: number }> {
   const cfg = await getOrCreateConfig()
   if (!cfg || !cfg.enabled) return { updated: 0, depositDelta: 0 }
   const r = await trackOpenPaperTradesFast(cfg)
   if (r.depositDelta !== 0) await applyDepositDelta(cfg, r.depositDelta)
-  return r
+
+  // Fast loop normally only tracks. But if a TP3/SL hit on a 2-sec tick,
+  // we want to occupy the freed slot ASAP — don't wait the rest of the 5-min
+  // window. openNewPaperTrades is heavier (32-symbol price fetch + margin guard),
+  // so we only call it on actual terminal closes, not every fast tick.
+  let opened = 0
+  if (r.terminalClosed > 0) {
+    const cfgFresh = await getOrCreateConfig()
+    if (cfgFresh) {
+      const r2 = await openNewPaperTrades(cfgFresh)
+      opened = r2.opened
+      if (r2.depositDelta !== 0) {
+        const cfgAfter = await getOrCreateConfig()
+        if (cfgAfter) await applyDepositDelta(cfgAfter, r2.depositDelta)
+      }
+      if (opened > 0) {
+        console.log(`[BreakoutPaperFast] filled ${opened} freed slot(s) inline after ${r.terminalClosed} terminal close(s)`)
+      }
+    }
+  }
+
+  return { updated: r.updated, depositDelta: r.depositDelta, opened }
 }
 
 export async function resetBreakoutPaperAccount(newStartingDeposit?: number): Promise<PaperConfig> {
