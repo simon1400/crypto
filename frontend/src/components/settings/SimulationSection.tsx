@@ -1,5 +1,4 @@
-import { useState } from 'react'
-import { setVirtualBalance, resetSimulation, VirtualBalanceInfo } from '../../api/client'
+import { setVirtualBalance, VirtualBalanceInfo } from '../../api/client'
 import { fmt2, fmt2Signed } from '../../lib/formatters'
 
 interface SimulationSectionProps {
@@ -29,9 +28,6 @@ export default function SimulationSection({
   showToast,
   onBalanceUpdate,
 }: SimulationSectionProps) {
-  const [resetting, setResetting] = useState(false)
-  const [confirmReset, setConfirmReset] = useState(false)
-
   async function handleSetVirtualBalance() {
     const v = Number(virtualBalanceInput)
     if (Number.isNaN(v) || v < 0) {
@@ -47,31 +43,11 @@ export default function SimulationSection({
     }
   }
 
-  async function handleResetSimulation() {
-    const v = Number(virtualBalanceInput)
-    if (Number.isNaN(v) || v < 0) {
-      showToast('Введите корректное число для нового баланса', 'error')
-      return
-    }
-    setResetting(true)
-    try {
-      const result = await resetSimulation(v)
-      onBalanceUpdate(result)
-      setConfirmReset(false)
-      showToast(`Симуляция сброшена: удалено ${result.deletedTrades} сделок`, 'success')
-    } catch (err: any) {
-      showToast(err.message, 'error')
-    } finally {
-      setResetting(false)
-    }
-  }
-
   return (
     <section className="bg-card rounded-xl p-6">
       <h2 className="text-lg font-semibold text-text-primary mb-1">Simulation</h2>
       <p className="text-xs text-text-secondary mb-6">
-        Виртуальный депозит, на котором живут все сделки. Реальный Bybit аккаунт не трогается.
-        Комиссии и funding списываются автоматически по реальным ставкам Bybit.
+        Виртуальный депозит для Daily Breakout paper trading. Реальный Bybit аккаунт не трогается.
       </p>
 
       {/* Текущий баланс — отображение */}
@@ -127,42 +103,8 @@ export default function SimulationSection({
             </button>
           </div>
           <p className="text-xs text-text-secondary mt-1.5">
-            Сбрасывает стартовый депозит — ROI пересчитывается с нуля. Сделки не удаляются.
+            Сбрасывает стартовый депозит — ROI пересчитывается с нуля.
           </p>
-        </div>
-
-        {/* Reset simulation */}
-        <div className="border-t border-input pt-4">
-          {confirmReset ? (
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm text-short flex-1">
-                Удалить ВСЕ сделки и установить баланс ${virtualBalanceInput || '0'}?
-              </span>
-              <button
-                type="button"
-                onClick={handleResetSimulation}
-                disabled={resetting}
-                className="px-3 py-1.5 bg-short text-white rounded text-xs font-medium disabled:opacity-50"
-              >
-                {resetting ? '...' : 'Да, сбросить'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmReset(false)}
-                className="px-3 py-1.5 bg-input text-text-secondary rounded text-xs"
-              >
-                Отмена
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setConfirmReset(true)}
-              className="px-3 py-1.5 bg-short/10 text-short rounded-lg text-xs font-medium hover:bg-short/20 transition border border-short/30"
-            >
-              Reset simulation (удалит сделки)
-            </button>
-          )}
         </div>
 
         {/* Fee rates */}

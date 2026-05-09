@@ -2,11 +2,7 @@ import { useState, useEffect } from 'react'
 import { getSettings, saveSettings, SettingsResponse, VirtualBalanceInfo } from '../api/client'
 import ConnectionSection from '../components/settings/ConnectionSection'
 import SimulationSection from '../components/settings/SimulationSection'
-import TradingParamsSection from '../components/settings/TradingParamsSection'
-import ChannelsSection from '../components/settings/ChannelsSection'
-import TickerMappingsSection from '../components/settings/TickerMappingsSection'
 import TelegramSection from '../components/settings/TelegramSection'
-import AutoScannerSection from '../components/settings/AutoScannerSection'
 
 export default function Settings() {
   const [loading, setLoading] = useState(true)
@@ -17,17 +13,9 @@ export default function Settings() {
   const [apiSecret, setApiSecret] = useState('')
   const [useTestnet, setUseTestnet] = useState(true)
   const [balance, setBalance] = useState<string | null>(null)
-  const [positionSizePct, setPositionSizePct] = useState(10)
-  const [dailyLossLimitPct, setDailyLossLimitPct] = useState(5)
-  const [orderTtlMinutes, setOrderTtlMinutes] = useState(60)
-  const [tradingMode, setTradingMode] = useState<string>('manual')
-  const [eveningTraderCategories, setEveningTraderCategories] = useState<string[]>([])
   const [telegramBotToken, setTelegramBotToken] = useState('')
   const [telegramChatId, setTelegramChatId] = useState('')
   const [telegramEnabled, setTelegramEnabled] = useState(false)
-  const [autoScanEnabled, setAutoScanEnabled] = useState(false)
-  const [autoScanIntervalMin, setAutoScanIntervalMin] = useState(12)
-  const [autoScanMinScore, setAutoScanMinScore] = useState(80)
   const [virtualBalance, setVirtualBalanceVal] = useState<number>(0)
   const [virtualBalanceStart, setVirtualBalanceStart] = useState<number>(0)
   const [virtualStartedAt, setVirtualStartedAt] = useState<string>('')
@@ -40,16 +28,8 @@ export default function Settings() {
       .then((data) => {
         setSettings(data)
         setUseTestnet(data.useTestnet)
-        setPositionSizePct(data.positionSizePct)
-        setDailyLossLimitPct(data.dailyLossLimitPct)
-        setOrderTtlMinutes(data.orderTtlMinutes)
-        setTradingMode(data.tradingMode)
-        setEveningTraderCategories(data.eveningTraderCategories)
         setTelegramEnabled(data.telegramEnabled ?? false)
         setTelegramChatId(data.telegramChatId ?? '')
-        setAutoScanEnabled(data.autoScanEnabled ?? false)
-        setAutoScanIntervalMin(data.autoScanIntervalMin ?? 12)
-        setAutoScanMinScore(data.autoScanMinScore ?? 80)
         setVirtualBalanceVal(data.virtualBalance ?? 0)
         setVirtualBalanceStart(data.virtualBalanceStart ?? 0)
         setVirtualStartedAt(data.virtualStartedAt ?? '')
@@ -76,15 +56,18 @@ export default function Settings() {
   }
 
   async function handleSave() {
-    if (positionSizePct < 1 || positionSizePct > 50) { showToast('Position size must be between 1% and 50%', 'error'); return }
-    if (dailyLossLimitPct < 1 || dailyLossLimitPct > 30) { showToast('Daily loss limit must be between 1% and 30%', 'error'); return }
-    if (orderTtlMinutes < 5 || orderTtlMinutes > 1440) { showToast('Order TTL must be between 5 and 1440 minutes', 'error'); return }
-    if (autoScanIntervalMin < 5 || autoScanIntervalMin > 120) { showToast('Интервал автосканера: 5–120 минут', 'error'); return }
-    if (autoScanMinScore < 50 || autoScanMinScore > 100) { showToast('Min Score: 50–100', 'error'); return }
     setSaving(true)
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = await saveSettings({ apiKey: apiKey || null, apiSecret: apiSecret || null, useTestnet, positionSizePct, dailyLossLimitPct, orderTtlMinutes, tradingMode, eveningTraderCategories, telegramBotToken: telegramBotToken || null, telegramChatId: telegramChatId || null, telegramEnabled, autoScanEnabled, autoScanIntervalMin, autoScanMinScore, takerFeeRate, makerFeeRate } as any)
+      const result = await saveSettings({
+        apiKey: apiKey || null,
+        apiSecret: apiSecret || null,
+        useTestnet,
+        telegramBotToken: telegramBotToken || null,
+        telegramChatId: telegramChatId || null,
+        telegramEnabled,
+        takerFeeRate,
+        makerFeeRate,
+      })
       setSettings(result)
       setApiKey('')
       setApiSecret('')
@@ -152,21 +135,6 @@ export default function Settings() {
           showToast={showToast}
           onBalanceUpdate={handleBalanceUpdate}
         />
-        <TradingParamsSection
-          positionSizePct={positionSizePct}
-          setPositionSizePct={setPositionSizePct}
-          dailyLossLimitPct={dailyLossLimitPct}
-          setDailyLossLimitPct={setDailyLossLimitPct}
-          orderTtlMinutes={orderTtlMinutes}
-          setOrderTtlMinutes={setOrderTtlMinutes}
-          tradingMode={tradingMode}
-          setTradingMode={setTradingMode}
-        />
-        <ChannelsSection
-          eveningTraderCategories={eveningTraderCategories}
-          setEveningTraderCategories={setEveningTraderCategories}
-        />
-        <TickerMappingsSection showToast={showToast} />
         <TelegramSection
           telegramBotToken={telegramBotToken}
           setTelegramBotToken={setTelegramBotToken}
@@ -176,14 +144,6 @@ export default function Settings() {
           setTelegramEnabled={setTelegramEnabled}
           settings={settings}
           showToast={showToast}
-        />
-        <AutoScannerSection
-          autoScanEnabled={autoScanEnabled}
-          setAutoScanEnabled={setAutoScanEnabled}
-          autoScanIntervalMin={autoScanIntervalMin}
-          setAutoScanIntervalMin={setAutoScanIntervalMin}
-          autoScanMinScore={autoScanMinScore}
-          setAutoScanMinScore={setAutoScanMinScore}
         />
         <button
           type="button"

@@ -7,209 +7,26 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Signal {
-  id                Int       @id @default(autoincrement())
-  channel           String
-  messageId         Int
-  publishedAt       DateTime
-  type              String // LONG or SHORT
-  coin              String
-  leverage          Int
-  entryMin          Float
-  entryMax          Float
-  stopLoss          Float
-  takeProfits       Json // Float[]
-  status            String    @default("ENTRY_WAIT") // ENTRY_WAIT, ACTIVE, SL_HIT, TP1_HIT, TP2_HIT, ...
-  category          String? // Scalp, Risk Scalp, etc. -- for order type detection (D-02)
-  entryFilledAt     DateTime?
-  statusUpdatedAt   DateTime?
-  priceHistory      Json      @default("[]") // {time: number, price: number}[]
-  createdAt         DateTime  @default(now())
-  // === Author-reported final outcome (ETG reply updates) ===
-  authorStatus      String? // TP1_HIT..TP5_HIT, SL_HIT, TRAILING_WIN, MANUAL_WIN, MANUAL_LOSS, CANCELLED
-  authorPnlPct      Float? // reported profit/loss % (includes leverage — as written by author)
-  authorPeriod      String? // "1 day 3 hr", "20 hr 38 min"
-  authorClosedAt    DateTime?
-  authorUpdateMsgId Int? // telegram message id of the update itself
-  averageEntryPrice Float? // author-reported Average Entry Price (set on Entry N / All entries achieved)
-  allEntriesFilled  Boolean   @default(false) // true after "All entries achieved"
-
-  positions Position[]
-
-  @@unique([channel, messageId])
-}
-
-model Position {
-  id               Int       @id @default(autoincrement())
-  symbol           String // e.g. BTCUSDT
-  type             String // LONG or SHORT
-  leverage         Int
-  entryPrice       Float? // null until filled
-  entryOrderId     String? // Bybit order ID
-  entryOrderLinkId String? // our orderLinkId (sig-{signalId}-entry)
-  qty              Float // position size in base coin
-  margin           Float? // USDT margin used
-  stopLoss         Float
-  takeProfits      Json // number[] from signal
-  tpOrderIds       Json      @default("[]") // string[] Bybit TP order IDs
-  closedPct        Float     @default(0)
-  realizedPnl      Float     @default(0)
-  fees             Float     @default(0)
-  status           String    @default("PENDING_ENTRY")
-  // PENDING_ENTRY, OPEN, PARTIALLY_CLOSED, CLOSED, SL_HIT, CANCELLED, CLOSED_EXTERNAL, EXPIRED
-  signalId         Int?
-  createdAt        DateTime  @default(now())
-  filledAt         DateTime?
-  closedAt         DateTime?
-
-  signal    Signal?    @relation(fields: [signalId], references: [id])
-  orderLogs OrderLog[]
-
-  @@index([entryOrderId])
-  @@index([signalId])
-}
-
-model OrderLog {
-  id         Int      @id @default(autoincrement())
-  positionId Int?
-  signalId   Int?
-  action     String
-  // ORDER_PLACED, ORDER_FILLED, ORDER_CANCELLED, SL_TRIGGERED,
-  // TP1_HIT, TP2_HIT, TP3_HIT, TP4_HIT, TP5_HIT,
-  // TP_ORDER_PLACED, POSITION_CLOSED, CLOSED_EXTERNAL,
-  // RECONCILE_MISMATCH, ERROR, EXPIRED
-  details    Json     @default("{}")
-  createdAt  DateTime @default(now())
-
-  position Position? @relation(fields: [positionId], references: [id])
-}
-
-model GeneratedSignal {
-  id                     Int       @id @default(autoincrement())
-  coin                   String
-  type                   String // LONG or SHORT
-  strategy               String // trend_follow / mean_revert / breakout
-  score                  Int // 0-100
-  entry                  Float
-  stopLoss               Float
-  takeProfits            Json // [{price: number, rr: number, close_pct?: number}]
-  leverage               Int
-  positionPct            Float // % of deposit to risk
-  amount                 Float     @default(0) // actual position size in USDT (set when TAKEN)
-  indicators             Json // snapshot of multi-TF indicators
-  marketContext          Json // fear&greed, regime, funding, OI, news, category, coinRegime, scoring context
-  aiAnalysis             String? // GPT review text
-  closes                 Json      @default("[]") // [{price, percent, pnl, pnlPercent, closedAt}]
-  closedPct              Float     @default(0) // total % closed (0-100)
-  realizedPnl            Float     @default(0) // realized P&L in USDT
-  status                 String    @default("NEW") // NEW, TAKEN, PARTIALLY_CLOSED, CLOSED, SL_HIT, EXPIRED
-  expiresAt              DateTime
-  createdAt              DateTime  @default(now())
-  takenAt                DateTime?
-  closedAt               DateTime?
-  // === Outcome tracking (for confidence calibration) ===
-  mfe                    Float? // Max Favorable Excursion (% from entry to best price)
-  mae                    Float? // Max Adverse Excursion (% from entry to worst price)
-  outcomeAt              DateTime? // when outcome was determined (TP hit or SL hit)
-  hitTp1                 Boolean   @default(false) // did price reach TP1
-  hitTp2                 Boolean   @default(false) // did price reach TP2
-  hitTp3                 Boolean   @default(false) // did price reach TP3
-  hitSl                  Boolean   @default(false) // did price hit SL
-  bestModel              String? // which entry model turned out best by hindsight
-  // === New 3-layer scoring fields ===
-  initialStop            Float? // original stop loss (never overwritten after BE/trailing)
-  currentStop            Float? // current active stop loss (updated on BE/trailing)
-  setupScore             Int? // new setup score 0-100
-  setupCategory          String? // A_PLUS_READY / READY / WATCHLIST / IGNORE
-  executionType          String? // ENTER_NOW_LONG / LIMIT_LONG / WAIT_CONFIRMATION / IGNORE
-  entryModel             String? // aggressive / confirmation
-  exchange               String    @default("bybit") // bybit | bingx | binance | mexc
-  // === Trade lifecycle tracking ===
-  stopMovedToBe          Boolean   @default(false) // was stop moved to breakeven?
-  stopMoveReason         String? // reason for stop move
-  trailingActivated      Boolean   @default(false) // is trailing stop active?
-  trailingActivationTime DateTime? // when trailing was activated
-  tp1HitTimestamp        DateTime? // when TP1 was hit
-  tp2HitTimestamp        DateTime? // when TP2 was hit
-  tp3HitTimestamp        DateTime? // when TP3 was hit
-  exitReason             String? // INITIAL_STOP, BE_STOP, TRAILING_STOP, MANUAL_EXIT, TIME_STOP, TP1_PARTIAL, etc.
-  timeInTradeMin         Int? // time from entry to final exit in minutes
-
-  @@index([status])
-  @@index([coin])
-}
-
-model Trade {
-  id                     Int       @id @default(autoincrement())
-  coin                   String // BTCUSDT, ETHUSDT...
-  type                   String // LONG or SHORT
-  leverage               Int       @default(1) // 1x-125x
-  entryPrice             Float // цена входа
-  amount                 Float // размер позиции в USDT (маржа)
-  stopLoss               Float // стоп-лосс (current active SL)
-  initialStop            Float? // original stop loss (never overwritten)
-  currentStop            Float? // alias for stopLoss, updated on BE/trailing
-  takeProfits            Json // [{price: number, percent: number}] — уровни TP и % закрытия
-  closes                 Json      @default("[]") // [{price: number, percent: number, pnl: number, closedAt: string}]
-  closedPct              Float     @default(0) // суммарно закрыто % позиции (0-100)
-  realizedPnl            Float     @default(0) // реализованный P&L в USDT (без вычета fees/funding)
-  status                 String    @default("OPEN") // OPEN, PARTIALLY_CLOSED, CLOSED, SL_HIT, CANCELLED
-  source                 String    @default("MANUAL") // MANUAL, SIGNAL, SCANNER, ENTRY_ANALYZER
-  entryOrderType         String    @default("market") // market (taker) / limit (maker) — определяет fee вхождения
-  fees                   Float     @default(0) // суммарные trading fees (entry + exit)
-  fundingPaid            Float     @default(0) // суммарно уплачено funding (положительное = платил, отрицательное = получал)
-  lastFundingAt          DateTime? // последний снапшот funding (чтобы не начислять дважды)
-  notes                  String? // заметки
-  openedAt               DateTime?
-  closedAt               DateTime?
-  createdAt              DateTime  @default(now())
-  // === New trade lifecycle tracking ===
-  stopMovedToBe          Boolean   @default(false) // was stop moved to breakeven?
-  stopMoveReason         String? // reason for stop move
-  trailingActivated      Boolean   @default(false) // is trailing stop active?
-  trailingActivationTime DateTime? // when trailing was activated
-  tp1HitTimestamp        DateTime? // when TP1 was hit
-  tp2HitTimestamp        DateTime? // when TP2 was hit
-  tp3HitTimestamp        DateTime? // when TP3 was hit
-  exitReason             String? // INITIAL_STOP, BE_STOP, TRAILING_STOP, MANUAL_EXIT, TIME_STOP, etc.
-  timeInTradeMin         Int? // time from entry to final exit in minutes
-  // === Outcome tracking ===
-  mfe                    Float? // Max Favorable Excursion %
-  mae                    Float? // Max Adverse Excursion %
-
-  @@index([status])
-  @@index([coin])
-}
-
 model BotConfig {
-  id                      Int      @id @default(1)
-  apiKey                  String?
-  apiSecret               String?
-  useTestnet              Boolean  @default(true)
-  positionSizePct         Float    @default(10)
-  dailyLossLimitPct       Float    @default(5)
-  orderTtlMinutes         Int      @default(60)
-  tradingMode             String   @default("manual")
-  eveningTraderCategories Json     @default("[]")
-  telegramBotToken        String?
-  telegramChatId          String?
-  telegramEnabled         Boolean  @default(false)
-  scannerCoins            Json     @default("[]")
-  autoScanEnabled         Boolean  @default(false)
-  autoScanIntervalMin     Int      @default(12)
-  autoScanMinScore        Int      @default(80)
+  id                  Int      @id @default(1)
+  apiKey              String?
+  apiSecret           String?
+  useTestnet          Boolean  @default(true)
+  telegramBotToken    String?
+  telegramChatId      String?
+  telegramEnabled     Boolean  @default(false)
   // === Virtual trading simulation ===
-  virtualBalance          Float    @default(1000) // текущий виртуальный депозит USDT
-  virtualBalanceStart     Float    @default(1000) // стартовый депозит (для расчёта ROI)
-  virtualStartedAt        DateTime @default(now()) // когда запущена симуляция
-  takerFeeRate            Float    @default(0.00055) // 0.055% — Bybit default VIP 0
-  makerFeeRate            Float    @default(0.0002) // 0.02%  — Bybit default VIP 0
+  virtualBalance      Float    @default(1000)
+  virtualBalanceStart Float    @default(1000)
+  virtualStartedAt    DateTime @default(now())
+  takerFeeRate        Float    @default(0.00055) // 0.055% — Bybit default VIP 0
+  makerFeeRate        Float    @default(0.0002) // 0.02%  — Bybit default VIP 0
   // === MT5 calculator deposit (forex/gold position sizing) ===
-  mt5Balance              Float? // MT5 account balance in USD for lot size calculator
-  mt5RiskPct              Float    @default(2) // default risk % per trade on MT5
-  mt5CommissionPerLot     Float    @default(0) // round-turn commission per 1 lot in USD (open+close), used for break-even calc
-  updatedAt               DateTime @updatedAt
-  createdAt               DateTime @default(now())
+  mt5Balance          Float?
+  mt5RiskPct          Float    @default(2)
+  mt5CommissionPerLot Float    @default(0)
+  updatedAt           DateTime @updatedAt
+  createdAt           DateTime @default(now())
 }
 
 // =====================================================================
@@ -224,30 +41,30 @@ model BreakoutSignal {
   // Range definition (first 3h of UTC day)
   rangeHigh        Float
   rangeLow         Float
-  rangeSize        Float // rangeHigh - rangeLow
+  rangeSize        Float
   rangeDate        String // 'YYYY-MM-DD' — UTC day
   // Trade levels
-  entryPrice       Float // = rangeHigh (BUY) or rangeLow (SELL)
-  stopLoss         Float // = opposite range edge
+  entryPrice       Float
+  stopLoss         Float
   initialStop      Float
-  currentStop      Float // moves to BE on TP1
-  tpLadder         Json // [entry+1×range, +2×range, +3×range]
+  currentStop      Float
+  tpLadder         Json
   // Volume confirmation
-  volumeAtBreakout Float // current 5m volume at trigger
-  avgVolume        Float // 24-bar avg used as threshold ref
-  reason           String // human-readable
+  volumeAtBreakout Float
+  avgVolume        Float
+  reason           String
   // Lifecycle
   status           String    @default("NEW") // NEW | ACTIVE | TP1_HIT | TP2_HIT | TP3_HIT | CLOSED | SL_HIT | EXPIRED
-  closes           Json      @default("[]") // [{price, percent, pnlR, closedAt, reason}]
+  closes           Json      @default("[]")
   realizedR        Float     @default(0)
   // Tracking
   lastPriceCheck   Float?
   lastPriceCheckAt DateTime?
   notifiedTelegram Boolean   @default(false)
-  expiresAt        DateTime? // end of UTC day (23:55:00)
+  expiresAt        DateTime?
   closedAt         DateTime?
   createdAt        DateTime  @default(now())
-  // Paper-trader outcome: 'OPENED' if paper trade created; 'SKIPPED:<reason>' if guard rejected.
+  // Paper-trader outcome
   paperStatus      String?
   paperReason      String?
   paperUpdatedAt   DateTime?
@@ -260,9 +77,9 @@ model BreakoutSignal {
 model BreakoutConfig {
   id               Int       @id @default(1)
   enabled          Boolean   @default(false)
-  symbolsEnabled   Json      @default("[]") // ['ETHUSDT', 'SOLUSDT', ...] — пусто = все DEFAULT_BREAKOUT_SETUPS
-  rangeBars        Int       @default(36) // 3h × 12 bars/h = 36 5m bars
-  volumeMultiplier Float     @default(2.0) // current vol must >= avg×2.0
+  symbolsEnabled   Json      @default("[]")
+  rangeBars        Int       @default(36)
+  volumeMultiplier Float     @default(2.0)
   cronIntervalMin  Int       @default(5)
   notifyOnNew      Boolean   @default(true)
   notifyOnClose    Boolean   @default(true)
@@ -278,17 +95,16 @@ model BreakoutPaperConfig {
   startingDepositUsd     Float     @default(500)
   currentDepositUsd      Float     @default(500)
   riskPctPerTrade        Float     @default(2.0)
-  feesRoundTripPct       Float     @default(0.08) // 0.08% Bybit crypto round-trip
-  // Trailing: только TP1 → BE (не TP2 → TP1 как в Levels)
+  feesRoundTripPct       Float     @default(0.08)
   autoTrailingSL         Boolean   @default(false)
   // Margin guard
-  targetMarginPct        Float     @default(10) // target margin per trade as % of deposit
+  targetMarginPct        Float     @default(10)
   marginGuardEnabled     Boolean   @default(true)
-  marginGuardAutoClose   Boolean   @default(false) // auto-close winners (off by default — backtest showed lower edge)
+  marginGuardAutoClose   Boolean   @default(false)
   // Circuit breakers
   dailyLossLimitPct      Float     @default(5)
   weeklyLossLimitPct     Float     @default(15)
-  maxConcurrentPositions Int       @default(10) // backtest optimal
+  maxConcurrentPositions Int       @default(10)
   maxPositionsPerSymbol  Int       @default(1)
   // Stats
   totalTrades            Int       @default(0)
@@ -307,7 +123,7 @@ model BreakoutPaperTrade {
   id                Int       @id @default(autoincrement())
   signalId          Int
   symbol            String
-  side              String // BUY | SELL
+  side              String
   entryPrice        Float
   stopLoss          Float
   initialStop       Float
@@ -318,8 +134,8 @@ model BreakoutPaperTrade {
   riskUsd           Float
   positionSizeUsd   Float
   positionUnits     Float
-  leverage          Float? // chosen leverage at entry
-  marginUsd         Float? // initial margin = positionSizeUsd / leverage
+  leverage          Float?
+  marginUsd         Float?
   // Lifecycle
   status            String    @default("OPEN")
   closes            Json      @default("[]")
@@ -339,14 +155,4 @@ model BreakoutPaperTrade {
   @@index([status, symbol])
   @@index([openedAt])
   @@index([signalId])
-}
-
-model TickerMapping {
-  id              Int      @id @default(autoincrement())
-  fromTicker      String   @unique
-  toSymbol        String
-  priceMultiplier Float    @default(1)
-  notes           String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
 }

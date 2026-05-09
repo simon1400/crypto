@@ -27,8 +27,7 @@ export default function Navbar({ onLogout }: Props) {
       <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
         {/* Desktop nav links — aligned left */}
         <div className="hidden lg:flex items-center gap-1">
-          <Link to="/signals" className={linkClass('/signals')}>Сигналы</Link>
-          <Link to="/levels" className={linkClass('/levels')}>Breakout</Link>
+          <Link to="/breakout" className={linkClass('/breakout')}>Breakout</Link>
           <Link to="/calculator" className={linkClass('/calculator')}>Калькулятор</Link>
           <Link to="/settings" className={linkClass('/settings')}>Настройки</Link>
         </div>
@@ -41,9 +40,7 @@ export default function Navbar({ onLogout }: Props) {
               title={
                 `Виртуальный депозит: ${budget.balance.toFixed(2)} USDT\n` +
                 `Старт: ${budget.start.toFixed(2)} USDT\n` +
-                `P&L: ${budget.pnl >= 0 ? '+' : ''}${budget.pnl.toFixed(2)} USDT (${budget.roiPct >= 0 ? '+' : ''}${budget.roiPct.toFixed(2)}%)\n` +
-                `Занято маржой: ${budget.used.toFixed(2)} USDT\n` +
-                `Свободно: ${budget.available.toFixed(2)} USDT`
+                `P&L: ${budget.pnl >= 0 ? '+' : ''}${budget.pnl.toFixed(2)} USDT (${budget.roiPct >= 0 ? '+' : ''}${budget.roiPct.toFixed(2)}%)`
               }
             >
               <div className="flex items-baseline gap-2">
@@ -54,15 +51,6 @@ export default function Navbar({ onLogout }: Props) {
                   </span>
                 )}
               </div>
-              <span className={
-                budget.available < 0
-                  ? 'text-short text-[10px]'
-                  : budget.available < budget.balance * 0.1
-                    ? 'text-accent text-[10px]'
-                    : 'text-text-secondary text-[10px]'
-              }>
-                свободно {budget.available.toFixed(2)}
-              </span>
             </div>
           )}
           {onLogout && (

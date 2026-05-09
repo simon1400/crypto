@@ -1,181 +1,28 @@
 import { prisma } from '../db/prisma'
-import { OrderAction } from '../trading/types'
 import { computeSizing, getMaxLeverage } from './marginGuard'
 
+export type OrderAction =
+  | 'BREAKOUT_NEW'
+  | 'BREAKOUT_TP1_HIT'
+  | 'BREAKOUT_TP2_HIT'
+  | 'BREAKOUT_TP3_HIT'
+  | 'BREAKOUT_SL_HIT'
+  | 'BREAKOUT_EXPIRED'
+
 const NOTIFY_ACTIONS: Set<OrderAction> = new Set([
-  'ORDER_FILLED',
-  'SL_TRIGGERED',
-  'TP1_HIT',
-  'TP2_HIT',
-  'TP3_HIT',
-  'TP4_HIT',
-  'TP5_HIT',
-  'POSITION_CLOSED',
-  'KILL_SWITCH',
-  'DAILY_LIMIT_HIT',
-  'AUTO_SKIPPED',
-  'MARKET_ENTRY',
-  'ERROR',
-  'FOREX_SIGNAL_NEW',
-  // === Daily Breakout strategy live signals ===
-  'BREAKOUT_NEW' as any,
-  'BREAKOUT_TP1_HIT' as any,
-  'BREAKOUT_TP2_HIT' as any,
-  'BREAKOUT_TP3_HIT' as any,
-  'BREAKOUT_SL_HIT' as any,
-  'BREAKOUT_EXPIRED' as any,
+  'BREAKOUT_NEW',
+  'BREAKOUT_TP1_HIT',
+  'BREAKOUT_TP2_HIT',
+  'BREAKOUT_TP3_HIT',
+  'BREAKOUT_SL_HIT',
+  'BREAKOUT_EXPIRED',
 ])
-
-function fmt(p: number | undefined): string {
-  if (p == null) return '—'
-  if (p === 0) return '0'
-  if (Math.abs(p) >= 100) return p.toFixed(2)
-  if (Math.abs(p) >= 1) return p.toFixed(2)
-  return p.toPrecision(4)
-}
-
-function pnl(v: number | undefined): string {
-  if (v == null) return '—'
-  return `${v >= 0 ? '+' : ''}${v.toFixed(2)}`
-}
-
-function coin(symbol: string): string {
-  return (symbol || '').replace(/USDT$/i, '')
-}
-
-function slPct(entry: number, sl: number, type: string): string {
-  if (!entry || !sl) return ''
-  const dir = type === 'LONG' ? -1 : 1
-  const pct = ((sl - entry) / entry) * 100 * (type === 'LONG' ? 1 : -1)
-  return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`
-}
 
 function formatMessage(action: OrderAction, details?: Record<string, any>): string {
   const d = details || {}
-  const ticker = coin(d.symbol)
 
   switch (action) {
-    case 'ORDER_FILLED': {
-      const tps = (d.takeProfits as any[] || [])
-      const posSize = d.margin && d.leverage ? d.margin * d.leverage : null
-      const slDist = slPct(d.entryPrice, d.stopLoss, d.type)
-      const tpLines = tps.map((tp: any, i: number) => {
-        const tpPct = d.entryPrice ? (((tp.price - d.entryPrice) / d.entryPrice) * 100 * (d.type === 'LONG' ? 1 : -1)).toFixed(1) : '?'
-        return `   ├ TP${i + 1}  <code>${fmt(tp.price)}</code>  (+${tpPct}%)  [${tp.percent}%]`
-      }).join('\n')
-
-      return [
-        `${d.type === 'LONG' ? '🟢' : '🔴'} <b>${ticker} ${d.type}</b>  ×${d.leverage}`,
-        `━━━━━━━━━━━━━━━━━━`,
-        `📍 Вход     <code>${fmt(d.entryPrice)}</code>`,
-        `🛑 SL       <code>${fmt(d.stopLoss)}</code>  (${slDist})`,
-        `💰 Маржа    <code>$${d.margin?.toFixed(2)}</code>`,
-        posSize ? `📐 Позиция  <code>$${posSize.toFixed(2)}</code>` : '',
-        ``,
-        `🎯 Тейки:`,
-        tpLines,
-      ].filter(l => l !== '').join('\n')
-    }
-
-    case 'TP1_HIT':
-    case 'TP2_HIT':
-    case 'TP3_HIT':
-    case 'TP4_HIT':
-    case 'TP5_HIT': {
-      const n = action.replace('TP', '').replace('_HIT', '')
-      return [
-        `✅ <b>${ticker}</b>  TP${n} сработал`,
-        `━━━━━━━━━━━━━━━━━━`,
-        `💲 Цена     <code>${fmt(d.price)}</code>  (+${d.pnlPct?.toFixed(1)}%)`,
-        `📦 Закрыто  ${d.closedPct}%  →  <code>${pnl(d.pnl)}$</code>`,
-        `📊 Итого    <code>${pnl(d.totalRealizedPnl)}$</code>`,
-        `📉 Осталось ${d.remainingPct}%`,
-        d.newStopLoss != null ? `🛑 SL → <code>${fmt(d.newStopLoss)}</code>` : '',
-      ].filter(l => l !== '').join('\n')
-    }
-
-    case 'SL_TRIGGERED': {
-      const tag = d.exitReason === 'BE_STOP' ? '🟡 BE' : d.exitReason === 'TRAILING_STOP' ? '🟡 Trail' : '🔴 SL'
-      const emoji = d.totalRealizedPnl >= 0 ? '💚' : '💔'
-      return [
-        `${tag} <b>${ticker}</b>  стоп сработал`,
-        `━━━━━━━━━━━━━━━━━━`,
-        `💲 Цена     <code>${fmt(d.price)}</code>`,
-        `📉 P&L      <code>${pnl(d.pnl)}$</code>  (${pnl(d.pnlPct)}%)`,
-        `${emoji} Итого    <code>${pnl(d.totalRealizedPnl)}$</code>`,
-        `💸 Комиссии <code>${d.totalFees?.toFixed(2) || '0'}$</code>`,
-        d.timeInTrade ? `⏱ Время    ${d.timeInTrade}` : '',
-      ].filter(l => l !== '').join('\n')
-    }
-
-    case 'POSITION_CLOSED': {
-      const emoji = d.netPnl >= 0 ? '🏆' : '📉'
-      return [
-        `${emoji} <b>${ticker}</b>  позиция закрыта`,
-        `━━━━━━━━━━━━━━━━━━`,
-        `💰 P&L      <code>${pnl(d.totalRealizedPnl)}$</code>`,
-        `💸 Комиссии <code>${d.totalFees?.toFixed(2) || '0'}$</code>`,
-        `${d.netPnl >= 0 ? '💚' : '💔'} Нетто    <code>${pnl(d.netPnl)}$</code>`,
-        d.timeInTrade ? `⏱ Время    ${d.timeInTrade}` : '',
-      ].filter(l => l !== '').join('\n')
-    }
-
-    case 'KILL_SWITCH':
-      return '🚨 <b>KILL SWITCH</b> активирован. Все ордера отменены'
-
-    case 'DAILY_LIMIT_HIT':
-      return '⚠️ Дневной лимит убытка достигнут. Авто-торговля приостановлена'
-
-    case 'AUTO_SKIPPED':
-      return `⏭️ <b>${d.coin}</b> пропущена — ${d.reason}`
-
-    case 'MARKET_ENTRY':
-      return `🟢 <b>${d.symbol}</b> ${d.type} вход по рынку (market entry)`
-
-    case 'ERROR':
-      return `❌ Ошибка: ${d.message}`
-
-    case 'FOREX_SIGNAL_NEW': {
-      const instrument = String(d.instrument || '')
-      const type = String(d.type || 'LONG') as 'LONG' | 'SHORT'
-      const emoji = type === 'LONG' ? '🟢' : '🔴'
-      const score = Number(d.score || 0)
-      const entry = Number(d.entry || 0)
-      const sl = Number(d.stopLoss || 0)
-      const tps = (d.takeProfits as { price: number; rr: number }[]) || []
-      const session = d.session ? String(d.session) : ''
-      const reasons = (d.reasons as string[]) || []
-
-      // Precision: FX pairs (EURUSD, GBPUSD) need 5 decimals; JPY pairs / XAU / indices 2-3
-      const decimals = forexDecimals(instrument)
-      const fx = (v: number) => v.toFixed(decimals)
-
-      const stopDist = Math.abs(entry - sl)
-      const tpLines = tps
-        .map((tp, i) => `   ├ TP${i + 1}  <code>${fx(tp.price)}</code>  (R:R 1:${tp.rr})`)
-        .join('\n')
-
-      const sessionLine = session ? `🕐 Сессия: ${session}` : ''
-      const reasonLine = reasons.length
-        ? `\n📝 ${reasons.slice(0, 3).join(' · ')}`
-        : ''
-
-      return [
-        `${emoji} <b>FOREX ${instrument} ${type}</b>  Score: ${score}`,
-        `━━━━━━━━━━━━━━━━━━`,
-        `📍 Вход     <code>${fx(entry)}</code>`,
-        `🛑 SL       <code>${fx(sl)}</code>  (Δ ${fx(stopDist)})`,
-        `🎯 Тейки:`,
-        tpLines,
-        sessionLine,
-        reasonLine ? reasonLine.trim() : '',
-        `\n→ Открой в MT5. Калькулятор лотов в приложении.`,
-      ]
-        .filter((l) => l !== '')
-        .join('\n')
-    }
-
-    case 'BREAKOUT_NEW' as any: {
+    case 'BREAKOUT_NEW': {
       const sideEmoji = d.side === 'BUY' ? '🟢' : '🔴'
       const sideText = d.side === 'BUY' ? 'LONG' : 'SHORT'
       const sym = d.symbol
@@ -227,9 +74,9 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
       ].filter((l) => l !== '').join('\n')
     }
 
-    case 'BREAKOUT_TP1_HIT' as any:
-    case 'BREAKOUT_TP2_HIT' as any:
-    case 'BREAKOUT_TP3_HIT' as any: {
+    case 'BREAKOUT_TP1_HIT':
+    case 'BREAKOUT_TP2_HIT':
+    case 'BREAKOUT_TP3_HIT': {
       const n = String(action).replace('BREAKOUT_TP', '').replace('_HIT', '')
       const sym = d.symbol
       const dec = sym.includes('USDT') ? 2 : 5
@@ -251,7 +98,7 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
       ].join('\n')
     }
 
-    case 'BREAKOUT_SL_HIT' as any: {
+    case 'BREAKOUT_SL_HIT': {
       const sym = d.symbol
       const dec = sym.includes('USDT') ? 2 : 5
       const isBE = d.realizedR >= 0
@@ -267,7 +114,7 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
       ].join('\n')
     }
 
-    case 'BREAKOUT_EXPIRED' as any: {
+    case 'BREAKOUT_EXPIRED': {
       const sym = d.symbol
       const totalUsdLine = typeof d.realizedPnlUsd === 'number'
         ? `\n💵 Σ $    ${d.realizedPnlUsd >= 0 ? '+' : ''}$${d.realizedPnlUsd.toFixed(2)}` : ''
@@ -281,15 +128,6 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
     default:
       return `📋 ${action}: ${JSON.stringify(d)}`
   }
-}
-
-// Decimal precision for forex/indices pricing
-function forexDecimals(instrument: string): number {
-  if (/^US30|NAS100|SPX500|GER40|UK100/.test(instrument)) return 2
-  if (/JPY/.test(instrument)) return 3
-  if (/^XAU/.test(instrument)) return 2
-  if (/^XAG/.test(instrument)) return 3
-  return 5 // EURUSD etc.
 }
 
 export async function sendNotification(action: OrderAction, details?: Record<string, any>): Promise<void> {

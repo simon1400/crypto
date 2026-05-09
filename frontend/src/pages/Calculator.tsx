@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { getBudget, getMt5Balance, setMt5Balance as apiSetMt5Balance } from '../api/client'
+import { getVirtualBalance, getMt5Balance, setMt5Balance as apiSetMt5Balance } from '../api/client'
 
 // ===================== Crypto tab state keys =====================
 const LS_BALANCE = 'calc_balance'
@@ -608,7 +608,7 @@ function CryptoCalculator() {
 
   useEffect(() => {
     if (!localStorage.getItem(LS_BALANCE)) {
-      getBudget().then(r => {
+      getVirtualBalance().then(r => {
         if (r.balance) setBalance(String(Math.floor(r.balance)))
       }).catch(() => {})
     }
@@ -799,7 +799,7 @@ function SlCryptoCalculator() {
 
   useEffect(() => {
     if (!localStorage.getItem(LS_BALANCE)) {
-      getBudget().then(r => {
+      getVirtualBalance().then(r => {
         if (r.balance) setBalance(String(Math.floor(r.balance)))
       }).catch(() => {})
     }

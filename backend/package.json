@@ -9,16 +9,12 @@
     "test": "vitest run --reporter=verbose"
   },
   "dependencies": {
-    "@cryptography/aes": "^0.1.1",
     "@prisma/client": "^6.4.1",
     "bybit-api": "^4.6.1",
     "cors": "^2.8.5",
     "decimal.js": "^10.6.0",
     "dotenv": "^16.6.1",
-    "express": "^4.21.2",
-    "input": "^1.0.1",
-    "p-queue": "6.6.2",
-    "telegram": "^2.26.22"
+    "express": "^4.21.2"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
