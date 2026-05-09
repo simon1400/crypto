@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { BreakoutSignal } from '../api/breakoutPaper'
 import { forceOpenBreakoutSignal } from '../api/breakoutPaper'
+import { formatPrice } from '../lib/formatters'
 
 interface Props {
   signal: BreakoutSignal
@@ -8,11 +9,10 @@ interface Props {
   onForceOpened?: () => void
 }
 
-function fmt(n: number, dec = 6): string {
+function fmtVolume(n: number): string {
   if (n == null || isNaN(n)) return '—'
-  if (Math.abs(n) >= 1000) return n.toFixed(2)
-  if (Math.abs(n) >= 1) return n.toFixed(4)
-  return n.toFixed(dec)
+  if (Math.abs(n) >= 1000) return n.toFixed(0)
+  return n.toFixed(2)
 }
 function fmtTime(iso: string | null): string {
   if (!iso) return '—'
@@ -120,13 +120,13 @@ export default function BreakoutSignalModal({ signal: s, onClose, onForceOpened 
 
           {/* Range + entry */}
           <div className="grid grid-cols-2 gap-3 mb-4">
-            <Card label="Range high"  value={fmt(s.rangeHigh)} />
-            <Card label="Range low"   value={fmt(s.rangeLow)} />
-            <Card label="Range size"  value={fmt(s.rangeSize)} />
-            <Card label="Volume"      value={`${fmt(s.volumeAtBreakout, 2)} (×${volRatio.toFixed(2)} avg)`} />
-            <Card label="Вход"        value={fmt(s.entryPrice)} />
-            <Card label="SL initial"  value={fmt(s.initialStop)} tone="short" />
-            <Card label="SL текущий"  value={fmt(s.currentStop)} tone="short" />
+            <Card label="Range high"  value={formatPrice(s.rangeHigh)} />
+            <Card label="Range low"   value={formatPrice(s.rangeLow)} />
+            <Card label="Range size"  value={formatPrice(s.rangeSize)} />
+            <Card label="Volume"      value={`${fmtVolume(s.volumeAtBreakout)} (×${volRatio.toFixed(2)} avg)`} />
+            <Card label="Вход"        value={formatPrice(s.entryPrice)} />
+            <Card label="SL initial"  value={formatPrice(s.initialStop)} tone="short" />
+            <Card label="SL текущий"  value={formatPrice(s.currentStop)} tone="short" />
             <Card label="Realized R"  value={`${s.realizedR >= 0 ? '+' : ''}${s.realizedR.toFixed(2)}R`}
                   tone={s.realizedR > 0 ? 'long' : s.realizedR < 0 ? 'short' : 'neutral'} />
           </div>
@@ -143,7 +143,7 @@ export default function BreakoutSignalModal({ signal: s, onClose, onForceOpened 
                 }`}>
                   <div className="flex items-center gap-3">
                     <span className={`font-mono font-semibold w-12 ${isHit ? 'text-long' : ''}`}>TP{i + 1}</span>
-                    <span className="font-mono">{fmt(tp)}</span>
+                    <span className="font-mono">{formatPrice(tp)}</span>
                   </div>
                   <div className="text-xs text-text-secondary">
                     {splits[i]}% {isHit && fill ? <span className="text-long ml-2">✓ {fill.pnlR >= 0 ? '+' : ''}{fill.pnlR.toFixed(2)}R</span> : ''}
@@ -160,7 +160,7 @@ export default function BreakoutSignalModal({ signal: s, onClose, onForceOpened 
               <div className="space-y-1 mb-4 text-sm">
                 {s.closes.map((c, i) => (
                   <div key={i} className="flex justify-between bg-card border border-input rounded p-2">
-                    <span className="font-mono">{c.reason} @ {fmt(c.price)}</span>
+                    <span className="font-mono">{c.reason} @ {formatPrice(c.price)}</span>
                     <span className="text-text-secondary">{c.percent.toFixed(0)}%</span>
                     <span className={`font-mono ${c.pnlR > 0 ? 'text-long' : c.pnlR < 0 ? 'text-short' : ''}`}>
                       {c.pnlR >= 0 ? '+' : ''}{c.pnlR.toFixed(2)}R
@@ -175,7 +175,7 @@ export default function BreakoutSignalModal({ signal: s, onClose, onForceOpened 
           <div className="text-[11px] text-text-secondary">
             Telegram: {s.notifiedTelegram ? 'отправлено' : '—'}
             {s.expiresAt && <> · истекает {fmtTime(s.expiresAt)}</>}
-            {s.lastPriceCheck != null && <> · последняя цена {fmt(s.lastPriceCheck)} ({fmtTime(s.lastPriceCheckAt)})</>}
+            {s.lastPriceCheck != null && <> · последняя цена {formatPrice(s.lastPriceCheck)} ({fmtTime(s.lastPriceCheckAt)})</>}
           </div>
         </div>
       </div>

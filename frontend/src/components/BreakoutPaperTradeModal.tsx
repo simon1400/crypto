@@ -4,6 +4,7 @@ import {
   editBreakoutPaperTrade as editPaperTrade, deleteBreakoutPaperTrade as deletePaperTrade,
   closeBreakoutPaperTradeMarket as closePaperTradeMarket, closeBreakoutPaperTradeManual as closePaperTradeManual,
 } from '../api/breakoutPaper'
+import { formatPrice } from '../lib/formatters'
 
 interface Props {
   trade: PaperTrade
@@ -12,16 +13,15 @@ interface Props {
   onDelete?: (id: number) => void
 }
 
-function fmt(n: number, dec = 5): string {
-  if (n == null || isNaN(n)) return '—'
-  if (Math.abs(n) >= 1000) return n.toFixed(2)
-  return n.toFixed(dec)
-}
 function fmtUsd(n: number): string {
   return `${n >= 0 ? '+' : ''}$${Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2)}`
 }
-function dec(symbol: string): number {
-  return symbol.includes('USDT') ? 2 : 6
+// Шаг для <input type="number"> от величины цены — соответствует точности formatPrice.
+function priceStep(ref: number): number {
+  const a = Math.abs(ref)
+  if (a >= 1) return 0.01
+  if (a >= 0.01) return 0.0001
+  return 0.00001
 }
 function pct(from: number, to: number, side: 'BUY' | 'SELL'): string {
   if (!from) return ''
@@ -34,7 +34,7 @@ const STATUS_OPTIONS = ['OPEN', 'TP1_HIT', 'TP2_HIT', 'TP3_HIT', 'CLOSED', 'SL_H
 
 export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate, onDelete }: Props) {
   const [trade, setTrade] = useState<PaperTrade>(initialTrade)
-  const d = dec(trade.symbol)
+  const step = priceStep(trade.entryPrice)
   const sideText = trade.side === 'BUY' ? 'LONG' : 'SHORT'
   const sideColor = trade.side === 'BUY' ? 'text-long' : 'text-short'
   const sideEmoji = trade.side === 'BUY' ? '🟢' : '🔴'
@@ -215,7 +215,7 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <div>
                   <label className="block text-xs text-text-secondary mb-1">Цена</label>
-                  <input type="number" step={Math.pow(10, -d)} value={closePrice}
+                  <input type="number" step={step} value={closePrice}
                     onChange={(e) => setClosePrice(parseFloat(e.target.value) || 0)}
                     className="w-full bg-input border border-input rounded px-2 py-1 font-mono text-sm" />
                 </div>
@@ -249,21 +249,21 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
           {/* Geometry */}
           <div className="grid grid-cols-2 gap-3 mb-3">
             {editing ? (
-              <EditableCard label="Вход" dec={d} value={editEntry} onChange={setEditEntry} />
+              <EditableCard label="Вход" step={step} value={editEntry} onChange={setEditEntry} />
             ) : (
-              <PriceCard label="Вход" value={fmt(trade.entryPrice, d)} />
+              <PriceCard label="Вход" value={formatPrice(trade.entryPrice)} />
             )}
             {editing ? (
-              <EditableCard label="SL текущий" dec={d} tone="short" value={editSL} onChange={setEditSL} />
+              <EditableCard label="SL текущий" step={step} tone="short" value={editSL} onChange={setEditSL} />
             ) : (
-              <PriceCard label="SL" value={fmt(trade.currentStop, d)}
+              <PriceCard label="SL" value={formatPrice(trade.currentStop)}
                 sub={pct(trade.entryPrice, trade.currentStop, trade.side)} tone="short" />
             )}
           </div>
 
           {editing && (
             <div className="grid grid-cols-2 gap-3 mb-3">
-              <EditableCard label="SL initial" dec={d} tone="short" value={editInitialSL} onChange={setEditInitialSL} />
+              <EditableCard label="SL initial" step={step} tone="short" value={editInitialSL} onChange={setEditInitialSL} />
               <div className="bg-card border border-accent/40 rounded p-3">
                 <label className="block text-xs text-text-secondary mb-1">Status <span className="text-accent">✏</span></label>
                 <select value={editStatus} onChange={(e) => setEditStatus(e.target.value)}
@@ -325,7 +325,7 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
               return editing ? (
                 <div key={i} className="p-2.5 rounded border border-input bg-card flex items-center gap-3">
                   <span className="font-mono font-semibold w-12">TP{i + 1}</span>
-                  <input type="number" step={Math.pow(10, -d)} value={tp}
+                  <input type="number" step={step} value={tp}
                     onChange={(e) => {
                       const v = parseFloat(e.target.value) || 0
                       setEditTPs(prev => prev.map((p, j) => j === i ? v : p))
@@ -339,7 +339,7 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
                 }`}>
                   <div className="flex items-center gap-3">
                     <span className={`font-mono font-semibold w-12 ${isHit ? 'text-long' : ''}`}>TP{i + 1}</span>
-                    <span className="font-mono">{fmt(tp, d)}</span>
+                    <span className="font-mono">{formatPrice(tp)}</span>
                     <span className="text-xs text-text-secondary">{pct(trade.entryPrice, tp, trade.side)}</span>
                   </div>
                   <div className="text-xs text-text-secondary">
@@ -379,7 +379,7 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
                       <option value="EXPIRED">EXP</option>
                       <option value="MANUAL">MAN</option>
                     </select>
-                    <input type="number" step={Math.pow(10, -d)} value={c.price} placeholder="цена"
+                    <input type="number" step={step} value={c.price} placeholder="цена"
                       onChange={(e) => updateClose(i, { price: parseFloat(e.target.value) || 0 })}
                       className="bg-input border border-input rounded px-2 py-0.5 font-mono text-xs" />
                     <input type="number" min={0} max={100} value={c.percent} placeholder="%"
@@ -395,7 +395,7 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
                   </div>
                 ) : (
                   <div key={i} className="grid grid-cols-5 gap-2 bg-card border border-input rounded p-2 items-center">
-                    <span className="font-mono">{c.reason} @ {fmt(c.price, d)}</span>
+                    <span className="font-mono">{c.reason} @ {formatPrice(c.price)}</span>
                     <span className="text-text-secondary">{c.percent.toFixed(0)}%</span>
                     <span className={`font-mono text-sm ${c.pnlUsd > 0 ? 'text-long' : c.pnlUsd < 0 ? 'text-short' : ''}`}>
                       {fmtUsd(c.pnlUsd)}
@@ -430,14 +430,14 @@ function PriceCard({ label, value, sub, tone }: {
   )
 }
 
-function EditableCard({ label, value, onChange, dec, tone }: {
-  label: string; value: number; onChange: (v: number) => void; dec: number; tone?: 'long' | 'short';
+function EditableCard({ label, value, onChange, step, tone }: {
+  label: string; value: number; onChange: (v: number) => void; step: number; tone?: 'long' | 'short';
 }) {
   const color = tone === 'long' ? 'text-long' : tone === 'short' ? 'text-short' : 'text-text-primary'
   return (
     <div className="bg-card border border-accent/40 rounded p-3">
       <div className="text-xs text-text-secondary">{label} <span className="text-accent">✏</span></div>
-      <input type="number" step={Math.pow(10, -dec)} value={value}
+      <input type="number" step={step} value={value}
         onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
         className={`w-full bg-input border border-input rounded px-2 py-1 font-mono font-semibold ${color}`} />
     </div>
