@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import {
   type BreakoutTrade as PaperTrade, type BreakoutClose as PaperClose,
+  type BreakoutVariant,
   editBreakoutPaperTrade as editPaperTrade, deleteBreakoutPaperTrade as deletePaperTrade,
   closeBreakoutPaperTradeMarket as closePaperTradeMarket, closeBreakoutPaperTradeManual as closePaperTradeManual,
 } from '../api/breakoutPaper'
@@ -11,6 +12,8 @@ interface Props {
   onClose: () => void
   onUpdate?: (updated: PaperTrade) => void
   onDelete?: (id: number) => void
+  /** Which paper-trader variant this modal acts on. Defaults to 'A'. */
+  variant?: BreakoutVariant
 }
 
 function fmtUsd(n: number): string {
@@ -32,7 +35,7 @@ function pct(from: number, to: number, side: 'BUY' | 'SELL'): string {
 const isOpen = (status: string) => ['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(status)
 const STATUS_OPTIONS = ['OPEN', 'TP1_HIT', 'TP2_HIT', 'TP3_HIT', 'CLOSED', 'SL_HIT', 'EXPIRED']
 
-export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate, onDelete }: Props) {
+export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate, onDelete, variant = 'A' }: Props) {
   const [trade, setTrade] = useState<PaperTrade>(initialTrade)
   const step = priceStep(trade.entryPrice)
   const sideText = trade.side === 'BUY' ? 'LONG' : 'SHORT'
@@ -88,7 +91,7 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
         autoTrailingSL: editAutoTrail,
         status: editStatus !== trade.status ? editStatus : undefined,
         closes: editCloses,
-      })
+      }, variant)
       setTrade(updated); setEditing(false); onUpdate?.(updated)
     } catch (e: any) { setError(e.message) }
     finally { setBusy(false) }
@@ -98,7 +101,7 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
     if (!confirm(`Удалить демо-сделку #${trade.id} (${trade.symbol} ${sideText})? Действие необратимо.`)) return
     setBusy(true); setError(null)
     try {
-      await deletePaperTrade(trade.id)
+      await deletePaperTrade(trade.id, variant)
       onDelete?.(trade.id)
       onClose()
     } catch (e: any) { setError(e.message); setBusy(false) }
@@ -108,7 +111,7 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
     if (!confirm('Закрыть оставшуюся часть демо-сделки по текущей рыночной цене?')) return
     setBusy(true); setError(null)
     try {
-      const updated = await closePaperTradeMarket(trade.id)
+      const updated = await closePaperTradeMarket(trade.id, variant)
       setTrade(updated); onUpdate?.(updated)
     } catch (e: any) { setError(e.message) }
     finally { setBusy(false) }
@@ -117,7 +120,7 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
     if (closePrice <= 0) { setError('Укажи цену'); return }
     setBusy(true); setError(null)
     try {
-      const updated = await closePaperTradeManual(trade.id, closePrice, closePercent)
+      const updated = await closePaperTradeManual(trade.id, closePrice, closePercent, variant)
       setTrade(updated); setShowCloseManual(false); onUpdate?.(updated)
     } catch (e: any) { setError(e.message) }
     finally { setBusy(false) }

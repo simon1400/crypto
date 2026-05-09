@@ -1,5 +1,17 @@
 import { BASE, getHeaders } from './base'
 
+// === Variant routing ===
+// All paper-trader endpoints exist for both variants A (legacy prod) and B (alt
+// sizing experiment). Pass variant to API helpers to hit the right URL prefix.
+//   A → /api/breakout-paper/*
+//   B → /api/breakout-paper-b/*
+// Default is A for backwards compatibility with existing call sites.
+export type BreakoutVariant = 'A' | 'B'
+
+function basePath(variant: BreakoutVariant = 'A'): string {
+  return variant === 'B' ? '/api/breakout-paper-b' : '/api/breakout-paper'
+}
+
 export interface BreakoutPaperConfig {
   id: number
   enabled: boolean
@@ -8,6 +20,10 @@ export interface BreakoutPaperConfig {
   riskPctPerTrade: number
   feesRoundTripPct: number
   autoTrailingSL: boolean
+  // Margin guard (server-side may not always emit these on legacy DBs)
+  targetMarginPct?: number
+  marginGuardEnabled?: boolean
+  marginGuardAutoClose?: boolean
   dailyLossLimitPct: number
   weeklyLossLimitPct: number
   maxConcurrentPositions: number
@@ -100,6 +116,10 @@ export interface BreakoutSignal {
   paperStatus: string | null    // 'OPENED' | 'SKIPPED' | null
   paperReason: string | null
   paperUpdatedAt: string | null
+  // Variant-specific overlays (B): outcome computed from BreakoutPaperTradeB.
+  _tradeStatus?: string
+  _tradeRealizedR?: number
+  _tradeNetPnlUsd?: number
 }
 
 export interface BreakoutConfig {
@@ -126,53 +146,53 @@ async function handle<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export async function getBreakoutPaperConfig(): Promise<BreakoutPaperConfig> {
-  return handle(await fetch(`${BASE}/api/breakout-paper/config`, { headers: getHeaders() }))
+export async function getBreakoutPaperConfig(variant: BreakoutVariant = 'A'): Promise<BreakoutPaperConfig> {
+  return handle(await fetch(`${BASE}${basePath(variant)}/config`, { headers: getHeaders() }))
 }
-export async function updateBreakoutPaperConfig(patch: Partial<BreakoutPaperConfig>): Promise<BreakoutPaperConfig> {
-  return handle(await fetch(`${BASE}/api/breakout-paper/config`, {
+export async function updateBreakoutPaperConfig(patch: Partial<BreakoutPaperConfig>, variant: BreakoutVariant = 'A'): Promise<BreakoutPaperConfig> {
+  return handle(await fetch(`${BASE}${basePath(variant)}/config`, {
     method: 'PUT',
     headers: { ...getHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   }))
 }
-export async function resetBreakoutPaper(startingDepositUsd?: number): Promise<BreakoutPaperConfig> {
-  return handle(await fetch(`${BASE}/api/breakout-paper/reset`, {
+export async function resetBreakoutPaper(startingDepositUsd?: number, variant: BreakoutVariant = 'A'): Promise<BreakoutPaperConfig> {
+  return handle(await fetch(`${BASE}${basePath(variant)}/reset`, {
     method: 'POST',
     headers: { ...getHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ startingDepositUsd }),
   }))
 }
-export async function wipeAllBreakoutPaper(startingDepositUsd?: number): Promise<{
+export async function wipeAllBreakoutPaper(startingDepositUsd?: number, variant: BreakoutVariant = 'A'): Promise<{
   ok: true; deletedTrades: number; deletedSignals: number; config: BreakoutPaperConfig
 }> {
-  return handle(await fetch(`${BASE}/api/breakout-paper/wipe-all`, {
+  return handle(await fetch(`${BASE}${basePath(variant)}/wipe-all`, {
     method: 'POST',
     headers: { ...getHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ startingDepositUsd }),
   }))
 }
-export async function getBreakoutPaperTrades(opts: { status?: string[]; symbol?: string; limit?: number; offset?: number; orderBy?: 'openedAt' | 'closedAt' } = {}): Promise<{ data: BreakoutTrade[]; total: number }> {
+export async function getBreakoutPaperTrades(opts: { status?: string[]; symbol?: string; limit?: number; offset?: number; orderBy?: 'openedAt' | 'closedAt' } = {}, variant: BreakoutVariant = 'A'): Promise<{ data: BreakoutTrade[]; total: number }> {
   const p = new URLSearchParams()
   if (opts.status?.length) p.set('status', opts.status.join(','))
   if (opts.symbol) p.set('symbol', opts.symbol)
   if (opts.limit) p.set('limit', String(opts.limit))
   if (opts.offset) p.set('offset', String(opts.offset))
   if (opts.orderBy) p.set('orderBy', opts.orderBy)
-  return handle(await fetch(`${BASE}/api/breakout-paper/trades?${p}`, { headers: getHeaders() }))
+  return handle(await fetch(`${BASE}${basePath(variant)}/trades?${p}`, { headers: getHeaders() }))
 }
-export async function getBreakoutPaperStats(): Promise<BreakoutStats> {
-  return handle(await fetch(`${BASE}/api/breakout-paper/stats`, { headers: getHeaders() }))
+export async function getBreakoutPaperStats(variant: BreakoutVariant = 'A'): Promise<BreakoutStats> {
+  return handle(await fetch(`${BASE}${basePath(variant)}/stats`, { headers: getHeaders() }))
 }
-export async function runBreakoutPaperCycleNow(): Promise<{ opened: number; updated: number; depositDelta: number; deposit: number }> {
-  return handle(await fetch(`${BASE}/api/breakout-paper/cycle-now`, { method: 'POST', headers: getHeaders() }))
+export async function runBreakoutPaperCycleNow(variant: BreakoutVariant = 'A'): Promise<{ opened: number; updated: number; depositDelta: number; deposit: number }> {
+  return handle(await fetch(`${BASE}${basePath(variant)}/cycle-now`, { method: 'POST', headers: getHeaders() }))
 }
 export async function editBreakoutPaperTrade(id: number, patch: {
   entryPrice?: number; stopLoss?: number; currentStop?: number; initialStop?: number; tpLadder?: number[]
   feesRoundTripPct?: number | null; autoTrailingSL?: boolean | null
   status?: string; closes?: BreakoutClose[]; positionUnits?: number; positionSizeUsd?: number; riskUsd?: number
-}): Promise<BreakoutTrade> {
-  return handle(await fetch(`${BASE}/api/breakout-paper/trades/${id}`, {
+}, variant: BreakoutVariant = 'A'): Promise<BreakoutTrade> {
+  return handle(await fetch(`${BASE}${basePath(variant)}/trades/${id}`, {
     method: 'PUT',
     headers: { ...getHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
@@ -180,43 +200,47 @@ export async function editBreakoutPaperTrade(id: number, patch: {
 }
 export interface BreakoutTradeLive {
   id: number; status: string; currentPrice: number | null
-  // Полный P&L: реализованное + текущий остаток − все комиссии. Используется для "Депо с открытыми".
   unrealizedPnl: number; unrealizedPnlPct: number
-  // Только остаток (в игре сейчас). Реализованная часть отдельно в колонке "Рлз.".
   remainingUnrealizedPnl?: number; remainingUnrealizedPnlPct?: number
 }
-export async function getBreakoutPaperLivePrices(signal?: AbortSignal): Promise<BreakoutTradeLive[]> {
-  const res = await fetch(`${BASE}/api/breakout-paper/trades/live`, { headers: getHeaders(), signal })
+export async function getBreakoutPaperLivePrices(signal?: AbortSignal, variant: BreakoutVariant = 'A'): Promise<BreakoutTradeLive[]> {
+  const res = await fetch(`${BASE}${basePath(variant)}/trades/live`, { headers: getHeaders(), signal })
   if (!res.ok) return []
   return res.json()
 }
-export async function deleteBreakoutPaperTrade(id: number): Promise<{ ok: true }> {
-  return handle(await fetch(`${BASE}/api/breakout-paper/trades/${id}`, {
+export async function deleteBreakoutPaperTrade(id: number, variant: BreakoutVariant = 'A'): Promise<{ ok: true }> {
+  return handle(await fetch(`${BASE}${basePath(variant)}/trades/${id}`, {
     method: 'DELETE', headers: getHeaders(),
   }))
 }
-export async function closeBreakoutPaperTradeMarket(id: number): Promise<BreakoutTrade> {
-  return handle(await fetch(`${BASE}/api/breakout-paper/trades/${id}/close-market`, {
+export async function closeBreakoutPaperTradeMarket(id: number, variant: BreakoutVariant = 'A'): Promise<BreakoutTrade> {
+  return handle(await fetch(`${BASE}${basePath(variant)}/trades/${id}/close-market`, {
     method: 'POST', headers: getHeaders(),
   }))
 }
-export async function closeBreakoutPaperTradeManual(id: number, price: number, percent?: number): Promise<BreakoutTrade> {
-  return handle(await fetch(`${BASE}/api/breakout-paper/trades/${id}/close-manual`, {
+export async function closeBreakoutPaperTradeManual(id: number, price: number, percent?: number, variant: BreakoutVariant = 'A'): Promise<BreakoutTrade> {
+  return handle(await fetch(`${BASE}${basePath(variant)}/trades/${id}/close-manual`, {
     method: 'POST',
     headers: { ...getHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ price, percent }),
   }))
 }
 
-// === Signals (read-only API)
-export async function getBreakoutSignals(opts: { status?: string[]; symbol?: string; limit?: number; offset?: number } = {}): Promise<{ data: BreakoutSignal[]; total: number }> {
+// === Signals
+// Variant A reads /api/breakout/signals (canonical). Variant B reads
+// /api/breakout-paper-b/signals which overlays paperStatus from B's trade table.
+export async function getBreakoutSignals(opts: { status?: string[]; symbol?: string; limit?: number; offset?: number } = {}, variant: BreakoutVariant = 'A'): Promise<{ data: BreakoutSignal[]; total: number }> {
   const p = new URLSearchParams()
   if (opts.status?.length) p.set('status', opts.status.join(','))
   if (opts.symbol) p.set('symbol', opts.symbol)
   if (opts.limit) p.set('limit', String(opts.limit))
   if (opts.offset) p.set('offset', String(opts.offset))
-  return handle(await fetch(`${BASE}/api/breakout/signals?${p}`, { headers: getHeaders() }))
+  const url = variant === 'B'
+    ? `${BASE}/api/breakout-paper-b/signals?${p}`
+    : `${BASE}/api/breakout/signals?${p}`
+  return handle(await fetch(url, { headers: getHeaders() }))
 }
+
 export async function getBreakoutConfig(): Promise<BreakoutConfig> {
   return handle(await fetch(`${BASE}/api/breakout/config`, { headers: getHeaders() }))
 }
@@ -244,8 +268,12 @@ export interface ForceOpenResult {
   positionSizeUsd: number
   entryPrice: number
 }
-export async function forceOpenBreakoutSignal(id: number): Promise<ForceOpenResult> {
-  return handle(await fetch(`${BASE}/api/breakout/signals/${id}/force-open`, {
+// Force-open routes are per-variant: A uses /api/breakout/, B uses /api/breakout-paper-b/.
+export async function forceOpenBreakoutSignal(id: number, variant: BreakoutVariant = 'A'): Promise<ForceOpenResult> {
+  const url = variant === 'B'
+    ? `${BASE}/api/breakout-paper-b/signals/${id}/force-open`
+    : `${BASE}/api/breakout/signals/${id}/force-open`
+  return handle(await fetch(url, {
     method: 'POST', headers: getHeaders(),
   }))
 }

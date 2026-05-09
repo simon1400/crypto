@@ -11,6 +11,7 @@ import {
   type BreakoutTradeLive as PaperTradeLive,
   type BreakoutConfig as ScannerCfg,
   type BreakoutSignal,
+  type BreakoutVariant,
 } from '../api/breakoutPaper'
 import BreakoutPaperTradeModal from '../components/BreakoutPaperTradeModal'
 import BreakoutSignalModal from '../components/BreakoutSignalModal'
@@ -164,7 +165,12 @@ function Stat({ label, value, sub, tone = 'neutral' }: {
   )
 }
 
-export default function BreakoutPaper() {
+export interface BreakoutPaperProps {
+  /** Which paper-trader copy this view binds to. Default 'A' (legacy prod). */
+  variant?: BreakoutVariant
+}
+
+export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}) {
   const [config, setConfig] = useState<PaperConfig | null>(null)
   const [scannerCfg, setScannerCfg] = useState<ScannerCfg | null>(null)
   const [setups, setSetups] = useState<string[]>([])
@@ -185,7 +191,9 @@ export default function BreakoutPaper() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
-  const [resetAmount, setResetAmount] = useState(500)
+  // Default reset amount tracks the variant's starting deposit (A=$500, B=$320)
+  // and reflects whatever the operator has saved in BreakoutPaperConfig.
+  const [resetAmount, setResetAmount] = useState(variant === 'B' ? 320 : 500)
   const [cycleRunning, setCycleRunning] = useState(false)
   const [scanRunning, setScanRunning] = useState(false)
   const [livePrices, setLivePrices] = useState<Record<number, PaperTradeLive>>({})
@@ -212,16 +220,19 @@ export default function BreakoutPaper() {
         ? { status, limit: CLOSED_PAGE_SIZE, offset: (closedPage - 1) * CLOSED_PAGE_SIZE, orderBy: 'closedAt' as const }
         : { status, limit: 200 }
       const [c, sc, su, t, s, sigs] = await Promise.all([
-        getBreakoutPaperConfig(),
+        getBreakoutPaperConfig(variant),
         getBreakoutConfig(),
         getBreakoutSetups(),
-        isSignalsTab ? Promise.resolve({ data: [], total: 0 }) : getBreakoutPaperTrades(tradesQuery),
-        getBreakoutPaperStats(),
+        isSignalsTab ? Promise.resolve({ data: [], total: 0 }) : getBreakoutPaperTrades(tradesQuery, variant),
+        getBreakoutPaperStats(variant),
         isSignalsTab
-          ? getBreakoutSignals({ limit: SIGNALS_PAGE_SIZE, offset: (signalsPage - 1) * SIGNALS_PAGE_SIZE })
+          ? getBreakoutSignals({ limit: SIGNALS_PAGE_SIZE, offset: (signalsPage - 1) * SIGNALS_PAGE_SIZE }, variant)
           : Promise.resolve({ data: [], total: 0 }),
       ])
       setConfig(c)
+      // Initialize reset amount from server config on first load so the operator
+      // sees the canonical starting deposit (variant-specific) in the input.
+      setResetAmount(prev => (prev === (variant === 'B' ? 320 : 500) ? c.startingDepositUsd : prev))
       setScannerCfg(sc)
       setSetups(su.setups)
       setTrades(t.data)
@@ -235,7 +246,7 @@ export default function BreakoutPaper() {
         setOpenTradesAll(t.data)
       } else {
         try {
-          const openOnly = await getBreakoutPaperTrades({ status: ['OPEN', 'TP1_HIT', 'TP2_HIT'], limit: 100 })
+          const openOnly = await getBreakoutPaperTrades({ status: ['OPEN', 'TP1_HIT', 'TP2_HIT'], limit: 100 }, variant)
           setOpenTradesAll(openOnly.data)
         } catch { /* keep stale */ }
       }
@@ -244,7 +255,7 @@ export default function BreakoutPaper() {
     } finally {
       setLoading(false)
     }
-  }, [statusFilter, closedPage, signalsPage])
+  }, [statusFilter, closedPage, signalsPage, variant])
 
   useEffect(() => { loadAll() }, [loadAll])
 
@@ -255,7 +266,7 @@ export default function BreakoutPaper() {
     const tick = async () => {
       const controller = new AbortController()
       try {
-        const data = await getBreakoutPaperLivePrices(controller.signal)
+        const data = await getBreakoutPaperLivePrices(controller.signal, variant)
         if (cancelled) return
         const map: Record<number, PaperTradeLive> = {}
         for (const p of data) map[p.id] = p
@@ -265,14 +276,16 @@ export default function BreakoutPaper() {
     tick()
     const id = setInterval(tick, 3000)
     return () => { cancelled = true; clearInterval(id) }
-  }, [])
+  }, [variant])
 
   const handleTogglePaperEnabled = async () => {
     if (!config) return
-    const updated = await updateBreakoutPaperConfig({ enabled: !config.enabled })
+    const updated = await updateBreakoutPaperConfig({ enabled: !config.enabled }, variant)
     setConfig(updated)
   }
 
+  // Variant A controls the shared Scanner. Variant B doesn't (the Scanner is
+  // a single instance feeding both copies). The toggle is hidden in B's view.
   const handleToggleScannerEnabled = async () => {
     if (!scannerCfg) return
     const updated = await updateBreakoutConfig({ enabled: !scannerCfg.enabled })
@@ -282,7 +295,7 @@ export default function BreakoutPaper() {
   const handleRunCycle = async () => {
     setCycleRunning(true)
     try {
-      await runBreakoutPaperCycleNow()
+      await runBreakoutPaperCycleNow(variant)
       await loadAll()
     } finally { setCycleRunning(false) }
   }
@@ -297,14 +310,17 @@ export default function BreakoutPaper() {
 
   const handleReset = async () => {
     if (!confirm(`Сбросить депо до $${resetAmount}? Все открытые позиции пометятся EXPIRED.`)) return
-    const updated = await resetBreakoutPaper(resetAmount)
+    const updated = await resetBreakoutPaper(resetAmount, variant)
     setConfig(updated)
     await loadAll()
   }
 
   const handleWipeAll = async () => {
-    if (!confirm('УДАЛИТЬ ВСЕ сигналы и paper-сделки? Это нельзя отменить.')) return
-    const r = await wipeAllBreakoutPaper(resetAmount)
+    const note = variant === 'B'
+      ? 'УДАЛИТЬ все B-сделки и сбросить B-депо? Сигналы и A-сделки не трогаются.'
+      : 'УДАЛИТЬ ВСЕ сигналы и paper-сделки? Это нельзя отменить.'
+    if (!confirm(note)) return
+    const r = await wipeAllBreakoutPaper(resetAmount, variant)
     setConfig(r.config)
     alert(`Удалено: ${r.deletedSignals} сигналов, ${r.deletedTrades} сделок. Депо: $${r.config.currentDepositUsd}`)
     await loadAll()
@@ -375,9 +391,13 @@ export default function BreakoutPaper() {
     <div>
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Daily Breakout</h1>
+          <h1 className="text-2xl font-semibold">
+            Daily Breakout
+            {variant === 'B' && <span className="ml-2 px-2 py-0.5 rounded text-xs font-mono bg-accent/15 text-accent align-middle">B · 20 conc · 5% margin</span>}
+          </h1>
           <p className="text-sm text-text-secondary">
             Стратегия пробоя 3h-диапазона (00:00–03:00 UTC · {pragueRange}). {enabledCoins} {enabledCoins === 1 ? 'монета' : enabledCoins >= 2 && enabledCoins <= 4 ? 'монеты' : 'монет'} · виртуальная торговля + Telegram
+            {variant === 'B' && <span className="ml-1">· копия B (тот же поток сигналов, увеличенная concurrency, уменьшенная маржа)</span>}
           </p>
           <button
             type="button"
@@ -401,10 +421,14 @@ export default function BreakoutPaper() {
             className={`px-4 py-2 rounded font-medium ${config.enabled ? 'bg-long/15 text-long border border-long/30' : 'bg-card border border-input text-text-secondary'}`}>
             {config.enabled ? '● Демо вкл.' : '○ Демо выкл.'}
           </button>
-          <button onClick={handleToggleScannerEnabled}
-            className={`px-4 py-2 rounded font-medium ${scannerCfg?.enabled ? 'bg-long/15 text-long border border-long/30' : 'bg-card border border-input text-text-secondary'}`}>
-            {scannerCfg?.enabled ? '● Сканер вкл.' : '○ Сканер выкл.'}
-          </button>
+          {/* Scanner is a single instance shared across both copies; only A
+              exposes the toggle to avoid two pages competing for the same flag. */}
+          {variant === 'A' && (
+            <button onClick={handleToggleScannerEnabled}
+              className={`px-4 py-2 rounded font-medium ${scannerCfg?.enabled ? 'bg-long/15 text-long border border-long/30' : 'bg-card border border-input text-text-secondary'}`}>
+              {scannerCfg?.enabled ? '● Сканер вкл.' : '○ Сканер выкл.'}
+            </button>
+          )}
           <button onClick={() => setShowSettings(s => !s)}
             className="px-4 py-2 bg-card border border-input rounded font-medium hover:bg-input">
             ⚙ Настройки
@@ -1018,6 +1042,7 @@ export default function BreakoutPaper() {
       {selectedTrade && (
         <BreakoutPaperTradeModal
           trade={selectedTrade}
+          variant={variant}
           onClose={() => setSelectedTrade(null)}
           onUpdate={(updated) => {
             setSelectedTrade(updated)
@@ -1040,6 +1065,7 @@ export default function BreakoutPaper() {
       {selectedSignal && (
         <BreakoutSignalModal
           signal={selectedSignal}
+          variant={variant}
           onClose={() => setSelectedSignal(null)}
           onForceOpened={() => { loadAll() }}
         />
@@ -1048,6 +1074,7 @@ export default function BreakoutPaper() {
       {symbolHistory && (
         <SymbolHistoryModal
           symbol={symbolHistory}
+          variant={variant}
           onClose={() => setSymbolHistory(null)}
           onSelectTrade={(t) => {
             setSymbolHistory(null)

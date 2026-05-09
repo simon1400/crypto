@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 import Navbar from './components/Navbar'
 import Settings from './pages/Settings'
 import Calculator from './pages/Calculator'
-import BreakoutPaper from './pages/BreakoutPaper'
+import BreakoutPage from './pages/BreakoutPage'
 import Login from './pages/Login'
 import { setAuthToken } from './api/client'
 import { BalanceProvider } from './contexts/BalanceContext'
@@ -15,7 +15,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
       <main className="max-w-7xl mx-auto px-4 py-6 w-full">
         <Routes>
           <Route path="/" element={<Navigate to="/breakout" replace />} />
-          <Route path="/breakout" element={<BreakoutPaper />} />
+          <Route path="/breakout" element={<BreakoutPage />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/calculator" element={<Calculator />} />
         </Routes>

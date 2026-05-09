@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { BreakoutSignal } from '../api/breakoutPaper'
+import type { BreakoutSignal, BreakoutVariant } from '../api/breakoutPaper'
 import { forceOpenBreakoutSignal } from '../api/breakoutPaper'
 import { formatPrice } from '../lib/formatters'
 
@@ -7,6 +7,8 @@ interface Props {
   signal: BreakoutSignal
   onClose: () => void
   onForceOpened?: () => void
+  /** Which paper-trader variant the force-open targets. Defaults to 'A'. */
+  variant?: BreakoutVariant
 }
 
 function fmtVolume(n: number): string {
@@ -30,7 +32,7 @@ const STATUS_BADGE: Record<string, { bg: string; text: string }> = {
   EXPIRED: { bg: 'bg-neutral/15',  text: 'text-neutral' },
 }
 
-export default function BreakoutSignalModal({ signal: s, onClose, onForceOpened }: Props) {
+export default function BreakoutSignalModal({ signal: s, onClose, onForceOpened, variant = 'A' }: Props) {
   const sideText = s.side === 'BUY' ? 'LONG' : 'SHORT'
   const sideColor = s.side === 'BUY' ? 'text-long' : 'text-short'
   const sideEmoji = s.side === 'BUY' ? '🟢' : '🔴'
@@ -52,7 +54,7 @@ export default function BreakoutSignalModal({ signal: s, onClose, onForceOpened 
     if (!confirm(`Принудительно открыть paper trade для ${s.symbol} ${sideText} на свободную маржу?`)) return
     setForcing(true); setForceErr(null)
     try {
-      const r = await forceOpenBreakoutSignal(s.id)
+      const r = await forceOpenBreakoutSignal(s.id, variant)
       setForceOk(`Открыто #${r.tradeId} · margin $${r.marginUsd.toFixed(2)} · lev ${r.leverage.toFixed(1)}x`)
       onForceOpened?.()
     } catch (e: any) {

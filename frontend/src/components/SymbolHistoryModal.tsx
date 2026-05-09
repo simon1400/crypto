@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   getBreakoutPaperTrades,
   type BreakoutTrade as PaperTrade,
+  type BreakoutVariant,
 } from '../api/breakoutPaper'
 import { formatDate, fmt2, fmt2Signed, fmtPrice, pnlColor } from '../lib/formatters'
 
@@ -9,6 +10,8 @@ interface Props {
   symbol: string
   onClose: () => void
   onSelectTrade?: (trade: PaperTrade) => void
+  /** Which paper-trader variant the history is read from. Defaults to 'A'. */
+  variant?: BreakoutVariant
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -31,7 +34,7 @@ function statusBadgeClasses(status: string, pnl: number): string {
   return 'bg-neutral/15 text-neutral'
 }
 
-export default function SymbolHistoryModal({ symbol, onClose, onSelectTrade }: Props) {
+export default function SymbolHistoryModal({ symbol, onClose, onSelectTrade, variant = 'A' }: Props) {
   const [trades, setTrades] = useState<PaperTrade[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -40,12 +43,12 @@ export default function SymbolHistoryModal({ symbol, onClose, onSelectTrade }: P
     let cancelled = false
     setLoading(true)
     setError(null)
-    getBreakoutPaperTrades({ symbol, limit: 500, orderBy: 'closedAt' })
+    getBreakoutPaperTrades({ symbol, limit: 500, orderBy: 'closedAt' }, variant)
       .then(r => { if (!cancelled) setTrades(r.data) })
       .catch(e => { if (!cancelled) setError(e?.message ?? 'Failed to load') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [symbol])
+  }, [symbol, variant])
 
   const total = trades.length
   const wins = trades.filter(t => t.netPnlUsd > 0).length

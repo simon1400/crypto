@@ -241,15 +241,24 @@ async function runOnce(): Promise<void> {
   })
   if (total > 0) {
     console.log(`[BreakoutScanner] tick fired ${total} signals across ${enabledSymbols.length} symbols`)
-    // Trigger paper cycle immediately so the trade opens on the same breakout candle
-    // (and the user sees it in the UI right after the Telegram alert).
+    // Trigger paper cycle immediately for both variants so the trade opens on the same
+    // breakout candle (and the user sees it in the UI right after the Telegram alert).
+    // Each variant catches its own errors so a failure in one doesn't block the other.
     try {
-      const r = await runBreakoutPaperCycle()
+      const r = await runBreakoutPaperCycle('A')
       if (r.opened > 0) {
-        console.log(`[BreakoutScanner] inline paper open: opened=${r.opened} delta=${r.depositDelta.toFixed(2)} depo=$${r.deposit.toFixed(2)}`)
+        console.log(`[BreakoutScanner] inline paper-A open: opened=${r.opened} delta=${r.depositDelta.toFixed(2)} depo=$${r.deposit.toFixed(2)}`)
       }
     } catch (e: any) {
-      console.warn('[BreakoutScanner] inline paper cycle failed:', e?.message ?? e)
+      console.warn('[BreakoutScanner] inline paper-A cycle failed:', e?.message ?? e)
+    }
+    try {
+      const r = await runBreakoutPaperCycle('B')
+      if (r.opened > 0) {
+        console.log(`[BreakoutScanner] inline paper-B open: opened=${r.opened} delta=${r.depositDelta.toFixed(2)} depo=$${r.deposit.toFixed(2)}`)
+      }
+    } catch (e: any) {
+      console.warn('[BreakoutScanner] inline paper-B cycle failed:', e?.message ?? e)
     }
   }
 }

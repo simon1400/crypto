@@ -9,6 +9,7 @@ import { prisma } from './db/prisma'
 import klinesRouter from './routes/klines'
 import breakoutRouter from './routes/breakout'
 import breakoutPaperRouter from './routes/breakoutPaper'
+import breakoutPaperBRouter from './routes/breakoutPaperB'
 import { startBreakoutLiveScanner, stopBreakoutLiveScanner } from './services/dailyBreakoutLiveScanner'
 import { startBreakoutPaperTrader, stopBreakoutPaperTrader } from './services/dailyBreakoutPaperTrader'
 
@@ -35,13 +36,15 @@ app.use('/api/settings', settingsRouter)
 app.use('/api/klines', klinesRouter)
 app.use('/api/breakout', breakoutRouter)
 app.use('/api/breakout-paper', breakoutPaperRouter)
+app.use('/api/breakout-paper-b', breakoutPaperBRouter)
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
 
   // === Daily Breakout strategy live scanner & tracker ===
   startBreakoutLiveScanner()
-  startBreakoutPaperTrader()
+  startBreakoutPaperTrader('A')
+  startBreakoutPaperTrader('B')
 })
 
 async function gracefulShutdown(signal: string) {
@@ -50,7 +53,8 @@ async function gracefulShutdown(signal: string) {
   server.close()
 
   stopBreakoutLiveScanner()
-  stopBreakoutPaperTrader()
+  stopBreakoutPaperTrader('A')
+  stopBreakoutPaperTrader('B')
 
   await prisma.$disconnect()
 

@@ -156,3 +156,77 @@ model BreakoutPaperTrade {
   @@index([openedAt])
   @@index([signalId])
 }
+
+// === Variant B (parallel paper-trader copy with different sizing) ===
+// Stores config and trades for a parallel B-copy of the Daily Breakout paper trader.
+// Reads the same BreakoutSignal stream as A, but opens BreakoutPaperTradeB rows with
+// its own deposit, sizing, and concurrency limits. Defaults match the backtested
+// alternative configuration (20 conc, 5% target margin, $320 starting deposit).
+
+model BreakoutPaperConfigB {
+  id                     Int       @id @default(1)
+  enabled                Boolean   @default(false)
+  startingDepositUsd     Float     @default(320)
+  currentDepositUsd      Float     @default(320)
+  riskPctPerTrade        Float     @default(2.0)
+  feesRoundTripPct       Float     @default(0.08)
+  autoTrailingSL         Boolean   @default(false)
+  // Margin guard
+  targetMarginPct        Float     @default(5)
+  marginGuardEnabled     Boolean   @default(true)
+  marginGuardAutoClose   Boolean   @default(false)
+  // Circuit breakers
+  dailyLossLimitPct      Float     @default(5)
+  weeklyLossLimitPct     Float     @default(15)
+  maxConcurrentPositions Int       @default(20)
+  maxPositionsPerSymbol  Int       @default(1)
+  // Stats
+  totalTrades            Int       @default(0)
+  totalWins              Int       @default(0)
+  totalLosses            Int       @default(0)
+  totalPnLUsd            Float     @default(0)
+  peakDepositUsd         Float     @default(320)
+  maxDrawdownPct         Float     @default(0)
+  startedAt              DateTime  @default(now())
+  resetAt                DateTime?
+  updatedAt              DateTime  @updatedAt
+  createdAt              DateTime  @default(now())
+}
+
+model BreakoutPaperTradeB {
+  id                Int       @id @default(autoincrement())
+  signalId          Int
+  symbol            String
+  side              String
+  entryPrice        Float
+  stopLoss          Float
+  initialStop       Float
+  currentStop       Float
+  tpLadder          Json
+  // Sizing
+  depositAtEntryUsd Float
+  riskUsd           Float
+  positionSizeUsd   Float
+  positionUnits     Float
+  leverage          Float?
+  marginUsd         Float?
+  // Lifecycle
+  status            String    @default("OPEN")
+  closes            Json      @default("[]")
+  realizedR         Float     @default(0)
+  realizedPnlUsd    Float     @default(0)
+  feesPaidUsd       Float     @default(0)
+  netPnlUsd         Float     @default(0)
+  feesRoundTripPct  Float?
+  autoTrailingSL    Boolean?
+  // Tracking
+  lastPriceCheck    Float?
+  lastPriceCheckAt  DateTime?
+  expiresAt         DateTime?
+  closedAt          DateTime?
+  openedAt          DateTime  @default(now())
+
+  @@index([status, symbol])
+  @@index([openedAt])
+  @@index([signalId])
+}
