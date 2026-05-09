@@ -9,3 +9,7 @@ Thumbs.db
 dev.sh
 DEPLOY.md
 backend/data/
+backups/
+*.sql
+*.dump
+.telegram-session
