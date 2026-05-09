@@ -912,25 +912,37 @@ export async function resetBreakoutPaperAccount(newStartingDeposit?: number, var
 // Independent timers per variant — both tickers run side-by-side.
 const paperIntervals: Record<BreakoutVariant, NodeJS.Timeout | null> = { A: null, B: null }
 const paperFastIntervals: Record<BreakoutVariant, NodeJS.Timeout | null> = { A: null, B: null }
+// Reentrancy guards — fastTick runs every 2s, but a single tick may take longer
+// (Bybit fetch + Telegram notify). Without a guard, overlapping ticks read the
+// same trade row before the first one's UPDATE commits, both see the same TP
+// hit and both fire notifications. Skip-if-busy: a missed 2s tick is harmless.
+const paperSlowBusy: Record<BreakoutVariant, boolean> = { A: false, B: false }
+const paperFastBusy: Record<BreakoutVariant, boolean> = { A: false, B: false }
 
 export function startBreakoutPaperTrader(variant: BreakoutVariant = 'A'): void {
   const tag = logTag(variant)
   if (paperIntervals[variant]) return
   const slowTick = async () => {
+    if (paperSlowBusy[variant]) return
+    paperSlowBusy[variant] = true
     try {
       const r = await runBreakoutPaperCycle(variant)
       if (r.opened > 0 || r.updated > 0) {
         console.log(`${tag} slow: opened=${r.opened} updated=${r.updated} delta=${r.depositDelta.toFixed(2)} depo=$${r.deposit.toFixed(2)}`)
       }
     } catch (e: any) { console.error(`${tag} slow tick error:`, e.message) }
+    finally { paperSlowBusy[variant] = false }
   }
   const fastTick = async () => {
+    if (paperFastBusy[variant]) return
+    paperFastBusy[variant] = true
     try {
       const r = await runBreakoutPaperCycleFast(variant)
       if (r.updated > 0) {
         console.log(`${tag} fast: updated=${r.updated} delta=${r.depositDelta.toFixed(2)}`)
       }
     } catch (e: any) { console.error(`${tag} fast tick error:`, e.message) }
+    finally { paperFastBusy[variant] = false }
   }
   // Stagger boot: A starts at +90s, B at +95s — avoids both Bybit-fetching the
   // same symbol cluster at the exact same instant on first tick.
