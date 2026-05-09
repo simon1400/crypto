@@ -7,8 +7,6 @@ import marketRouter from './routes/market'
 import signalsRouter from './routes/signals'
 import tradingRouter from './routes/trading'
 import { trackActiveSignals } from './services/signalTracker'
-import scannerForexRouter from './routes/scannerForex'
-import forexTradesRouter from './routes/forexTrades'
 import settingsRouter from './routes/settings'
 import { startWsListener, stopWsListener } from './trading/wsListener'
 import { startTtlChecker, stopTtlChecker } from './trading/tradingService'
@@ -43,8 +41,6 @@ app.use('/api', authMiddleware)
 
 app.use('/api/market', marketRouter)
 app.use('/api/signals', signalsRouter)
-app.use('/api/scanner-forex', scannerForexRouter)
-app.use('/api/forex-trades', forexTradesRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/api/trading', tradingRouter)
 app.use('/api/klines', klinesRouter)

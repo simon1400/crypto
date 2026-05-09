@@ -2,8 +2,6 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import Navbar from './components/Navbar'
 import Signals from './pages/Signals'
-import ScannerForex from './pages/ScannerForex'
-import TradesForex from './pages/TradesForex'
 import Settings from './pages/Settings'
 import Calculator from './pages/Calculator'
 import BreakoutPaper from './pages/BreakoutPaper'
@@ -19,8 +17,6 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
         <Routes>
           <Route path="/" element={<Signals />} />
           <Route path="/signals" element={<Signals />} />
-          <Route path="/scanner-forex" element={<ScannerForex />} />
-          <Route path="/trades-forex" element={<TradesForex />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/calculator" element={<Calculator />} />
           {/* Daily Breakout — strategy после Levels v2 (заменён 2026-05-07) */}

@@ -29,8 +29,6 @@ export default function Navbar({ onLogout }: Props) {
         <div className="hidden lg:flex items-center gap-1">
           <Link to="/signals" className={linkClass('/signals')}>Сигналы</Link>
           <Link to="/levels" className={linkClass('/levels')}>Breakout</Link>
-          <Link to="/scanner-forex" className={linkClass('/scanner-forex')}>Forex</Link>
-          <Link to="/trades-forex" className={linkClass('/trades-forex')}>FX сделки</Link>
           <Link to="/calculator" className={linkClass('/calculator')}>Калькулятор</Link>
           <Link to="/settings" className={linkClass('/settings')}>Настройки</Link>
         </div>
@@ -101,8 +99,6 @@ export default function Navbar({ onLogout }: Props) {
           <div className="flex flex-col p-3 gap-1">
             <Link to="/signals" className={linkClass('/signals')}>Сигналы</Link>
             <Link to="/levels" className={linkClass('/levels')}>Breakout</Link>
-            <Link to="/scanner-forex" className={linkClass('/scanner-forex')}>Forex</Link>
-            <Link to="/trades-forex" className={linkClass('/trades-forex')}>FX сделки</Link>
             <Link to="/calculator" className={linkClass('/calculator')}>Калькулятор</Link>
             <Link to="/settings" className={linkClass('/settings')}>Настройки</Link>
             {onLogout && (
