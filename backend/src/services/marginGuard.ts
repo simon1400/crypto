@@ -129,18 +129,34 @@ export interface GuardDecision {
   marginRequired: number
   marginAvailableBefore: number
   marginAvailableAfter: number
+  // If set, caller should open with this reduced margin (and recomputed leverage).
+  // positionSize and risk stay the same — we just bump leverage to fit available free margin.
+  // Only set when the original target margin didn't fit AND no winners could free enough,
+  // but the trade still fits at higher leverage within Bybit maxLev.
+  downsizedMargin?: number
+  downsizedLeverage?: number
 }
+
+// Minimum free margin required to consider opening with reduced size.
+// Below this, fees + slippage erode the trade's edge — better to skip.
+const MIN_FREE_MARGIN_FOR_DOWNSIZE = 10
 
 /**
  * Evaluates whether a new trade fits within deposit-as-margin budget.
- * If existing margin + new > deposit, attempt to free by closing winners:
- *   priority: TP2_HIT > TP1_HIT > OPEN with unrealizedR >= 0
- * Closing OPEN losing trades (unrealizedR < 0) is NEVER done — that just realises the loss.
+ * If existing margin + new > deposit, attempt in order:
+ *   1. Free margin by closing winners: TP2_HIT > TP1_HIT > OPEN with unrealizedR >= 0
+ *      Closing OPEN losing trades (unrealizedR < 0) is NEVER done — that just realises the loss.
+ *   2. If no winners freeable: open with downsized margin = free margin, bumping leverage.
+ *      positionSize and risk stay unchanged. Only valid when:
+ *        - free >= MIN_FREE_MARGIN_FOR_DOWNSIZE ($10)
+ *        - required leverage ≤ Bybit maxLev for the symbol
  */
 export function evaluateOpenWithGuard(
   deposit: number,
   newMarginRequired: number,
   existing: ExistingTrade[],
+  positionSizeUsd?: number,
+  symbol?: string,
 ): GuardDecision {
   const sumActive = existing.reduce((s, t) => s + activeMargin(t), 0)
   const free = deposit - sumActive
@@ -183,6 +199,24 @@ export function evaluateOpenWithGuard(
   }
 
   if (freed < deficit) {
+    // Try downsize fallback: open at free margin with higher leverage.
+    if (positionSizeUsd != null && symbol != null && free >= MIN_FREE_MARGIN_FOR_DOWNSIZE) {
+      const requiredLev = positionSizeUsd / free
+      const maxLev = getMaxLeverage(symbol)
+      if (requiredLev <= maxLev) {
+        return {
+          canOpen: true,
+          reason: `downsized margin $${free.toFixed(2)} (target was $${newMarginRequired.toFixed(2)}), lev ${requiredLev.toFixed(1)}x`,
+          toClose: [],
+          freedAfterClose: 0,
+          marginRequired: newMarginRequired,
+          marginAvailableBefore: free,
+          marginAvailableAfter: 0,
+          downsizedMargin: free,
+          downsizedLeverage: requiredLev,
+        }
+      }
+    }
     return {
       canOpen: false,
       reason: `insufficient margin (need $${deficit.toFixed(2)} more, only $${freed.toFixed(2)} freeable)`,

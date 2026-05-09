@@ -236,3 +236,16 @@ export async function scanBreakoutNow(): Promise<{ ok: true; lastScanAt: string 
 export async function trackBreakoutNow(): Promise<{ processed: number }> {
   return handle(await fetch(`${BASE}/api/breakout/track-now`, { method: 'POST', headers: getHeaders() }))
 }
+export interface ForceOpenResult {
+  ok: true
+  tradeId: number
+  marginUsd: number
+  leverage: number
+  positionSizeUsd: number
+  entryPrice: number
+}
+export async function forceOpenBreakoutSignal(id: number): Promise<ForceOpenResult> {
+  return handle(await fetch(`${BASE}/api/breakout/signals/${id}/force-open`, {
+    method: 'POST', headers: getHeaders(),
+  }))
+}

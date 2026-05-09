@@ -3,7 +3,7 @@ import { prisma } from '../db/prisma'
 import {
   runBreakoutScanCycleNow, DEFAULT_BREAKOUT_SETUPS,
 } from '../services/dailyBreakoutLiveScanner'
-import { runBreakoutPaperCycle } from '../services/dailyBreakoutPaperTrader'
+import { runBreakoutPaperCycle, forceOpenSignal } from '../services/dailyBreakoutPaperTrader'
 
 const router = Router()
 
@@ -92,6 +92,19 @@ router.post('/track-now', async (_req, res) => {
   try {
     const r = await runBreakoutPaperCycle()
     res.json({ processed: r.updated, opened: r.opened, deposit: r.deposit })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Force-open a paper trade for a signal that auto-flow skipped (margin/concurrent/etc).
+// Bypasses guards. Sizes against current free margin if target doesn't fit.
+router.post('/signals/:id/force-open', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const r = await forceOpenSignal(id)
+    if (!r.ok) return res.status(400).json({ error: r.reason })
+    res.json(r)
   } catch (e: any) {
     res.status(500).json({ error: e.message })
   }

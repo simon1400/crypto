@@ -1,8 +1,11 @@
+import { useState } from 'react'
 import type { BreakoutSignal } from '../api/breakoutPaper'
+import { forceOpenBreakoutSignal } from '../api/breakoutPaper'
 
 interface Props {
   signal: BreakoutSignal
   onClose: () => void
+  onForceOpened?: () => void
 }
 
 function fmt(n: number, dec = 6): string {
@@ -27,7 +30,7 @@ const STATUS_BADGE: Record<string, { bg: string; text: string }> = {
   EXPIRED: { bg: 'bg-neutral/15',  text: 'text-neutral' },
 }
 
-export default function BreakoutSignalModal({ signal: s, onClose }: Props) {
+export default function BreakoutSignalModal({ signal: s, onClose, onForceOpened }: Props) {
   const sideText = s.side === 'BUY' ? 'LONG' : 'SHORT'
   const sideColor = s.side === 'BUY' ? 'text-long' : 'text-short'
   const sideEmoji = s.side === 'BUY' ? '🟢' : '🔴'
@@ -40,6 +43,24 @@ export default function BreakoutSignalModal({ signal: s, onClose }: Props) {
     : s.paperStatus === 'SKIPPED'
     ? { bg: 'bg-short/10', text: 'text-short', label: '✕ Пропущено' }
     : { bg: 'bg-input',    text: 'text-text-secondary', label: '— ожидает' }
+
+  const [forcing, setForcing] = useState(false)
+  const [forceErr, setForceErr] = useState<string | null>(null)
+  const [forceOk, setForceOk] = useState<string | null>(null)
+  const canForceOpen = s.paperStatus === 'SKIPPED' && !forceOk
+  async function handleForceOpen() {
+    if (!confirm(`Принудительно открыть paper trade для ${s.symbol} ${sideText} на свободную маржу?`)) return
+    setForcing(true); setForceErr(null)
+    try {
+      const r = await forceOpenBreakoutSignal(s.id)
+      setForceOk(`Открыто #${r.tradeId} · margin $${r.marginUsd.toFixed(2)} · lev ${r.leverage.toFixed(1)}x`)
+      onForceOpened?.()
+    } catch (e: any) {
+      setForceErr(e.message ?? 'force-open failed')
+    } finally {
+      setForcing(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -82,6 +103,19 @@ export default function BreakoutSignalModal({ signal: s, onClose }: Props) {
             {s.paperUpdatedAt && (
               <div className="text-[11px] text-text-secondary mt-1">обработано {fmtTime(s.paperUpdatedAt)}</div>
             )}
+            {canForceOpen && (
+              <div className="mt-3">
+                <button
+                  onClick={handleForceOpen}
+                  disabled={forcing}
+                  className="px-3 py-1.5 text-sm rounded bg-accent/15 border border-accent/40 text-accent hover:bg-accent/25 disabled:opacity-50"
+                >
+                  {forcing ? 'Открываю…' : '⚡ Открыть на свободную маржу'}
+                </button>
+                {forceErr && <div className="text-xs text-short mt-2">{forceErr}</div>}
+              </div>
+            )}
+            {forceOk && <div className="text-xs text-long mt-2">{forceOk}</div>}
           </div>
 
           {/* Range + entry */}

@@ -483,6 +483,7 @@ export default function BreakoutPaper() {
                   <th className="text-left px-3 py-2">Дата</th>
                   <th className="text-left px-3 py-2">UTC date</th>
                   <th className="text-left px-3 py-2">Монета</th>
+                  <th className="text-left px-3 py-2" title="Историческая статистика по монете в paper trading: количество сделок · сумма P&L · winrate">История</th>
                   <th className="text-center px-3 py-2">Сторона</th>
                   <th className="text-right px-3 py-2">Вход</th>
                   <th className="text-right px-3 py-2">SL</th>
@@ -493,9 +494,9 @@ export default function BreakoutPaper() {
                 </tr>
               </thead>
               <tbody>
-                {loading && <tr><td colSpan={10} className="text-center py-12 text-text-secondary">Загрузка...</td></tr>}
+                {loading && <tr><td colSpan={11} className="text-center py-12 text-text-secondary">Загрузка...</td></tr>}
                 {!loading && signals.length === 0 && (
-                  <tr><td colSpan={10} className="text-center py-12 text-text-secondary">
+                  <tr><td colSpan={11} className="text-center py-12 text-text-secondary">
                     Сигналов пока нет.
                   </td></tr>
                 )}
@@ -506,6 +507,11 @@ export default function BreakoutPaper() {
                     : s.paperStatus === 'SKIPPED' ? 'text-short' : 'text-text-secondary'
                   const paperLabel = s.paperStatus === 'OPENED' ? '✓ Открыт'
                     : s.paperStatus === 'SKIPPED' ? '✕ Skip' : '—'
+                  const hist = stats?.bySymbol?.[s.symbol]
+                  const histWr = hist && hist.trades > 0 ? Math.round((hist.wins / hist.trades) * 100) : null
+                  const histPnlCls = !hist ? 'text-text-secondary'
+                    : hist.pnl > 0 ? 'text-long'
+                    : hist.pnl < 0 ? 'text-short' : 'text-text-secondary'
                   return (
                     <tr
                       key={s.id}
@@ -515,6 +521,11 @@ export default function BreakoutPaper() {
                       <td className="px-3 py-2 text-text-secondary whitespace-nowrap">{formatDate(s.createdAt)}</td>
                       <td className="px-3 py-2 text-text-secondary font-mono">{s.rangeDate}</td>
                       <td className={`px-3 py-2 font-mono font-medium ${sideColorCls}`}>{s.symbol.replace('USDT', '')}</td>
+                      <td className={`px-3 py-2 font-mono text-[11px] whitespace-nowrap ${histPnlCls}`}>
+                        {hist
+                          ? <>{hist.trades}tr · {hist.pnl >= 0 ? '+' : ''}{hist.pnl.toFixed(2)}$ · WR {histWr}%</>
+                          : <span className="text-text-secondary">—</span>}
+                      </td>
                       <td className={`px-3 py-2 text-center font-mono ${sideColorCls}`}>{s.side === 'BUY' ? 'LONG' : 'SHORT'}</td>
                       <td className="px-3 py-2 text-right font-mono">${fmtPrice(s.entryPrice)}</td>
                       <td className="px-3 py-2 text-right font-mono text-short">${fmtPrice(s.initialStop)}</td>
@@ -816,6 +827,7 @@ export default function BreakoutPaper() {
         <BreakoutSignalModal
           signal={selectedSignal}
           onClose={() => setSelectedSignal(null)}
+          onForceOpened={() => { loadAll() }}
         />
       )}
     </div>

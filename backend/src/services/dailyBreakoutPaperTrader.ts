@@ -183,20 +183,68 @@ export async function syncSignalStatus(
 
 async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; depositDelta: number }> {
   const since = new Date(Date.now() - 24 * 60 * 60_000)
-  const signals = await prisma.breakoutSignal.findMany({
+  const rawSignals = await prisma.breakoutSignal.findMany({
     where: {
       createdAt: { gte: since },
       status: { in: ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT'] },
     },
     orderBy: { createdAt: 'asc' },
   })
-  if (signals.length === 0) return { opened: 0, depositDelta: 0 }
+  if (rawSignals.length === 0) return { opened: 0, depositDelta: 0 }
 
   const existingTrades = await prisma.breakoutPaperTrade.findMany({
-    where: { signalId: { in: signals.map(s => s.id) } },
+    where: { signalId: { in: rawSignals.map(s => s.id) } },
     select: { signalId: true },
   })
   const existingIds = new Set(existingTrades.map(t => t.signalId))
+
+  // Priority order (Variant B′): when slots/margin are scarce, decide which
+  // un-opened signal to try first.
+  //   Group 1 (no/low history): symbols with < 3 terminal paper trades.
+  //                              FCFS by createdAt — gives new symbols a chance
+  //                              to accumulate sample without WR-noise bias.
+  //   Group 2 (proven history): symbols with ≥ 3 terminal trades. Sorted by
+  //                              cumulative netPnlUsd desc — best earners first.
+  // Already-opened signals (existingIds) keep their natural FCFS order — the
+  // rating only matters when we're choosing among truly new candidates.
+  const HISTORY_MIN_TRADES = 3
+  const TERMINAL = ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT']
+  const symbols = [...new Set(rawSignals.map(s => s.symbol))]
+  const historyAgg = await prisma.breakoutPaperTrade.groupBy({
+    by: ['symbol'],
+    where: { symbol: { in: symbols }, status: { in: TERMINAL } },
+    _count: { id: true },
+    _sum: { netPnlUsd: true },
+  })
+  const histBySymbol = new Map(historyAgg.map(h => [h.symbol, {
+    trades: h._count.id,
+    pnl: h._sum.netPnlUsd ?? 0,
+  }]))
+
+  const signals = [...rawSignals].sort((a, b) => {
+    // Already-opened signals: keep them at the front in FCFS order so we don't
+    // re-shuffle in-flight work. (They get short-circuited by `continue` below
+    // anyway, but ordering still matters for the iterator.)
+    const aOpened = existingIds.has(a.id) ? 0 : 1
+    const bOpened = existingIds.has(b.id) ? 0 : 1
+    if (aOpened !== bOpened) return aOpened - bOpened
+
+    const ha = histBySymbol.get(a.symbol)
+    const hb = histBySymbol.get(b.symbol)
+    const aGroup = !ha || ha.trades < HISTORY_MIN_TRADES ? 0 : 1   // 0 = group 1 (no/low history) goes first
+    const bGroup = !hb || hb.trades < HISTORY_MIN_TRADES ? 0 : 1
+    if (aGroup !== bGroup) return aGroup - bGroup
+
+    if (aGroup === 0) {
+      // Both in group 1: FCFS
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    }
+    // Both in group 2: sort by cumulative pnl desc (best earner first).
+    // Tie-break by FCFS so result is deterministic.
+    const pnlDiff = (hb?.pnl ?? 0) - (ha?.pnl ?? 0)
+    if (pnlDiff !== 0) return pnlDiff
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  })
 
   let opened = 0
   let depositDelta = 0
@@ -276,6 +324,19 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
         await prisma.breakoutSignal.delete({ where: { id: sig.id } })
         continue
       }
+
+      // TP1-overshoot guard: TP ladder anchored to signal's entryPrice (close of
+      // breakout candle). If live price has already reached/passed TP1 by the
+      // time we open, the trade would instantly fill TP1 — sometimes at a loss
+      // because live entry > TP1, then trailing SL→BE flushes the rest. Same
+      // rationale as the engine-level overshoot check, but applied to live fill.
+      const tp1 = (sig.tpLadder as number[])[0]
+      const overshot = sig.side === 'BUY' ? livePrice >= tp1 : livePrice <= tp1
+      if (overshot) {
+        console.log(`[BreakoutPaper] delete sig ${sig.id} ${sig.symbol} — live overshot TP1 (live ${livePrice.toFixed(6)} vs TP1 ${tp1.toFixed(6)})`)
+        await prisma.breakoutSignal.delete({ where: { id: sig.id } })
+        continue
+      }
     }
 
     const sizing = computeSizing({
@@ -291,9 +352,18 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
       continue
     }
 
+    // Final values applied to the trade record. Mutated below if margin guard
+    // returns a downsized margin (free < target, but trade still fits at higher
+    // leverage within Bybit maxLev — risk and positionSize unchanged).
+    let finalMargin = sizing.marginUsd
+    let finalLeverage = sizing.leverage
+
     if (cfg.marginGuardEnabled) {
       const existing: ExistingTrade[] = openTrades.map(buildExistingTrade)
-      const guard = evaluateOpenWithGuard(deposit, sizing.marginUsd, existing)
+      const guard = evaluateOpenWithGuard(
+        deposit, sizing.marginUsd, existing,
+        sizing.positionSizeUsd, sig.symbol,
+      )
 
       if (!guard.canOpen) {
         const r = `${guard.reason} (need $${guard.marginRequired.toFixed(2)}, free $${guard.marginAvailableBefore.toFixed(2)})`
@@ -315,6 +385,11 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
           depositDelta += delta
         }
       }
+
+      if (guard.downsizedMargin != null && guard.downsizedLeverage != null) {
+        finalMargin = guard.downsizedMargin
+        finalLeverage = guard.downsizedLeverage
+      }
     }
 
     const entryAt = new Date()
@@ -333,8 +408,8 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
         riskUsd: sizing.riskUsd,
         positionSizeUsd: sizing.positionSizeUsd,
         positionUnits: sizing.positionUnits,
-        leverage: sizing.leverage,
-        marginUsd: sizing.marginUsd,
+        leverage: finalLeverage,
+        marginUsd: finalMargin,
         feesRoundTripPct: cfg.feesRoundTripPct,
         autoTrailingSL: cfg.autoTrailingSL,
         status: 'OPEN',
@@ -343,11 +418,14 @@ async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; d
     })
     opened++
     const lvNote = sizing.cappedByMaxLeverage ? ` (capped at ${getMaxLeverage(sig.symbol)}x)` : ''
+    const dsNote = finalMargin !== sizing.marginUsd
+      ? ` [downsized $${sizing.marginUsd.toFixed(2)}→$${finalMargin.toFixed(2)}]`
+      : ''
     const entryNote = entryPrice !== sig.entryPrice
       ? ` entry ${entryPrice.toFixed(4)} (sig was ${sig.entryPrice.toFixed(4)})`
       : ` entry ${entryPrice.toFixed(4)}`
-    console.log(`[BreakoutPaper] opened sig ${sig.id} ${sig.symbol} ${sig.side}${entryNote} risk $${sizing.riskUsd.toFixed(2)} pos $${sizing.positionSizeUsd.toFixed(2)} lev ${sizing.leverage.toFixed(1)}x margin $${sizing.marginUsd.toFixed(2)}${lvNote}`)
-    await markPaperStatus(sig.id, 'OPENED', `lev ${sizing.leverage.toFixed(1)}x · margin $${sizing.marginUsd.toFixed(2)}${lvNote}`)
+    console.log(`[BreakoutPaper] opened sig ${sig.id} ${sig.symbol} ${sig.side}${entryNote} risk $${sizing.riskUsd.toFixed(2)} pos $${sizing.positionSizeUsd.toFixed(2)} lev ${finalLeverage.toFixed(1)}x margin $${finalMargin.toFixed(2)}${lvNote}${dsNote}`)
+    await markPaperStatus(sig.id, 'OPENED', `lev ${finalLeverage.toFixed(1)}x · margin $${finalMargin.toFixed(2)}${lvNote}${dsNote}`)
     // Mirror to BreakoutSignal so /api/breakout/signals reflects live state without separate tracker.
     await syncSignalStatus(sig.id, 'ACTIVE', null, null, null, null)
   }
@@ -726,6 +804,134 @@ export async function runBreakoutPaperCycleFast(): Promise<{ updated: number; de
   }
 
   return { updated: r.updated, depositDelta: r.depositDelta, opened }
+}
+
+/**
+ * Force-open a paper trade for a signal that auto-flow skipped (margin/concurrent/etc).
+ * Bypasses ALL guards except: signal exists, no existing trade for it, free margin >= $10.
+ * Uses live last-price for entry (same as auto-flow), recomputes sizing against the
+ * current free margin so leverage rises to fit available capacity (positionSize and
+ * 2% risk are preserved, capped at Bybit maxLev for the symbol).
+ */
+export async function forceOpenSignal(signalId: number): Promise<{
+  ok: boolean
+  reason?: string
+  tradeId?: number
+  marginUsd?: number
+  leverage?: number
+  positionSizeUsd?: number
+  entryPrice?: number
+}> {
+  const cfg = await getOrCreateConfig()
+  if (!cfg) return { ok: false, reason: 'paper config missing' }
+
+  const sig = await prisma.breakoutSignal.findUnique({ where: { id: signalId } })
+  if (!sig) return { ok: false, reason: 'signal not found' }
+
+  const existing = await prisma.breakoutPaperTrade.findFirst({
+    where: { signalId },
+    select: { id: true },
+  })
+  if (existing) return { ok: false, reason: `paper trade #${existing.id} already exists for this signal` }
+
+  // Live entry (same as auto-flow). Fallback to signal entry if fetch fails.
+  let entryPrice = sig.entryPrice
+  try {
+    const prices = await fetchPricesBatch([sig.symbol])
+    const live = prices[sig.symbol]
+    if (live && live > 0) entryPrice = live
+  } catch { /* fallback */ }
+
+  const sizing = computeSizing({
+    symbol: sig.symbol,
+    deposit: cfg.currentDepositUsd,
+    riskPct: cfg.riskPctPerTrade,
+    targetMarginPct: cfg.targetMarginPct,
+    entry: entryPrice,
+    sl: sig.stopLoss,
+  })
+  if (!sizing || sizing.positionUnits <= 0) {
+    return { ok: false, reason: 'sizing failed (zero position)' }
+  }
+
+  // Compute free margin from currently open trades.
+  const openTrades = await prisma.breakoutPaperTrade.findMany({
+    where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+  })
+  const sumActive = openTrades.reduce((s, t) => {
+    const closes = (t.closes as any[]) ?? []
+    const closedFrac = closes.reduce((a: number, c: any) => a + (c.percent ?? 0), 0) / 100
+    const lev = t.leverage && t.leverage > 0 ? t.leverage : 1
+    const remainingPos = t.positionSizeUsd * Math.max(0, 1 - closedFrac)
+    return s + remainingPos / Math.max(1e-9, lev)
+  }, 0)
+  const free = cfg.currentDepositUsd - sumActive
+
+  // Decide actual margin to use: target if it fits, otherwise downsize to free margin
+  // (with leverage bumped within Bybit maxLev).
+  let finalMargin = sizing.marginUsd
+  let finalLeverage = sizing.leverage
+
+  if (sizing.marginUsd > free) {
+    if (free < 10) {
+      return { ok: false, reason: `free margin $${free.toFixed(2)} below $10 minimum` }
+    }
+    const requiredLev = sizing.positionSizeUsd / free
+    const maxLev = getMaxLeverage(sig.symbol)
+    if (requiredLev > maxLev) {
+      return { ok: false, reason: `required leverage ${requiredLev.toFixed(1)}x exceeds max ${maxLev}x for ${sig.symbol}` }
+    }
+    finalMargin = free
+    finalLeverage = requiredLev
+  }
+
+  const trade = await prisma.breakoutPaperTrade.create({
+    data: {
+      signalId: sig.id,
+      symbol: sig.symbol,
+      side: sig.side,
+      entryPrice,
+      stopLoss: sig.stopLoss,
+      initialStop: sig.initialStop,
+      currentStop: sig.currentStop,
+      tpLadder: sig.tpLadder as any,
+      openedAt: new Date(),
+      depositAtEntryUsd: cfg.currentDepositUsd,
+      riskUsd: sizing.riskUsd,
+      positionSizeUsd: sizing.positionSizeUsd,
+      positionUnits: sizing.positionUnits,
+      leverage: finalLeverage,
+      marginUsd: finalMargin,
+      feesRoundTripPct: cfg.feesRoundTripPct,
+      autoTrailingSL: cfg.autoTrailingSL,
+      status: 'OPEN',
+      expiresAt: sig.expiresAt,
+    },
+  })
+
+  const dsNote = finalMargin !== sizing.marginUsd
+    ? ` [forced downsize $${sizing.marginUsd.toFixed(2)}→$${finalMargin.toFixed(2)}]`
+    : ' [forced]'
+  await prisma.breakoutSignal.update({
+    where: { id: sig.id },
+    data: {
+      paperStatus: 'OPENED',
+      paperReason: `lev ${finalLeverage.toFixed(1)}x · margin $${finalMargin.toFixed(2)}${dsNote}`,
+      paperUpdatedAt: new Date(),
+    },
+  })
+  await syncSignalStatus(sig.id, 'ACTIVE', null, null, null, null)
+
+  console.log(`[BreakoutPaper] FORCE opened sig ${sig.id} ${sig.symbol} ${sig.side} entry ${entryPrice.toFixed(4)} risk $${sizing.riskUsd.toFixed(2)} pos $${sizing.positionSizeUsd.toFixed(2)} lev ${finalLeverage.toFixed(1)}x margin $${finalMargin.toFixed(2)}${dsNote}`)
+
+  return {
+    ok: true,
+    tradeId: trade.id,
+    marginUsd: finalMargin,
+    leverage: finalLeverage,
+    positionSizeUsd: sizing.positionSizeUsd,
+    entryPrice,
+  }
 }
 
 export async function resetBreakoutPaperAccount(newStartingDeposit?: number): Promise<PaperConfig> {
