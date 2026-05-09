@@ -23,6 +23,9 @@ function fmtTime(iso: string | null): string {
 
 const STATUS_BADGE: Record<string, { bg: string; text: string }> = {
   NEW:     { bg: 'bg-accent/15',   text: 'text-accent' },
+  // OPEN comes from variant B's trade status; ACTIVE is variant A's mirrored
+  // signal status — they mean the same thing semantically (trade is live).
+  OPEN:    { bg: 'bg-accent/15',   text: 'text-accent' },
   ACTIVE:  { bg: 'bg-accent/15',   text: 'text-accent' },
   TP1_HIT: { bg: 'bg-long/10',     text: 'text-long' },
   TP2_HIT: { bg: 'bg-long/15',     text: 'text-long' },
@@ -36,7 +39,10 @@ export default function BreakoutSignalModal({ signal: s, onClose, onForceOpened,
   const sideText = s.side === 'BUY' ? 'LONG' : 'SHORT'
   const sideColor = s.side === 'BUY' ? 'text-long' : 'text-short'
   const sideEmoji = s.side === 'BUY' ? '🟢' : '🔴'
-  const sb = STATUS_BADGE[s.status] ?? { bg: 'bg-input', text: 'text-text-secondary' }
+  // For variant B prefer the B-trade's own status (the shared signal status
+  // reflects only A's view). Falls back to shared status if B has no trade.
+  const displayStatus = (variant === 'B' && s._tradeStatus) ? s._tradeStatus : s.status
+  const sb = STATUS_BADGE[displayStatus] ?? { bg: 'bg-input', text: 'text-text-secondary' }
   const splits = [50, 30, 20]
   const volRatio = s.avgVolume > 0 ? s.volumeAtBreakout / s.avgVolume : 0
 
@@ -76,7 +82,7 @@ export default function BreakoutSignalModal({ signal: s, onClose, onForceOpened,
               <span className="text-xl">{sideEmoji}</span>
               <h2 className="text-xl font-semibold">{s.symbol}</h2>
               <span className={`text-lg font-medium ${sideColor}`}>{sideText}</span>
-              <span className={`px-2 py-0.5 rounded text-xs font-medium ${sb.bg} ${sb.text}`}>{s.status}</span>
+              <span className={`px-2 py-0.5 rounded text-xs font-medium ${sb.bg} ${sb.text}`}>{displayStatus}</span>
               <span className={`px-2 py-0.5 rounded text-xs font-medium ${paperBadge.bg} ${paperBadge.text}`}>
                 {paperBadge.label}
               </span>

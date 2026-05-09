@@ -440,9 +440,19 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         </div>
       </div>
 
-      {/* About strategy — раскрывающееся описание + бэктест */}
+      {/* About strategy — раскрывающееся описание + бэктест.
+          Variant-specific copy: A is the legacy prod config (10 conc, 10% margin,
+          $500 depo); B is the alt experiment (20 conc, 5% margin, $320 depo).
+          Strategy logic itself is identical — only sizing/concurrency differ. */}
       {showAbout && (
         <div className="bg-card border border-input rounded-lg p-5 mb-4 text-sm text-text-secondary leading-relaxed space-y-4">
+          {variant === 'B' && (
+            <div className="bg-accent/10 border border-accent/30 rounded p-3 text-text-primary text-xs">
+              <span className="font-semibold">Копия B — экспериментальный sizing.</span> Та же стратегия и тот же поток сигналов
+              что у копии A, но отдельный депозит, увеличенная concurrency и уменьшенная маржа на сделку. Параллельный
+              live forward-test чтобы проверить backtest-результаты на реальном рынке.
+            </div>
+          )}
           <section>
             <h3 className="text-text-primary font-semibold mb-1">Идея</h3>
             <p>
@@ -472,7 +482,12 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
               <li><span className="text-text-primary">Take Profits:</span> entry ± 1×rangeSize, ±2×rangeSize, ±3×rangeSize.</li>
               <li><span className="text-text-primary">Splits:</span> 50% / 30% / 20% — закрытие по TP1 / TP2 / TP3.</li>
               <li><span className="text-text-primary">Trailing SL:</span> после TP1 → BE, после TP2 → TP1, после TP3 → TP2.</li>
-              <li><span className="text-text-primary">Risk:</span> 2% депо на сделку, max 10 одновременных позиций.</li>
+              <li>
+                <span className="text-text-primary">Risk:</span> 2% депо на сделку,
+                {variant === 'B'
+                  ? ' max 20 одновременных позиций (целевая маржа 5%).'
+                  : ' max 10 одновременных позиций (целевая маржа 10%).'}
+              </li>
             </ul>
           </section>
 
@@ -490,7 +505,10 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           </section>
 
           <section>
-            <h3 className="text-text-primary font-semibold mb-1">Результаты бэктеста (365 дней, {enabledCoins} монет)</h3>
+            <h3 className="text-text-primary font-semibold mb-1">
+              Результаты бэктеста (365 дней, {enabledCoins} монет
+              {variant === 'B' ? ', 20 conc, 5% margin' : ', 10 conc, 10% margin'})
+            </h3>
             <div className="overflow-x-auto">
               <table className="w-full text-xs font-mono border border-input">
                 <thead className="bg-input text-text-secondary">
@@ -498,90 +516,216 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                     <th className="text-left px-2 py-1">Период</th>
                     <th className="text-right px-2 py-1">Сделок</th>
                     <th className="text-right px-2 py-1">R/tr</th>
-                    <th className="text-right px-2 py-1">FinalDepo ($500)</th>
+                    <th className="text-right px-2 py-1">FinalDepo ({variant === 'B' ? '$500' : '$500'})</th>
                     <th className="text-right px-2 py-1">Drawdown</th>
                     <th className="text-right px-2 py-1">WR</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr className="border-t border-input">
-                    <td className="px-2 py-1 text-text-primary">FULL (365d)</td>
-                    <td className="text-right px-2 py-1">929</td>
-                    <td className="text-right px-2 py-1 text-long">+0.30</td>
-                    <td className="text-right px-2 py-1 text-long">$7,588 (+1418%)</td>
-                    <td className="text-right px-2 py-1">29.9%</td>
-                    <td className="text-right px-2 py-1">51%</td>
-                  </tr>
-                  <tr className="border-t border-input">
-                    <td className="px-2 py-1 text-text-primary">TRAIN (60%)</td>
-                    <td className="text-right px-2 py-1">706</td>
-                    <td className="text-right px-2 py-1 text-long">+0.23</td>
-                    <td className="text-right px-2 py-1 text-long">$3,681</td>
-                    <td className="text-right px-2 py-1">29.9%</td>
-                    <td className="text-right px-2 py-1">51%</td>
-                  </tr>
-                  <tr className="border-t border-input">
-                    <td className="px-2 py-1 text-text-primary">TEST (40% out-of-sample)</td>
-                    <td className="text-right px-2 py-1">503</td>
-                    <td className="text-right px-2 py-1 text-long">+0.32</td>
-                    <td className="text-right px-2 py-1 text-long">$4,459</td>
-                    <td className="text-right px-2 py-1">22.7%</td>
-                    <td className="text-right px-2 py-1">55%</td>
-                  </tr>
+                  {variant === 'B' ? (
+                    <>
+                      <tr className="border-t border-input">
+                        <td className="px-2 py-1 text-text-primary">FULL (365d)</td>
+                        <td className="text-right px-2 py-1">1 634</td>
+                        <td className="text-right px-2 py-1 text-long">+0.39</td>
+                        <td className="text-right px-2 py-1 text-long">$35 198 (+6940%)</td>
+                        <td className="text-right px-2 py-1 text-short">49.9%</td>
+                        <td className="text-right px-2 py-1">52%</td>
+                      </tr>
+                      <tr className="border-t border-input">
+                        <td className="px-2 py-1 text-text-primary">TRAIN (60%)</td>
+                        <td className="text-right px-2 py-1">1 308</td>
+                        <td className="text-right px-2 py-1 text-long">+0.32</td>
+                        <td className="text-right px-2 py-1 text-long">$16 095</td>
+                        <td className="text-right px-2 py-1 text-short">49.9%</td>
+                        <td className="text-right px-2 py-1">52%</td>
+                      </tr>
+                      <tr className="border-t border-input">
+                        <td className="px-2 py-1 text-text-primary">TEST (40% out-of-sample)</td>
+                        <td className="text-right px-2 py-1">756</td>
+                        <td className="text-right px-2 py-1 text-long">+0.49</td>
+                        <td className="text-right px-2 py-1 text-long">$14 278</td>
+                        <td className="text-right px-2 py-1">25.5%</td>
+                        <td className="text-right px-2 py-1">55%</td>
+                      </tr>
+                    </>
+                  ) : (
+                    <>
+                      <tr className="border-t border-input">
+                        <td className="px-2 py-1 text-text-primary">FULL (365d)</td>
+                        <td className="text-right px-2 py-1">929</td>
+                        <td className="text-right px-2 py-1 text-long">+0.30</td>
+                        <td className="text-right px-2 py-1 text-long">$7,588 (+1418%)</td>
+                        <td className="text-right px-2 py-1">29.9%</td>
+                        <td className="text-right px-2 py-1">51%</td>
+                      </tr>
+                      <tr className="border-t border-input">
+                        <td className="px-2 py-1 text-text-primary">TRAIN (60%)</td>
+                        <td className="text-right px-2 py-1">706</td>
+                        <td className="text-right px-2 py-1 text-long">+0.23</td>
+                        <td className="text-right px-2 py-1 text-long">$3,681</td>
+                        <td className="text-right px-2 py-1">29.9%</td>
+                        <td className="text-right px-2 py-1">51%</td>
+                      </tr>
+                      <tr className="border-t border-input">
+                        <td className="px-2 py-1 text-text-primary">TEST (40% out-of-sample)</td>
+                        <td className="text-right px-2 py-1">503</td>
+                        <td className="text-right px-2 py-1 text-long">+0.32</td>
+                        <td className="text-right px-2 py-1 text-long">$4,459</td>
+                        <td className="text-right px-2 py-1">22.7%</td>
+                        <td className="text-right px-2 py-1">55%</td>
+                      </tr>
+                    </>
+                  )}
                 </tbody>
               </table>
             </div>
             <p className="mt-2 text-xs">
-              Прогон 09.05.2026 на обновлённом универсе из {enabledCoins} монет (выбыли HYPE, XRP, SOL, AVAX, ARB, 1000PEPE,
-              BLUR, SAND, ETC, IO, TSTBSC, STRK; добавлены USELESS, SIREN, 1000BONK). Включён BTC ADX{'>'}20 фильтр и margin guard skip-only.
+              Прогон 09.05.2026 на обновлённом универсе из {enabledCoins} монет
+              {variant === 'B'
+                ? ' (sizing: max 20 одновременных, target margin 5% депо). Числа в $500 эквиваленте — реальный B-депозит стартует с $320, абсолютные $ пропорционально меньше, R/tr и DD% не меняются.'
+                : ' (sizing: max 10 одновременных, target margin 10% депо).'}
+              {' '}Включён BTC ADX{'>'}20 фильтр и margin guard skip-only.
             </p>
             <p className="mt-1 text-xs">
-              <span className="text-text-primary">TEST {'>'} TRAIN</span> по R/tr (+0.32 vs +0.23) — стабильный out-of-sample edge,
+              <span className="text-text-primary">TEST {'>'} TRAIN</span> по R/tr
+              ({variant === 'B' ? '+0.49 vs +0.32' : '+0.32 vs +0.23'}) — стабильный out-of-sample edge,
               стратегия не переподогнана под историю.
             </p>
+            {variant === 'B' && (
+              <p className="mt-2 text-xs text-short">
+                ⚠ Цена за рост upside: drawdown до 50% против 30% у A. Минимум депо в первый месяц −21% от старта
+                (по бэктесту). Edge тонкий — slippage 0.15%+ убивает результат сильнее чем у A.
+              </p>
+            )}
           </section>
 
-          <section>
-            <h3 className="text-text-primary font-semibold mb-1">Сравнение с другими стратегиями</h3>
-            <p className="text-xs">
-              На том же годе backtest (депо $500, риск 2%, max 10 concurrent) прогонялись 5 стратегий:
-            </p>
-            <ul className="list-disc list-inside space-y-0.5 marker:text-accent text-xs mt-1">
-              <li><span className="text-long">Daily Breakout — единственная со стабильным walk-forward</span> (TRAIN +77%, TEST +57%, оба плюс).</li>
-              <li>Levels v2 — TEST -63%, отвергнута.</li>
-              <li>RSI 4h Mean Reversion — TEST -6%, отвергнута.</li>
-              <li>EMA Pullback — TEST +50%, но TRAIN -39% (overfit).</li>
-              <li>Funding Divergence — TEST -20%, отвергнута.</li>
-            </ul>
-          </section>
+          {variant === 'A' ? (
+            <section>
+              <h3 className="text-text-primary font-semibold mb-1">Сравнение с другими стратегиями</h3>
+              <p className="text-xs">
+                На том же годе backtest (депо $500, риск 2%, max 10 concurrent) прогонялись 5 стратегий:
+              </p>
+              <ul className="list-disc list-inside space-y-0.5 marker:text-accent text-xs mt-1">
+                <li><span className="text-long">Daily Breakout — единственная со стабильным walk-forward</span> (TRAIN +77%, TEST +57%, оба плюс).</li>
+                <li>Levels v2 — TEST -63%, отвергнута.</li>
+                <li>RSI 4h Mean Reversion — TEST -6%, отвергнута.</li>
+                <li>EMA Pullback — TEST +50%, но TRAIN -39% (overfit).</li>
+                <li>Funding Divergence — TEST -20%, отвергнута.</li>
+              </ul>
+            </section>
+          ) : (
+            <section>
+              <h3 className="text-text-primary font-semibold mb-1">A vs B: что меняется</h3>
+              <p className="text-xs">
+                Та же стратегия, тот же поток сигналов, тот же универс монет. Разница только в sizing — это
+                эксперимент: больше параллельных сделок размером поменьше.
+              </p>
+              <div className="overflow-x-auto mt-2">
+                <table className="w-full text-xs font-mono border border-input">
+                  <thead className="bg-input text-text-secondary">
+                    <tr>
+                      <th className="text-left px-2 py-1">Метрика (FULL 365d)</th>
+                      <th className="text-right px-2 py-1">A: 10 conc, 10%</th>
+                      <th className="text-right px-2 py-1">B: 20 conc, 5%</th>
+                      <th className="text-right px-2 py-1">Δ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-t border-input">
+                      <td className="px-2 py-1 text-text-primary">Сделок</td>
+                      <td className="text-right px-2 py-1">929</td>
+                      <td className="text-right px-2 py-1 text-long">1 634</td>
+                      <td className="text-right px-2 py-1 text-long">+76%</td>
+                    </tr>
+                    <tr className="border-t border-input">
+                      <td className="px-2 py-1 text-text-primary">R/tr</td>
+                      <td className="text-right px-2 py-1">+0.30</td>
+                      <td className="text-right px-2 py-1 text-long">+0.39</td>
+                      <td className="text-right px-2 py-1 text-long">+0.09</td>
+                    </tr>
+                    <tr className="border-t border-input">
+                      <td className="px-2 py-1 text-text-primary">FinalDepo ($500)</td>
+                      <td className="text-right px-2 py-1">$7 588</td>
+                      <td className="text-right px-2 py-1 text-long">$35 198</td>
+                      <td className="text-right px-2 py-1 text-long">×4.6</td>
+                    </tr>
+                    <tr className="border-t border-input">
+                      <td className="px-2 py-1 text-text-primary">Max Drawdown</td>
+                      <td className="text-right px-2 py-1">29.9%</td>
+                      <td className="text-right px-2 py-1 text-short">49.9%</td>
+                      <td className="text-right px-2 py-1 text-short">+20 пп</td>
+                    </tr>
+                    <tr className="border-t border-input">
+                      <td className="px-2 py-1 text-text-primary">Win Rate</td>
+                      <td className="text-right px-2 py-1">51%</td>
+                      <td className="text-right px-2 py-1">52%</td>
+                      <td className="text-right px-2 py-1">+1 пп</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-2 text-xs">
+                B обыгрывает A в 11 из 13 месяцев по абсолютному PnL. Но цена за upside — drawdown почти
+                в 2× (до 50% от пика) и минимум депо ниже стартового в первый месяц на 21% (по бэктесту).
+                Реалистичность чисел зависит от slippage — при 0.10–0.15% slip B страдает сильнее A.
+              </p>
+            </section>
+          )}
 
           <section>
             <h3 className="text-text-primary font-semibold mb-1">По месяцам</h3>
-            <p className="text-xs">
-              11 из 13 месяцев в плюс. Лучший: сентябрь 2025 (+0.47 R/tr, 85 трейдов). Убыточные: февраль 2026 (-0.04)
-              и апрель 2026 (-0.29) — рынок без чётких сессионных пробоев.
-            </p>
+            {variant === 'B' ? (
+              <p className="text-xs">
+                11 из 13 месяцев в плюс (как у A). Лучший: сентябрь 2025 (+1.18 R/tr, +$10 953 на 199 сделках —
+                один большой импульсный месяц делает огромный вклад в финальный депозит). Убыточные те же что у A:
+                февраль 2026 (-0.02) и неполный май 2026.
+              </p>
+            ) : (
+              <p className="text-xs">
+                11 из 13 месяцев в плюс. Лучший: сентябрь 2025 (+0.47 R/tr, 85 трейдов). Убыточные: февраль 2026 (-0.04)
+                и апрель 2026 (-0.29) — рынок без чётких сессионных пробоев.
+              </p>
+            )}
           </section>
 
           <section>
             <h3 className="text-text-primary font-semibold mb-1">Известные ограничения</h3>
             <ul className="list-disc list-inside space-y-0.5 marker:text-short text-xs">
               <li><span className="text-text-primary">Edge тонкий</span> — нужен большой N сделок, чтобы compound сработал. На коротком горизонте (1–2 мес) возможна просадка.</li>
-              <li><span className="text-text-primary">Slippage критичен:</span> 0.15%+ за сторону убивает edge в TEST. На реале использовать LIMIT ордера (maker fee).</li>
-              <li><span className="text-text-primary">Drawdown до 33–40%</span> при cap=10 и риске 2% (до 20% депо в риске одновременно).</li>
+              <li>
+                <span className="text-text-primary">Slippage критичен:</span>
+                {variant === 'B'
+                  ? ' B чувствительнее A — больше сделок (1 634 vs 929) каждая платит slip. При 0.10% slip finalDepo падает до $9 676 ($26 236 при 0.05%).'
+                  : ' 0.15%+ за сторону убивает edge в TEST. На реале использовать LIMIT ордера (maker fee).'}
+              </li>
+              <li>
+                <span className="text-text-primary">Drawdown</span>
+                {variant === 'B'
+                  ? ' до 50% при cap=20 и риске 2% (до 40% депо в риске одновременно). Минимум депо в первый месяц −21% от старта.'
+                  : ' до 33–40% при cap=10 и риске 2% (до 20% депо в риске одновременно).'}
+              </li>
               <li><span className="text-text-primary">TP3 редко достигается</span> — большинство выходов через TP1/TP2, split structure это компенсирует.</li>
-              <li><span className="text-text-primary">Concurrent cap = 10</span> — проверено backtest sweep [5/10/15/20/30/∞]: cap=10 даёт максимальный finalDepo на FULL/TRAIN/TEST.</li>
+              <li>
+                <span className="text-text-primary">
+                  Concurrent cap = {variant === 'B' ? '20' : '10'}
+                </span>
+                {variant === 'B'
+                  ? ' — экспериментальная конфигурация. Backtest показал лучший R/tr и finalDepo чем у cap=10 на обновлённом 23-символьном универсе, но за счёт удвоенного DD. Forward-test проверяет реалистичность чисел в живом рынке.'
+                  : ' — проверено backtest sweep [5/10/15/20/30/∞]: cap=10 даёт максимальный finalDepo на FULL/TRAIN/TEST.'}
+              </li>
             </ul>
           </section>
 
           <section>
             <h3 className="text-text-primary font-semibold mb-1">Параметры платформы</h3>
             <ul className="list-disc list-inside space-y-0.5 text-xs marker:text-accent">
-              <li>Стартовый депозит: $500</li>
+              <li>Стартовый депозит: ${variant === 'B' ? '320' : '500'}</li>
               <li>Риск на сделку: 2% от текущего депо</li>
+              <li>Целевая маржа на сделку: {variant === 'B' ? '5%' : '10%'} (через margin guard skip-only)</li>
               <li>Round-trip комиссии: 0.08% (Bybit crypto)</li>
               <li>Дневной лимит убытка: 5%, недельный: 15%</li>
-              <li>Max concurrent positions: 10, max per symbol: 1</li>
+              <li>Max concurrent positions: {variant === 'B' ? '20' : '10'}, max per symbol: 1</li>
             </ul>
           </section>
         </div>
@@ -716,6 +860,14 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                   const histPnlCls = !hist ? 'text-text-secondary'
                     : hist.pnl > 0 ? 'text-long'
                     : hist.pnl < 0 ? 'text-short' : 'text-text-secondary'
+                  // Status column: variant A uses the shared signal status (canonical).
+                  // Variant B uses its own trade's status when present (the shared status
+                  // reflects A's view, which is misleading on the B tab). If B has no
+                  // trade for this signal, show a neutral "—" instead of A's status.
+                  const showSelfTradeStatus = variant === 'B' && s._tradeStatus
+                  const statusForBadge = showSelfTradeStatus ? s._tradeStatus! : s.status
+                  const statusPnl = showSelfTradeStatus ? (s._tradeRealizedR ?? 0) : s.realizedR
+                  const showNoTradePlaceholder = variant === 'B' && !s._tradeStatus
                   return (
                     <tr
                       key={s.id}
@@ -734,7 +886,11 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                       <td className="px-3 py-2 text-right font-mono">${fmtPrice(s.entryPrice)}</td>
                       <td className="px-3 py-2 text-right font-mono text-short">${fmtPrice(s.initialStop)}</td>
                       <td className="px-3 py-2 text-right font-mono">{volRatio.toFixed(2)}×</td>
-                      <td className="px-3 py-2 text-center"><PaperStatusBadge status={s.status} pnl={s.realizedR} closes={s.closes} /></td>
+                      <td className="px-3 py-2 text-center">
+                        {showNoTradePlaceholder
+                          ? <span className="text-text-secondary text-[11px]">не открыто</span>
+                          : <PaperStatusBadge status={statusForBadge} pnl={statusPnl} closes={s.closes} />}
+                      </td>
                       <td className={`px-3 py-2 text-center font-mono ${paperColor}`}>{paperLabel}</td>
                       <td className="px-3 py-2 text-text-secondary text-[11px] max-w-[280px] truncate" title={s.paperReason ?? ''}>
                         {s.paperReason ?? '—'}
