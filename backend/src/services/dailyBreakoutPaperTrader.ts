@@ -494,7 +494,11 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
     if (status === 'CLOSED' || status === 'SL_HIT') break
   }
 
-  if (status !== 'CLOSED' && status !== 'SL_HIT' && trade.expiresAt && new Date(trade.expiresAt) < new Date()) {
+  // EOD-NO-TP1 policy: expire only if TP1 NOT yet hit. If TP1 reached, the trailing
+  // SL is already at BE (or TP-1) so the trade can either run further into TP2/TP3 or
+  // close at break-even on a reversal — no reason to force-close at 23:55 UTC.
+  // Backtest 2026-05-10 showed +0.02-0.03 R/tr improvement and lower DD across A/B.
+  if (status !== 'CLOSED' && status !== 'SL_HIT' && nextTpIdx === 0 && trade.expiresAt && new Date(trade.expiresAt) < new Date()) {
     if (remainingFrac > 1e-6) {
       const lastPrice = newCandles[newCandles.length - 1].close
       const pnlR = ((isLong ? lastPrice - entry : entry - lastPrice) / initialRisk) * remainingFrac
