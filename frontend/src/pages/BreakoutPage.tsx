@@ -29,14 +29,16 @@ export default function BreakoutPage() {
 
   return (
     <div>
-      <div className="flex items-center gap-2 mb-4 border-b border-input pb-3">
-        <TabButton active={variant === 'A'} onClick={() => setVariant('A')}>
-          A · 10 conc · 10% margin
-        </TabButton>
-        <TabButton active={variant === 'B'} onClick={() => setVariant('B')}>
-          B · 20 conc · 5% margin
-        </TabButton>
-        <span className="ml-3 text-xs text-text-secondary">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-4 border-b border-input pb-3">
+        <div className="flex items-center gap-2">
+          <TabButton active={variant === 'A'} onClick={() => setVariant('A')}>
+            A · 10 conc · 10% margin
+          </TabButton>
+          <TabButton active={variant === 'B'} onClick={() => setVariant('B')}>
+            B · 20 conc · 5% margin
+          </TabButton>
+        </div>
+        <span className="sm:ml-3 text-xs text-text-secondary">
           Обе копии работают параллельно на одних и тех же сигналах. Sizing независимый.
         </span>
       </div>
@@ -52,7 +54,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   return (
     <button
       onClick={onClick}
-      className={`px-4 py-2 rounded-t font-medium text-sm transition-colors ${
+      className={`px-3 sm:px-4 py-2 rounded-t font-medium text-xs sm:text-sm whitespace-nowrap transition-colors ${
         active
           ? 'bg-accent text-bg-primary'
           : 'bg-card border border-input text-text-secondary hover:text-text-primary hover:bg-input'

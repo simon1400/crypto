@@ -184,9 +184,6 @@ export async function getBreakoutPaperTrades(opts: { status?: string[]; symbol?:
 export async function getBreakoutPaperStats(variant: BreakoutVariant = 'A'): Promise<BreakoutStats> {
   return handle(await fetch(`${BASE}${basePath(variant)}/stats`, { headers: getHeaders() }))
 }
-export async function runBreakoutPaperCycleNow(variant: BreakoutVariant = 'A'): Promise<{ opened: number; updated: number; depositDelta: number; deposit: number }> {
-  return handle(await fetch(`${BASE}${basePath(variant)}/cycle-now`, { method: 'POST', headers: getHeaders() }))
-}
 export async function editBreakoutPaperTrade(id: number, patch: {
   entryPrice?: number; stopLoss?: number; currentStop?: number; initialStop?: number; tpLadder?: number[]
   feesRoundTripPct?: number | null; autoTrailingSL?: boolean | null

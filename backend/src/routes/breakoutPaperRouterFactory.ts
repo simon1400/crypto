@@ -15,7 +15,7 @@
 import { Router } from 'express'
 import { prisma } from '../db/prisma'
 import {
-  runBreakoutPaperCycle, resetBreakoutPaperAccount, syncSignalStatus, forceOpenSignal,
+  resetBreakoutPaperAccount, syncSignalStatus, forceOpenSignal,
 } from '../services/dailyBreakoutPaperTrader'
 import { loadHistorical } from '../scalper/historicalLoader'
 import { fetchPricesBatch } from '../services/market'
@@ -148,15 +148,6 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
         deletedSignals: signalsDeleted,
         config: cfg,
       })
-    } catch (e: any) {
-      res.status(500).json({ error: e.message })
-    }
-  })
-
-  router.post('/cycle-now', async (_req, res) => {
-    try {
-      const result = await runBreakoutPaperCycle(variant)
-      res.json(result)
     } catch (e: any) {
       res.status(500).json({ error: e.message })
     }

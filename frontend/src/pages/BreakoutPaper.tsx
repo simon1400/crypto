@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   getBreakoutPaperConfig, updateBreakoutPaperConfig, resetBreakoutPaper,
-  getBreakoutPaperTrades, getBreakoutPaperStats, runBreakoutPaperCycleNow,
+  getBreakoutPaperTrades, getBreakoutPaperStats,
   getBreakoutPaperLivePrices, wipeAllBreakoutPaper,
   getBreakoutConfig, updateBreakoutConfig, scanBreakoutNow, getBreakoutSetups,
   getBreakoutSignals,
@@ -17,6 +17,7 @@ import BreakoutPaperTradeModal from '../components/BreakoutPaperTradeModal'
 import BreakoutSignalModal from '../components/BreakoutSignalModal'
 import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
 import SymbolHistoryModal from '../components/SymbolHistoryModal'
+import EquityChart from '../components/EquityChart'
 import { formatDate, pnlColor, fmt2, fmt2Signed, formatPrice } from '../lib/formatters'
 
 function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): PositionChartPosition {
@@ -43,7 +44,7 @@ function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): Posit
   }
 }
 
-type StatusFilter = 'OPEN' | 'CLOSED' | 'ALL' | 'SIGNALS'
+type StatusFilter = 'OPEN' | 'CLOSED' | 'SIGNALS'
 
 const PAPER_STATUS_BADGE: Record<string, { bg: string; text: string; label: string }> = {
   OPEN:    { bg: 'bg-accent/15',     text: 'text-accent',     label: 'Открыта' },
@@ -194,7 +195,6 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
   // Default reset amount tracks the variant's starting deposit (A=$500, B=$320)
   // and reflects whatever the operator has saved in BreakoutPaperConfig.
   const [resetAmount, setResetAmount] = useState(variant === 'B' ? 320 : 500)
-  const [cycleRunning, setCycleRunning] = useState(false)
   const [scanRunning, setScanRunning] = useState(false)
   const [livePrices, setLivePrices] = useState<Record<number, PaperTradeLive>>({})
   const [selectedTrade, setSelectedTrade] = useState<PaperTrade | null>(null)
@@ -203,6 +203,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
   const [selectedSignal, setSelectedSignal] = useState<BreakoutSignal | null>(null)
   const [symbolHistory, setSymbolHistory] = useState<string | null>(null)
   const [showAbout, setShowAbout] = useState(false)
+  const [showBySymbol, setShowBySymbol] = useState(false)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -290,14 +291,6 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
     if (!scannerCfg) return
     const updated = await updateBreakoutConfig({ enabled: !scannerCfg.enabled })
     setScannerCfg(updated)
-  }
-
-  const handleRunCycle = async () => {
-    setCycleRunning(true)
-    try {
-      await runBreakoutPaperCycleNow(variant)
-      await loadAll()
-    } finally { setCycleRunning(false) }
   }
 
   const handleScanNow = async () => {
@@ -412,10 +405,6 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           <button onClick={handleScanNow} disabled={scanRunning}
             className="px-4 py-2 bg-accent text-bg-primary rounded font-medium hover:opacity-90 disabled:opacity-50">
             {scanRunning ? 'Сканирую...' : 'Скан сейчас'}
-          </button>
-          <button onClick={handleRunCycle} disabled={cycleRunning}
-            className="px-4 py-2 bg-card border border-input rounded font-medium hover:bg-input disabled:opacity-50">
-            {cycleRunning ? 'Обновляю...' : 'Обновить демо'}
           </button>
           <button onClick={handleTogglePaperEnabled}
             className={`px-4 py-2 rounded font-medium ${config.enabled ? 'bg-long/15 text-long border border-long/30' : 'bg-card border border-input text-text-secondary'}`}>
@@ -763,7 +752,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
               <input type="number" step="0.1" min="0.1" max="10" defaultValue={config.riskPctPerTrade}
                 onBlur={async e => {
                   const v = parseFloat(e.target.value)
-                  if (v > 0 && v <= 10) setConfig(await updateBreakoutPaperConfig({ riskPctPerTrade: v }))
+                  if (v > 0 && v <= 10) setConfig(await updateBreakoutPaperConfig({ riskPctPerTrade: v }, variant))
                 }}
                 className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
             </div>
@@ -772,7 +761,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
               <input type="number" step="0.01" min="0" defaultValue={config.feesRoundTripPct}
                 onBlur={async e => {
                   const v = parseFloat(e.target.value)
-                  if (v >= 0) setConfig(await updateBreakoutPaperConfig({ feesRoundTripPct: v }))
+                  if (v >= 0) setConfig(await updateBreakoutPaperConfig({ feesRoundTripPct: v }, variant))
                 }}
                 className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
             </div>
@@ -781,13 +770,13 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
               <input type="number" step="1" min="1" max="50" defaultValue={config.maxConcurrentPositions}
                 onBlur={async e => {
                   const v = parseInt(e.target.value, 10)
-                  if (v > 0 && v <= 50) setConfig(await updateBreakoutPaperConfig({ maxConcurrentPositions: v }))
+                  if (v > 0 && v <= 50) setConfig(await updateBreakoutPaperConfig({ maxConcurrentPositions: v }, variant))
                 }}
                 className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
             </div>
             <div className="flex items-center gap-2">
               <input type="checkbox" id="autoTrailing" checked={config.autoTrailingSL}
-                onChange={async e => setConfig(await updateBreakoutPaperConfig({ autoTrailingSL: e.target.checked }))} />
+                onChange={async e => setConfig(await updateBreakoutPaperConfig({ autoTrailingSL: e.target.checked }, variant))} />
               <label htmlFor="autoTrailing" className="text-sm">Авто-трейлинг SL (TP1→BE, TP2→TP1)</label>
             </div>
           </div>
@@ -817,7 +806,6 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       <div className="flex gap-2 mb-3 flex-wrap">
         <FilterButton active={statusFilter === 'OPEN'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('OPEN') }}>Открытые</FilterButton>
         <FilterButton active={statusFilter === 'CLOSED'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('CLOSED') }}>Закрытые</FilterButton>
-        <FilterButton active={statusFilter === 'ALL'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('ALL') }}>Все</FilterButton>
         <FilterButton active={statusFilter === 'SIGNALS'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('SIGNALS') }}>Сигналы</FilterButton>
       </div>
 
@@ -943,15 +931,16 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                 <th className="text-right px-3 py-2">Маржа</th>
                 <th className="text-right px-3 py-2">SL</th>
                 <th className="text-right px-3 py-2">TP</th>
+                {statusFilter !== 'CLOSED' && <th className="text-center px-3 py-2" title="Где цена между SL и ближайшим живым TP">Прогресс</th>}
                 {statusFilter !== 'CLOSED' && <th className="text-right px-3 py-2">Рлз.</th>}
                 <th className="text-right px-3 py-2">P&L</th>
                 <th className="text-center px-3 py-2">Статус</th>
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={12} className="text-center py-12 text-text-secondary">Загрузка...</td></tr>}
+              {loading && <tr><td colSpan={13} className="text-center py-12 text-text-secondary">Загрузка...</td></tr>}
               {!loading && trades.length === 0 && (
-                <tr><td colSpan={12} className="text-center py-12 text-text-secondary">
+                <tr><td colSpan={13} className="text-center py-12 text-text-secondary">
                   {config.enabled
                     ? 'Сделок ещё нет. Демо-счёт работает — виртуальные сделки появятся при пробое 3h-диапазона.'
                     : 'Демо-счёт выключен. Включи кнопкой ● Выкл сверху.'}
@@ -1069,6 +1058,75 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                       )}
                     </td>
                     {statusFilter !== 'CLOSED' && (
+                      <td className="px-3 py-2 align-middle">
+                        {(() => {
+                          if (!isOpen || !live?.currentPrice || tps.length === 0) {
+                            return <div className="text-center text-text-secondary text-[10px]">—</div>
+                          }
+                          const tpIdx = t.status === 'TP2_HIT' ? 2 : t.status === 'TP1_HIT' ? 1 : 0
+                          const nextTp = tps[tpIdx] ?? tps[tps.length - 1]
+                          const tpLabel = `TP${tpIdx + 1}`
+                          const sl = t.currentStop
+                          const entry = t.entryPrice
+                          const price = live.currentPrice
+                          const isLong = t.side === 'BUY'
+                          // Reference point for the "neutral" middle: entry, OR currentStop if it has
+                          // trailed past entry into profit (TP1→BE → SL=entry; TP2→TP1 → SL=TP1).
+                          // Then "0% to SL" actually means breakeven/locked profit, not a loss.
+                          const slLocksProfit = isLong ? sl >= entry : sl <= entry
+                          const anchor = slLocksProfit ? sl : entry
+                          const distToTp = Math.abs(nextTp - anchor)
+                          const distToSl = Math.abs(sl - anchor)
+                          if (distToTp <= 0 && distToSl <= 0) {
+                            return <div className="text-center text-text-secondary text-[10px]">—</div>
+                          }
+                          const favorableMove = isLong ? (price - anchor) : (anchor - price)
+                          const towardSL = favorableMove < 0 && distToSl > 0
+                          // If SL is at-or-better than entry, "below anchor" still isn't a loss —
+                          // mark it as moving toward the locked level rather than red danger.
+                          const halfRatio = favorableMove >= 0
+                            ? (distToTp > 0 ? Math.min(1, favorableMove / distToTp) : 0)
+                            : (distToSl > 0 ? Math.min(1, -favorableMove / distToSl) : 0)
+                          const markerPct = towardSL ? 50 - halfRatio * 50 : 50 + halfRatio * 50
+                          const labelPct = Math.round(halfRatio * 100)
+                          const dangerZone = towardSL && !slLocksProfit && labelPct >= 75
+                          const slLabel = slLocksProfit ? (sl === entry ? 'BE' : 'lock') : 'SL'
+                          const fillColor = towardSL
+                            ? (slLocksProfit ? '#848e9c' : '#f6465d')
+                            : '#0ecb81'
+                          const labelColorCls = towardSL
+                            ? (slLocksProfit ? 'text-text-secondary' : 'text-short')
+                            : 'text-long'
+                          return (
+                            <div className="min-w-[120px]">
+                              <div className="relative h-1.5 bg-input rounded overflow-hidden">
+                                <div className="absolute top-0 bottom-0 w-px bg-text-secondary/60" style={{ left: '50%' }} />
+                                <div
+                                  className="absolute top-0 h-full"
+                                  style={{
+                                    left: towardSL ? `${markerPct}%` : '50%',
+                                    width: `${Math.abs(markerPct - 50)}%`,
+                                    background: fillColor,
+                                    opacity: 0.85,
+                                  }}
+                                />
+                              </div>
+                              <div className="flex justify-between text-[9px] text-text-secondary mt-0.5 leading-none">
+                                <span className={slLocksProfit ? 'text-text-secondary' : 'text-short/80'}>{slLabel}</span>
+                                <span className="text-text-secondary/80">{slLocksProfit ? 'lock' : 'entry'}</span>
+                                <span className="text-long/80">{tpLabel}</span>
+                              </div>
+                              <div className={`text-center text-[10px] mt-0.5 font-mono ${labelColorCls}`}>
+                                {labelPct === 0
+                                  ? (slLocksProfit ? 'в безриске' : 'на entry')
+                                  : `${labelPct}% ${towardSL ? `к ${slLabel}${dangerZone ? ' ⚠' : ''}` : `к ${tpLabel}`}`}
+                              </div>
+                            </div>
+                          )
+                        })()}
+                      </td>
+                    )}
+                    {statusFilter !== 'CLOSED' && (
                       <td className="px-3 py-2 text-right font-mono">
                         {closedPctNum > 0 ? (
                           <span className={pnlColor(t.realizedPnlUsd - t.feesPaidUsd)}>
@@ -1139,61 +1197,116 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       {/* Per-symbol breakdown */}
       {stats && Object.keys(stats.bySymbol).length > 0 && (
         <div className="mb-6">
-          <h3 className="font-semibold mb-2">
+          <button
+            type="button"
+            onClick={() => setShowBySymbol(v => !v)}
+            className="flex items-center gap-2 font-semibold mb-2 hover:text-accent transition-colors"
+          >
+            <span className="text-text-secondary text-xs">{showBySymbol ? '▼' : '▶'}</span>
             По инструментам
-            <span className="text-text-secondary font-normal ml-2">
+            <span className="text-text-secondary font-normal">
               · {Object.keys(stats.bySymbol).length}
             </span>
-          </h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
-            {Object.entries(stats.bySymbol).sort((a, b) => b[1].pnl - a[1].pnl).map(([sym, s]) => (
-              <button
-                key={sym}
-                type="button"
-                onClick={() => setSymbolHistory(sym)}
-                className="bg-card border border-input hover:border-accent/60 hover:bg-input/50 rounded p-2 text-xs text-left transition-colors cursor-pointer"
-                title={`Открыть историю ${sym}`}
-              >
-                <div className="font-medium text-text-primary">{sym}</div>
-                <div className="text-text-secondary">{s.trades} {s.trades === 1 ? 'trade' : 'trades'}</div>
-                <div className={pnlColor(s.pnl)}>{fmt2Signed(s.pnl)}$</div>
-                <div className="text-text-secondary">
-                  {s.trades > 0 ? `WR ${((s.wins / s.trades) * 100).toFixed(0)}%` : 'WR —'}
-                </div>
-              </button>
-            ))}
-          </div>
+          </button>
+          {showBySymbol && (
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+              {Object.entries(stats.bySymbol).sort((a, b) => b[1].pnl - a[1].pnl).map(([sym, s]) => (
+                <button
+                  key={sym}
+                  type="button"
+                  onClick={() => setSymbolHistory(sym)}
+                  className="bg-card border border-input hover:border-accent/60 hover:bg-input/50 rounded p-2 text-xs text-left transition-colors cursor-pointer"
+                  title={`Открыть историю ${sym}`}
+                >
+                  <div className="font-medium text-text-primary">{sym}</div>
+                  <div className="text-text-secondary">{s.trades} {s.trades === 1 ? 'trade' : 'trades'}</div>
+                  <div className={pnlColor(s.pnl)}>{fmt2Signed(s.pnl)}$</div>
+                  <div className="text-text-secondary">
+                    {s.trades > 0 ? `WR ${((s.wins / s.trades) * 100).toFixed(0)}%` : 'WR —'}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
       {/* Equity curve */}
-      {stats && stats.equityCurve.length > 0 && (
-        <div className="mb-6">
-          <h3 className="font-semibold mb-2">Кривая капитала</h3>
-          <div className="bg-card border border-input rounded p-3 overflow-x-auto">
-            <table className="w-full text-sm font-mono">
-              <thead className="text-text-secondary text-xs">
-                <tr>
-                  <th className="text-left">Дата</th>
-                  <th className="text-right">P&L дня</th>
-                  <th className="text-right">Депозит</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stats.equityCurve.slice(-30).reverse().map(p => (
-                  <tr key={p.date}>
-                    <td className="text-text-secondary py-1">{p.date}</td>
-                    <td className={`text-right py-1 ${p.pnl > 0 ? 'text-long' : p.pnl < 0 ? 'text-short' : 'text-text-secondary'}`}>
-                      {fmt2Signed(p.pnl)}$
-                    </td>
-                    <td className="text-right py-1">${p.equity.toFixed(2)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {stats && stats.equityCurve.length > 0 && (() => {
+        const curve = stats.equityCurve
+        const startEquity = config.startingDepositUsd
+        const lastEquity = curve[curve.length - 1].equity
+        const totalPnl = lastEquity - startEquity
+        const totalPct = startEquity > 0 ? (totalPnl / startEquity) * 100 : 0
+        const peak = curve.reduce((m, p) => Math.max(m, p.equity), startEquity)
+        const trough = curve.reduce((m, p) => Math.min(m, p.equity), startEquity)
+        return (
+          <div className="mb-6">
+            <div className="flex items-baseline justify-between flex-wrap gap-2 mb-2">
+              <h3 className="font-semibold">Кривая капитала</h3>
+              <div className="text-xs text-text-secondary font-mono flex flex-wrap gap-x-4 gap-y-1">
+                <span>Старт: <span className="text-text-primary">${startEquity.toFixed(2)}</span></span>
+                <span>Сейчас: <span className="text-text-primary">${lastEquity.toFixed(2)}</span></span>
+                <span>
+                  Итого:{' '}
+                  <span className={totalPnl > 0 ? 'text-long' : totalPnl < 0 ? 'text-short' : ''}>
+                    {fmt2Signed(totalPnl)}$ ({fmt2Signed(totalPct)}%)
+                  </span>
+                </span>
+                <span>Пик: <span className="text-text-primary">${peak.toFixed(2)}</span></span>
+                <span>Мин: <span className="text-text-primary">${trough.toFixed(2)}</span></span>
+              </div>
+            </div>
+            <div className="bg-card border border-input rounded p-3 mb-3">
+              <EquityChart
+                data={curve.map(p => ({ date: p.date, equity: p.equity }))}
+                startEquity={startEquity}
+                height={260}
+              />
+              <div className="text-[10px] text-text-secondary mt-2 flex items-center gap-3">
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block w-3 h-px bg-text-secondary" style={{ borderTop: '1px dashed #848e9c' }} />
+                  стартовый депозит
+                </span>
+              </div>
+            </div>
+            <div className="bg-card border border-input rounded overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm font-mono">
+                  <thead className="bg-input/50 text-text-secondary text-xs">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-medium">Дата</th>
+                      <th className="text-right px-3 py-2 font-medium">P&L дня</th>
+                      <th className="text-right px-3 py-2 font-medium">Депозит</th>
+                      <th className="text-right px-3 py-2 font-medium">Δ от старта</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {curve.slice(-30).reverse().map((p, idx) => {
+                      const delta = p.equity - startEquity
+                      return (
+                        <tr
+                          key={p.date}
+                          className={`border-t border-input/60 hover:bg-input/40 transition-colors ${idx % 2 === 1 ? 'bg-input/10' : ''}`}
+                        >
+                          <td className="text-text-secondary px-3 py-1.5">{p.date}</td>
+                          <td className={`text-right px-3 py-1.5 ${p.pnl > 0 ? 'text-long' : p.pnl < 0 ? 'text-short' : 'text-text-secondary'}`}>
+                            {fmt2Signed(p.pnl)}$
+                          </td>
+                          <td className="text-right px-3 py-1.5 text-text-primary">${p.equity.toFixed(2)}</td>
+                          <td className={`text-right px-3 py-1.5 ${delta > 0 ? 'text-long' : delta < 0 ? 'text-short' : 'text-text-secondary'}`}>
+                            {fmt2Signed(delta)}$
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {selectedTrade && (
         <BreakoutPaperTradeModal
