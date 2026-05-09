@@ -24,6 +24,7 @@ import {
 } from '../scalper/dailyBreakoutEngine'
 import { sendNotification } from './notifier'
 import { runBreakoutPaperCycle } from './dailyBreakoutPaperTrader'
+import { getBtcAdx1h, BTC_ADX_THRESHOLD } from './btcRegime'
 
 // Default setups (32 monetах) — current 11 prod + 21 new ACCEPT кандидатов из universe backtest 2026-05-07.
 // ACCEPT criteria: TEST R/tr >= +0.20, TRAIN R/tr > 0, FULL N >= 30, TEST N >= 10.
@@ -209,6 +210,21 @@ async function runOnce(): Promise<void> {
     rangeBars: dbCfg.rangeBars,
     volumeMultiplier: dbCfg.volumeMultiplier,
     tp1Mult: 1.0, tp2Mult: 2.0, tp3Mult: 3.0,
+  }
+
+  // BTC regime filter: skip the entire tick when BTC is in sideways regime
+  // (ADX(14) on 1h ≤ threshold). Altcoin breakouts in pure BTC range have
+  // systematically worse R/tr in 365d backtest. If ADX fetch fails, we
+  // proceed without the filter (fail-open) — better to miss a guard than
+  // miss all signals.
+  const btcAdx = await getBtcAdx1h()
+  if (btcAdx != null && btcAdx <= BTC_ADX_THRESHOLD) {
+    console.log(`[BreakoutScanner] tick skipped — BTC ADX ${btcAdx.toFixed(1)} ≤ ${BTC_ADX_THRESHOLD} (sideways regime)`)
+    await prisma.breakoutConfig.update({
+      where: { id: 1 },
+      data: { lastScanAt: new Date(), lastScanResult: { _btcAdx: Math.round(btcAdx * 10) / 10, _skipped: 1 } as any },
+    })
+    return
   }
 
   const result: Record<string, number> = {}
