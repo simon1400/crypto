@@ -456,9 +456,9 @@ export default function BreakoutPaper() {
             <h3 className="text-text-primary font-semibold mb-1">Универс монет</h3>
             <p>
               {enabledCoins} монет, прошедших walk-forward отбор (TEST R/tr ≥ +0.20, TRAIN {'>'} 0,
-              достаточно сделок в обоих периодах). Базовое ядро — 11 монет (ETH, SOL, XRP, AVAX, ARB, AAVE, ENA, HYPE,
-              1000PEPE, SEI, BLUR), к ним добавлен расширенный набор (DOGE, KAS, LDO, ZEC и др.) после ужесточения
-              критериев в мае 2026.
+              достаточно сделок в обоих периодах). Список обновлён 09.05.2026 после повторного прогона по 158 закешированным
+              монетам Bybit — выбыли HYPE, XRP, SOL, AVAX, ARB, 1000PEPE, BLUR, SAND, ETC, IO, TSTBSC, STRK (провалили TEST на свежих данных),
+              добавлены USELESS, SIREN, 1000BONK.
             </p>
             <p className="mt-1 text-xs">
               <span className="text-text-primary">BTC исключён</span> — слишком тихие диапазоны, edge -0.04 R/tr.
@@ -466,7 +466,7 @@ export default function BreakoutPaper() {
           </section>
 
           <section>
-            <h3 className="text-text-primary font-semibold mb-1">Результаты бэктеста (365 дней, 32 монеты)</h3>
+            <h3 className="text-text-primary font-semibold mb-1">Результаты бэктеста (365 дней, {enabledCoins} монет)</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-xs font-mono border border-input">
                 <thead className="bg-input text-text-secondary">
@@ -482,37 +482,37 @@ export default function BreakoutPaper() {
                 <tbody>
                   <tr className="border-t border-input">
                     <td className="px-2 py-1 text-text-primary">FULL (365d)</td>
-                    <td className="text-right px-2 py-1">698</td>
-                    <td className="text-right px-2 py-1 text-long">+0.55</td>
-                    <td className="text-right px-2 py-1 text-long">$9,387 (+1777%)</td>
-                    <td className="text-right px-2 py-1">25.9%</td>
-                    <td className="text-right px-2 py-1">~50%</td>
+                    <td className="text-right px-2 py-1">929</td>
+                    <td className="text-right px-2 py-1 text-long">+0.30</td>
+                    <td className="text-right px-2 py-1 text-long">$7,588 (+1418%)</td>
+                    <td className="text-right px-2 py-1">29.9%</td>
+                    <td className="text-right px-2 py-1">51%</td>
                   </tr>
                   <tr className="border-t border-input">
                     <td className="px-2 py-1 text-text-primary">TRAIN (60%)</td>
-                    <td className="text-right px-2 py-1">~440</td>
-                    <td className="text-right px-2 py-1 text-long">+0.43</td>
-                    <td className="text-right px-2 py-1 text-long">$5,675</td>
-                    <td className="text-right px-2 py-1">~26%</td>
-                    <td className="text-right px-2 py-1">~50%</td>
+                    <td className="text-right px-2 py-1">706</td>
+                    <td className="text-right px-2 py-1 text-long">+0.23</td>
+                    <td className="text-right px-2 py-1 text-long">$3,681</td>
+                    <td className="text-right px-2 py-1">29.9%</td>
+                    <td className="text-right px-2 py-1">51%</td>
                   </tr>
                   <tr className="border-t border-input">
                     <td className="px-2 py-1 text-text-primary">TEST (40% out-of-sample)</td>
-                    <td className="text-right px-2 py-1">~258</td>
-                    <td className="text-right px-2 py-1 text-long">+0.35</td>
-                    <td className="text-right px-2 py-1 text-long">$3,925</td>
-                    <td className="text-right px-2 py-1">~25%</td>
-                    <td className="text-right px-2 py-1">51%</td>
+                    <td className="text-right px-2 py-1">503</td>
+                    <td className="text-right px-2 py-1 text-long">+0.32</td>
+                    <td className="text-right px-2 py-1 text-long">$4,459</td>
+                    <td className="text-right px-2 py-1">22.7%</td>
+                    <td className="text-right px-2 py-1">55%</td>
                   </tr>
                 </tbody>
               </table>
             </div>
             <p className="mt-2 text-xs">
-              Цифры с включённым ADX{'>'}20 фильтром (commit 2026-05-09). До фильтра было FULL +0.49 / TEST +0.34, фильтр добавил
-              +42–45% к финальному депозиту на всех трёх периодах без признаков overfitting.
+              Прогон 09.05.2026 на обновлённом универсе из {enabledCoins} монет (выбыли HYPE, XRP, SOL, AVAX, ARB, 1000PEPE,
+              BLUR, SAND, ETC, IO, TSTBSC, STRK; добавлены USELESS, SIREN, 1000BONK). Включён BTC ADX{'>'}20 фильтр и margin guard skip-only.
             </p>
             <p className="mt-1 text-xs">
-              <span className="text-text-primary">TEST лучше TRAIN</span> по R/tr — стабильный out-of-sample edge,
+              <span className="text-text-primary">TEST {'>'} TRAIN</span> по R/tr (+0.32 vs +0.23) — стабильный out-of-sample edge,
               стратегия не переподогнана под историю.
             </p>
           </section>

@@ -26,44 +26,44 @@ import { sendNotification } from './notifier'
 import { runBreakoutPaperCycle } from './dailyBreakoutPaperTrader'
 import { getBtcAdx1h, BTC_ADX_THRESHOLD } from './btcRegime'
 
-// Default setups (32 monetах) — current 11 prod + 21 new ACCEPT кандидатов из universe backtest 2026-05-07.
-// ACCEPT criteria: TEST R/tr >= +0.20, TRAIN R/tr > 0, FULL N >= 30, TEST N >= 10.
-// Hypothetical portfolio: TEST R/tr +0.39 (vs current +0.34) on 1132 trades.
+// Default setups (23 monetах) — refreshed 2026-05-09 after re-running universe backtest
+// across 158 cached symbols. ACCEPT criteria: TEST R/tr >= +0.20, TRAIN R/tr > 0,
+// FULL N >= 30, TEST N >= 10.
+//
+// Removed from prev 32 (failed TEST on fresh data):
+//   HYPE, XRP, SOL, ARB, AVAX, 1000PEPE, BLUR, SAND, ETC, IO, TSTBSC, STRK
+// Added (new ACCEPT):
+//   USELESSUSDT (TEST +0.23), SIRENUSDT (+0.23), 1000BONKUSDT (+0.21)
+//
+// Already-open trades on removed symbols continue to be tracked by the paper
+// trader until their TP/SL/expiry — this list only governs which symbols the
+// scanner generates NEW signals for.
 export const DEFAULT_BREAKOUT_SETUPS: string[] = [
-  // Current production (11) — kept even if some don't pass new strict criteria
-  'ETHUSDT',
-  'SOLUSDT',
-  'XRPUSDT',
-  'AVAXUSDT',
-  'ARBUSDT',
-  'AAVEUSDT',
-  'ENAUSDT',
-  'HYPEUSDT',
-  '1000PEPEUSDT',
-  'SEIUSDT',
-  'BLURUSDT',
-  // New ACCEPT (21) — sorted by TEST R/tr desc
-  'MUSDT',           // TEST +2.70 N=31
-  'LDOUSDT',         // TEST +1.41 N=16
-  'DYDXUSDT',        // TEST +0.76 N=65
-  'ZECUSDT',         // TEST +0.51 N=51
-  'STXUSDT',         // TEST +0.51 N=11
-  'IPUSDT',          // TEST +0.50 N=16
-  'SANDUSDT',        // TEST +0.47 N=13
-  'ORDIUSDT',        // TEST +0.42 N=27
-  'ARUSDT',          // TEST +0.41 N=12
-  'DOGEUSDT',        // TEST +0.40 N=19
-  'TRUMPUSDT',       // TEST +0.36 N=40
-  'STRKUSDT',        // TEST +0.35 N=26
-  'KASUSDT',         // TEST +0.33 N=39
-  'SHIB1000USDT',    // TEST +0.32 N=39
-  'FARTCOINUSDT',    // TEST +0.28 N=29
-  'AEROUSDT',        // TEST +0.27 N=49
-  'ETCUSDT',         // TEST +0.24 N=25
-  'IOUSDT',          // TEST +0.24 N=45
-  'POLUSDT',         // TEST +0.23 N=80
-  'TSTBSCUSDT',      // TEST +0.23 N=30
-  'VVVUSDT',         // TEST +0.21 N=70
+  // Survivors from previous prod set (passed TEST R/tr >= +0.20 on fresh data)
+  'ETHUSDT',         // TEST +0.48 N=26
+  'AAVEUSDT',        // TEST +0.55 N=24
+  'ENAUSDT',         // TEST +1.02 N=10
+  'SEIUSDT',         // TEST +0.44 N=25
+  'MUSDT',           // TEST +1.78 N=36
+  'LDOUSDT',         // TEST +1.24 N=15
+  'DYDXUSDT',        // TEST +0.73 N=71
+  'ZECUSDT',         // TEST +0.49 N=50
+  'STXUSDT',         // TEST +0.39 N=24
+  'IPUSDT',          // TEST +0.36 N=15
+  'ORDIUSDT',        // TEST +0.57 N=24
+  'ARUSDT',          // TEST +0.24 N=12
+  'DOGEUSDT',        // TEST +0.26 N=17
+  'TRUMPUSDT',       // TEST +0.29 N=39
+  'KASUSDT',         // TEST +0.38 N=39
+  'SHIB1000USDT',    // TEST +0.29 N=37
+  'FARTCOINUSDT',    // TEST +0.25 N=31
+  'AEROUSDT',        // TEST +0.33 N=48
+  'POLUSDT',         // TEST +0.21 N=85
+  'VVVUSDT',         // TEST +0.23 N=71
+  // New ACCEPT 2026-05-09
+  'USELESSUSDT',     // TEST +0.23 N=19
+  'SIRENUSDT',       // TEST +0.23 N=45
+  '1000BONKUSDT',    // TEST +0.21 N=25
 ]
 
 /** Загружает последние 36+24+1 = ~60 5m свечей чтобы хватило range + volume window + last bar */
