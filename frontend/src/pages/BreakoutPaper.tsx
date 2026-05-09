@@ -15,6 +15,7 @@ import {
 import BreakoutPaperTradeModal from '../components/BreakoutPaperTradeModal'
 import BreakoutSignalModal from '../components/BreakoutSignalModal'
 import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
+import SymbolHistoryModal from '../components/SymbolHistoryModal'
 import { formatDate, pnlColor, fmt2, fmt2Signed, formatPrice } from '../lib/formatters'
 
 function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): PositionChartPosition {
@@ -177,6 +178,10 @@ export default function BreakoutPaper() {
   // Пагинация только для вкладки "Закрытые" (открытых обычно <= 10 штук, лимит маленький)
   const CLOSED_PAGE_SIZE = 20
   const [closedPage, setClosedPage] = useState(1)
+  // Пагинация для вкладки "Сигналы" — 20 на страницу, серверная.
+  const SIGNALS_PAGE_SIZE = 20
+  const [signalsPage, setSignalsPage] = useState(1)
+  const [signalsTotal, setSignalsTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -188,6 +193,8 @@ export default function BreakoutPaper() {
   const [chartTrade, setChartTrade] = useState<PaperTrade | null>(null)
   const [signals, setSignals] = useState<BreakoutSignal[]>([])
   const [selectedSignal, setSelectedSignal] = useState<BreakoutSignal | null>(null)
+  const [symbolHistory, setSymbolHistory] = useState<string | null>(null)
+  const [showAbout, setShowAbout] = useState(false)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -210,7 +217,9 @@ export default function BreakoutPaper() {
         getBreakoutSetups(),
         isSignalsTab ? Promise.resolve({ data: [], total: 0 }) : getBreakoutPaperTrades(tradesQuery),
         getBreakoutPaperStats(),
-        isSignalsTab ? getBreakoutSignals({ limit: 200 }) : Promise.resolve({ data: [], total: 0 }),
+        isSignalsTab
+          ? getBreakoutSignals({ limit: SIGNALS_PAGE_SIZE, offset: (signalsPage - 1) * SIGNALS_PAGE_SIZE })
+          : Promise.resolve({ data: [], total: 0 }),
       ])
       setConfig(c)
       setScannerCfg(sc)
@@ -219,6 +228,7 @@ export default function BreakoutPaper() {
       setTradesTotal(t.total)
       setStats(s)
       setSignals(sigs.data)
+      setSignalsTotal(sigs.total)
       // Если активная вкладка — это OPEN, то t.data уже содержит открытые сделки
       // и отдельный запрос не нужен. Иначе делаем дополнительный fetch.
       if (statusFilter === 'OPEN') {
@@ -234,7 +244,7 @@ export default function BreakoutPaper() {
     } finally {
       setLoading(false)
     }
-  }, [statusFilter, closedPage])
+  }, [statusFilter, closedPage, signalsPage])
 
   useEffect(() => { loadAll() }, [loadAll])
 
@@ -346,14 +356,37 @@ export default function BreakoutPaper() {
   const unrealizedPnlUsd = openTradesAll.reduce((sum, t) => sum + (livePrices[t.id]?.unrealizedPnl ?? 0), 0)
   const equityWithOpen = config.currentDepositUsd + unrealizedPnlUsd
 
+  // Диапазон 00:00–03:00 UTC в пражском времени (DST-aware через Intl).
+  // Берём сегодняшнюю дату как референс — так смещение учитывает летнее/зимнее время.
+  const pragueRange = (() => {
+    const fmt = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Prague', hour: '2-digit', minute: '2-digit', hour12: false })
+    const today = new Date()
+    const start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 0, 0, 0))
+    const end = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 3, 0, 0))
+    return `${fmt.format(start)}–${fmt.format(end)} Прага`
+  })()
+  // symbolsEnabled может быть пустым массивом — тогда бэк использует DEFAULT_BREAKOUT_SETUPS,
+  // которые приходят отдельным запросом через getBreakoutSetups() в `setups`.
+  const enabledCoins = (scannerCfg?.symbolsEnabled?.length ?? 0) > 0
+    ? scannerCfg!.symbolsEnabled.length
+    : setups.length
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Daily Breakout</h1>
           <p className="text-sm text-text-secondary">
-            Стратегия пробоя 3h-диапазона (00:00–03:00 UTC). 11 монет · виртуальная торговля + Telegram
+            Стратегия пробоя 3h-диапазона (00:00–03:00 UTC · {pragueRange}). {enabledCoins} {enabledCoins === 1 ? 'монета' : enabledCoins >= 2 && enabledCoins <= 4 ? 'монеты' : 'монет'} · виртуальная торговля + Telegram
           </p>
+          <button
+            type="button"
+            onClick={() => setShowAbout(v => !v)}
+            className="mt-1 text-xs text-accent hover:text-accent/80 transition-colors flex items-center gap-1"
+          >
+            <span>{showAbout ? '▼' : '▶'}</span>
+            <span>{showAbout ? 'Скрыть описание стратегии' : 'Как работает стратегия и результаты бэктеста'}</span>
+          </button>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button onClick={handleScanNow} disabled={scanRunning}
@@ -382,6 +415,153 @@ export default function BreakoutPaper() {
           </button>
         </div>
       </div>
+
+      {/* About strategy — раскрывающееся описание + бэктест */}
+      {showAbout && (
+        <div className="bg-card border border-input rounded-lg p-5 mb-4 text-sm text-text-secondary leading-relaxed space-y-4">
+          <section>
+            <h3 className="text-text-primary font-semibold mb-1">Идея</h3>
+            <p>
+              Первые 3 часа после полуночи UTC (00:00–03:00) формируют базовый <span className="text-text-primary">диапазон дня</span>:
+              high и low этого окна — границы, от которых рынок будет отталкиваться или которые пробьёт. Стратегия
+              ловит <span className="text-text-primary">пробой границ</span> на повышенном объёме как сигнал смены настроения. Логика консервативная:
+              один сигнал на монету в сутки, expiry в 23:55 UTC, всё лишнее отсекается.
+            </p>
+          </section>
+
+          <section>
+            <h3 className="text-text-primary font-semibold mb-1">Как работает (по шагам)</h3>
+            <ol className="list-decimal list-inside space-y-1 marker:text-accent">
+              <li>В 03:00 UTC фиксируется диапазон: <span className="text-text-primary">range_high</span> = max и <span className="text-text-primary">range_low</span> = min из 36 первых 5-минутных свечей дня.</li>
+              <li>Дальше каждые 5 минут проверяется: <span className="text-long">LONG</span> если свеча пробила и закрылась выше rangeHigh, <span className="text-short">SHORT</span> — если пробила и закрылась ниже rangeLow.</li>
+              <li>Объём текущей свечи должен быть <span className="text-text-primary">≥ 2× от среднего</span> предыдущих 24 баров (volume confirmation).</li>
+              <li>Дополнительный фильтр режима: если на BTC 1h <span className="text-text-primary">ADX(14) ≤ 20</span> — рынок в боковике, тик пропускается целиком.</li>
+              <li>Один пробой на монету в сутки. Expiry — 23:55 UTC, потом сделка закрывается по рынку.</li>
+            </ol>
+          </section>
+
+          <section>
+            <h3 className="text-text-primary font-semibold mb-1">Параметры сделки</h3>
+            <ul className="list-disc list-inside space-y-1 marker:text-accent">
+              <li><span className="text-text-primary">Entry:</span> на границу range (rangeHigh для LONG, rangeLow для SHORT).</li>
+              <li><span className="text-text-primary">Stop Loss:</span> противоположная граница диапазона.</li>
+              <li><span className="text-text-primary">Take Profits:</span> entry ± 1×rangeSize, ±2×rangeSize, ±3×rangeSize.</li>
+              <li><span className="text-text-primary">Splits:</span> 50% / 30% / 20% — закрытие по TP1 / TP2 / TP3.</li>
+              <li><span className="text-text-primary">Trailing SL:</span> после TP1 → BE, после TP2 → TP1, после TP3 → TP2.</li>
+              <li><span className="text-text-primary">Risk:</span> 2% депо на сделку, max 10 одновременных позиций.</li>
+            </ul>
+          </section>
+
+          <section>
+            <h3 className="text-text-primary font-semibold mb-1">Универс монет</h3>
+            <p>
+              {enabledCoins} монет, прошедших walk-forward отбор (TEST R/tr ≥ +0.20, TRAIN {'>'} 0,
+              достаточно сделок в обоих периодах). Базовое ядро — 11 монет (ETH, SOL, XRP, AVAX, ARB, AAVE, ENA, HYPE,
+              1000PEPE, SEI, BLUR), к ним добавлен расширенный набор (DOGE, KAS, LDO, ZEC и др.) после ужесточения
+              критериев в мае 2026.
+            </p>
+            <p className="mt-1 text-xs">
+              <span className="text-text-primary">BTC исключён</span> — слишком тихие диапазоны, edge -0.04 R/tr.
+            </p>
+          </section>
+
+          <section>
+            <h3 className="text-text-primary font-semibold mb-1">Результаты бэктеста (365 дней, 32 монеты)</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs font-mono border border-input">
+                <thead className="bg-input text-text-secondary">
+                  <tr>
+                    <th className="text-left px-2 py-1">Период</th>
+                    <th className="text-right px-2 py-1">Сделок</th>
+                    <th className="text-right px-2 py-1">R/tr</th>
+                    <th className="text-right px-2 py-1">FinalDepo ($500)</th>
+                    <th className="text-right px-2 py-1">Drawdown</th>
+                    <th className="text-right px-2 py-1">WR</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-t border-input">
+                    <td className="px-2 py-1 text-text-primary">FULL (365d)</td>
+                    <td className="text-right px-2 py-1">698</td>
+                    <td className="text-right px-2 py-1 text-long">+0.55</td>
+                    <td className="text-right px-2 py-1 text-long">$9,387 (+1777%)</td>
+                    <td className="text-right px-2 py-1">25.9%</td>
+                    <td className="text-right px-2 py-1">~50%</td>
+                  </tr>
+                  <tr className="border-t border-input">
+                    <td className="px-2 py-1 text-text-primary">TRAIN (60%)</td>
+                    <td className="text-right px-2 py-1">~440</td>
+                    <td className="text-right px-2 py-1 text-long">+0.43</td>
+                    <td className="text-right px-2 py-1 text-long">$5,675</td>
+                    <td className="text-right px-2 py-1">~26%</td>
+                    <td className="text-right px-2 py-1">~50%</td>
+                  </tr>
+                  <tr className="border-t border-input">
+                    <td className="px-2 py-1 text-text-primary">TEST (40% out-of-sample)</td>
+                    <td className="text-right px-2 py-1">~258</td>
+                    <td className="text-right px-2 py-1 text-long">+0.35</td>
+                    <td className="text-right px-2 py-1 text-long">$3,925</td>
+                    <td className="text-right px-2 py-1">~25%</td>
+                    <td className="text-right px-2 py-1">51%</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-2 text-xs">
+              Цифры с включённым ADX{'>'}20 фильтром (commit 2026-05-09). До фильтра было FULL +0.49 / TEST +0.34, фильтр добавил
+              +42–45% к финальному депозиту на всех трёх периодах без признаков overfitting.
+            </p>
+            <p className="mt-1 text-xs">
+              <span className="text-text-primary">TEST лучше TRAIN</span> по R/tr — стабильный out-of-sample edge,
+              стратегия не переподогнана под историю.
+            </p>
+          </section>
+
+          <section>
+            <h3 className="text-text-primary font-semibold mb-1">Сравнение с другими стратегиями</h3>
+            <p className="text-xs">
+              На том же годе backtest (депо $500, риск 2%, max 10 concurrent) прогонялись 5 стратегий:
+            </p>
+            <ul className="list-disc list-inside space-y-0.5 marker:text-accent text-xs mt-1">
+              <li><span className="text-long">Daily Breakout — единственная со стабильным walk-forward</span> (TRAIN +77%, TEST +57%, оба плюс).</li>
+              <li>Levels v2 — TEST -63%, отвергнута.</li>
+              <li>RSI 4h Mean Reversion — TEST -6%, отвергнута.</li>
+              <li>EMA Pullback — TEST +50%, но TRAIN -39% (overfit).</li>
+              <li>Funding Divergence — TEST -20%, отвергнута.</li>
+            </ul>
+          </section>
+
+          <section>
+            <h3 className="text-text-primary font-semibold mb-1">По месяцам</h3>
+            <p className="text-xs">
+              11 из 13 месяцев в плюс. Лучший: сентябрь 2025 (+0.47 R/tr, 85 трейдов). Убыточные: февраль 2026 (-0.04)
+              и апрель 2026 (-0.29) — рынок без чётких сессионных пробоев.
+            </p>
+          </section>
+
+          <section>
+            <h3 className="text-text-primary font-semibold mb-1">Известные ограничения</h3>
+            <ul className="list-disc list-inside space-y-0.5 marker:text-short text-xs">
+              <li><span className="text-text-primary">Edge тонкий</span> — нужен большой N сделок, чтобы compound сработал. На коротком горизонте (1–2 мес) возможна просадка.</li>
+              <li><span className="text-text-primary">Slippage критичен:</span> 0.15%+ за сторону убивает edge в TEST. На реале использовать LIMIT ордера (maker fee).</li>
+              <li><span className="text-text-primary">Drawdown до 33–40%</span> при cap=10 и риске 2% (до 20% депо в риске одновременно).</li>
+              <li><span className="text-text-primary">TP3 редко достигается</span> — большинство выходов через TP1/TP2, split structure это компенсирует.</li>
+              <li><span className="text-text-primary">Concurrent cap = 10</span> — проверено backtest sweep [5/10/15/20/30/∞]: cap=10 даёт максимальный finalDepo на FULL/TRAIN/TEST.</li>
+            </ul>
+          </section>
+
+          <section>
+            <h3 className="text-text-primary font-semibold mb-1">Параметры платформы</h3>
+            <ul className="list-disc list-inside space-y-0.5 text-xs marker:text-accent">
+              <li>Стартовый депозит: $500</li>
+              <li>Риск на сделку: 2% от текущего депо</li>
+              <li>Round-trip комиссии: 0.08% (Bybit crypto)</li>
+              <li>Дневной лимит убытка: 5%, недельный: 15%</li>
+              <li>Max concurrent positions: 10, max per symbol: 1</li>
+            </ul>
+          </section>
+        </div>
+      )}
 
       {/* Top stats */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
@@ -467,10 +647,10 @@ export default function BreakoutPaper() {
 
       {/* Status filter */}
       <div className="flex gap-2 mb-3 flex-wrap">
-        <FilterButton active={statusFilter === 'OPEN'} onClick={() => { setClosedPage(1); setStatusFilter('OPEN') }}>Открытые</FilterButton>
-        <FilterButton active={statusFilter === 'CLOSED'} onClick={() => { setClosedPage(1); setStatusFilter('CLOSED') }}>Закрытые</FilterButton>
-        <FilterButton active={statusFilter === 'ALL'} onClick={() => { setClosedPage(1); setStatusFilter('ALL') }}>Все</FilterButton>
-        <FilterButton active={statusFilter === 'SIGNALS'} onClick={() => { setClosedPage(1); setStatusFilter('SIGNALS') }}>Сигналы</FilterButton>
+        <FilterButton active={statusFilter === 'OPEN'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('OPEN') }}>Открытые</FilterButton>
+        <FilterButton active={statusFilter === 'CLOSED'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('CLOSED') }}>Закрытые</FilterButton>
+        <FilterButton active={statusFilter === 'ALL'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('ALL') }}>Все</FilterButton>
+        <FilterButton active={statusFilter === 'SIGNALS'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('SIGNALS') }}>Сигналы</FilterButton>
       </div>
 
       {/* Signals table (only when SIGNALS filter is active) */}
@@ -541,6 +721,29 @@ export default function BreakoutPaper() {
               </tbody>
             </table>
           </div>
+          {signalsTotal > SIGNALS_PAGE_SIZE && (() => {
+            const totalPages = Math.ceil(signalsTotal / SIGNALS_PAGE_SIZE)
+            const from = (signalsPage - 1) * SIGNALS_PAGE_SIZE + 1
+            const to = Math.min(signalsPage * SIGNALS_PAGE_SIZE, signalsTotal)
+            return (
+              <div className="flex items-center justify-between px-3 py-2 border-t border-input text-xs text-text-secondary">
+                <div>{from}–{to} из {signalsTotal}</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setSignalsPage(p => Math.max(1, p - 1))}
+                    disabled={signalsPage === 1 || loading}
+                    className="px-2 py-1 rounded bg-input hover:bg-input/70 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >‹ Назад</button>
+                  <span className="font-mono">{signalsPage} / {totalPages}</span>
+                  <button
+                    onClick={() => setSignalsPage(p => Math.min(totalPages, p + 1))}
+                    disabled={signalsPage >= totalPages || loading}
+                    className="px-2 py-1 rounded bg-input hover:bg-input/70 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >Вперёд ›</button>
+                </div>
+              </div>
+            )
+          })()}
         </div>
       )}
 
@@ -756,17 +959,28 @@ export default function BreakoutPaper() {
       {/* Per-symbol breakdown */}
       {stats && Object.keys(stats.bySymbol).length > 0 && (
         <div className="mb-6">
-          <h3 className="font-semibold mb-2">По инструментам</h3>
+          <h3 className="font-semibold mb-2">
+            По инструментам
+            <span className="text-text-secondary font-normal ml-2">
+              · {Object.keys(stats.bySymbol).length}
+            </span>
+          </h3>
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
             {Object.entries(stats.bySymbol).sort((a, b) => b[1].pnl - a[1].pnl).map(([sym, s]) => (
-              <div key={sym} className="bg-card border border-input rounded p-2 text-xs">
+              <button
+                key={sym}
+                type="button"
+                onClick={() => setSymbolHistory(sym)}
+                className="bg-card border border-input hover:border-accent/60 hover:bg-input/50 rounded p-2 text-xs text-left transition-colors cursor-pointer"
+                title={`Открыть историю ${sym}`}
+              >
                 <div className="font-medium text-text-primary">{sym}</div>
                 <div className="text-text-secondary">{s.trades} {s.trades === 1 ? 'trade' : 'trades'}</div>
                 <div className={pnlColor(s.pnl)}>{fmt2Signed(s.pnl)}$</div>
                 <div className="text-text-secondary">
                   {s.trades > 0 ? `WR ${((s.wins / s.trades) * 100).toFixed(0)}%` : 'WR —'}
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -828,6 +1042,17 @@ export default function BreakoutPaper() {
           signal={selectedSignal}
           onClose={() => setSelectedSignal(null)}
           onForceOpened={() => { loadAll() }}
+        />
+      )}
+
+      {symbolHistory && (
+        <SymbolHistoryModal
+          symbol={symbolHistory}
+          onClose={() => setSymbolHistory(null)}
+          onSelectTrade={(t) => {
+            setSymbolHistory(null)
+            setSelectedTrade(t)
+          }}
         />
       )}
     </div>
