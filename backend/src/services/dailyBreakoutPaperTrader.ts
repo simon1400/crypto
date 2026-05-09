@@ -183,68 +183,20 @@ export async function syncSignalStatus(
 
 async function openNewPaperTrades(cfg: PaperConfig): Promise<{ opened: number; depositDelta: number }> {
   const since = new Date(Date.now() - 24 * 60 * 60_000)
-  const rawSignals = await prisma.breakoutSignal.findMany({
+  const signals = await prisma.breakoutSignal.findMany({
     where: {
       createdAt: { gte: since },
       status: { in: ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT'] },
     },
     orderBy: { createdAt: 'asc' },
   })
-  if (rawSignals.length === 0) return { opened: 0, depositDelta: 0 }
+  if (signals.length === 0) return { opened: 0, depositDelta: 0 }
 
   const existingTrades = await prisma.breakoutPaperTrade.findMany({
-    where: { signalId: { in: rawSignals.map(s => s.id) } },
+    where: { signalId: { in: signals.map(s => s.id) } },
     select: { signalId: true },
   })
   const existingIds = new Set(existingTrades.map(t => t.signalId))
-
-  // Priority order (Variant B′): when slots/margin are scarce, decide which
-  // un-opened signal to try first.
-  //   Group 1 (no/low history): symbols with < 3 terminal paper trades.
-  //                              FCFS by createdAt — gives new symbols a chance
-  //                              to accumulate sample without WR-noise bias.
-  //   Group 2 (proven history): symbols with ≥ 3 terminal trades. Sorted by
-  //                              cumulative netPnlUsd desc — best earners first.
-  // Already-opened signals (existingIds) keep their natural FCFS order — the
-  // rating only matters when we're choosing among truly new candidates.
-  const HISTORY_MIN_TRADES = 3
-  const TERMINAL = ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT']
-  const symbols = [...new Set(rawSignals.map(s => s.symbol))]
-  const historyAgg = await prisma.breakoutPaperTrade.groupBy({
-    by: ['symbol'],
-    where: { symbol: { in: symbols }, status: { in: TERMINAL } },
-    _count: { id: true },
-    _sum: { netPnlUsd: true },
-  })
-  const histBySymbol = new Map(historyAgg.map(h => [h.symbol, {
-    trades: h._count.id,
-    pnl: h._sum.netPnlUsd ?? 0,
-  }]))
-
-  const signals = [...rawSignals].sort((a, b) => {
-    // Already-opened signals: keep them at the front in FCFS order so we don't
-    // re-shuffle in-flight work. (They get short-circuited by `continue` below
-    // anyway, but ordering still matters for the iterator.)
-    const aOpened = existingIds.has(a.id) ? 0 : 1
-    const bOpened = existingIds.has(b.id) ? 0 : 1
-    if (aOpened !== bOpened) return aOpened - bOpened
-
-    const ha = histBySymbol.get(a.symbol)
-    const hb = histBySymbol.get(b.symbol)
-    const aGroup = !ha || ha.trades < HISTORY_MIN_TRADES ? 0 : 1   // 0 = group 1 (no/low history) goes first
-    const bGroup = !hb || hb.trades < HISTORY_MIN_TRADES ? 0 : 1
-    if (aGroup !== bGroup) return aGroup - bGroup
-
-    if (aGroup === 0) {
-      // Both in group 1: FCFS
-      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    }
-    // Both in group 2: sort by cumulative pnl desc (best earner first).
-    // Tie-break by FCFS so result is deterministic.
-    const pnlDiff = (hb?.pnl ?? 0) - (ha?.pnl ?? 0)
-    if (pnlDiff !== 0) return pnlDiff
-    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-  })
 
   let opened = 0
   let depositDelta = 0
