@@ -152,17 +152,20 @@ async function placePendingLimits(cfg: PaperConfigC): Promise<{ placed: number }
     } catch { /* keep livePrice null — без retrace check */ }
 
     if (livePrice != null) {
-      // Для BUY limit @ rangeHigh: цена ДОЛЖНА БЫТЬ ВЫШЕ или РАВНА rangeHigh —
-      // тогда limit заполнится сразу (как market) при следующем тике.
-      // Если live ниже rangeHigh — это значит цена откатилась обратно в range,
-      // limit будет ждать когда цена снова подойдёт сверху. Допустимо до X% ретрейса.
-      const RETRACE_TOLERANCE_PCT = 0.5  // допускаем 0.5% ретрейс ниже rangeHigh
+      // Limit-on-rangeEdge может стоять в стакане ТОЛЬКО если live цена не пересекла
+      // уровень с другой стороны:
+      //   - BUY limit @ rangeHigh: cтавим если price <= rangeHigh (limit ниже рынка
+      //     для шорта пробоя — невозможен, для лонга это «купить на откате к уровню»;
+      //     если price > rangeHigh уже сейчас — биржа отвергнет post-only или исполнит
+      //     как market по текущей цене, не по rangeHigh — нечестно к backtest модели).
+      //   - SELL limit @ rangeLow: cтавим если price >= rangeLow.
+      // Если уже за уровнем — пробой произошёл без нас, пропускаем (как overshoot guard).
       const limitPrice = sig.side === 'BUY' ? sig.rangeHigh : sig.rangeLow
-      const retracePct = sig.side === 'BUY'
-        ? ((limitPrice - livePrice) / limitPrice) * 100
-        : ((livePrice - limitPrice) / limitPrice) * 100
-      if (retracePct > RETRACE_TOLERANCE_PCT) {
-        console.log(`${tag} skip sig ${sig.id} ${sig.symbol} — retraced ${retracePct.toFixed(2)}% from limit edge`)
+      const alreadyOvershot = sig.side === 'BUY'
+        ? livePrice > limitPrice
+        : livePrice < limitPrice
+      if (alreadyOvershot) {
+        console.log(`${tag} skip sig ${sig.id} ${sig.symbol} — price ${livePrice} already past limit edge ${limitPrice} (post-only would reject)`)
         continue
       }
     }
@@ -357,20 +360,27 @@ async function fillLimitInner(
 
   console.log(`${tag} ✓ filled limit #${tradeId} ${trade.symbol} ${trade.side} @ ${fillPrice} (size $${sizing.positionSizeUsd.toFixed(0)}, lev ×${finalLeverage.toFixed(1)})`)
 
-  // Telegram notification — переиспользуем BREAKOUT_OPENED шаблон с префиксом [C].
+  // Telegram notification — переиспользуем BREAKOUT_OPENED шаблон. Шаблон ждёт
+  // массив `variants` (VariantOpenInfo[]) со sizing-блоком на каждый вариант.
+  // Без этого тело сообщения будет пустым (только заголовок + reason).
   try {
     await sendNotification('BREAKOUT_OPENED' as any, {
-      prefix: tgPrefix(VARIANT),
       symbol: trade.symbol,
       side: trade.side,
-      entryPrice: fillPrice,
-      stopLoss: trade.stopLoss,
-      tpLadder: trade.tpLadder,
-      positionSizeUsd: sizing.positionSizeUsd,
-      leverage: finalLeverage,
-      depositUsd: cfg.currentDepositUsd,
-      reason: 'limit fill on rangeEdge',
-    } as any)
+      reason: 'limit fill on rangeEdge (variant C)',
+      variants: [{
+        variant: 'C',
+        depositUsd: cfg.currentDepositUsd,
+        riskPctPerTrade: cfg.riskPctPerTrade,
+        riskUsd: sizing.riskUsd,
+        positionSizeUsd: sizing.positionSizeUsd,
+        positionUnits: sizing.positionUnits,
+        marginUsd: finalMargin,
+        leverage: finalLeverage,
+        cappedByMaxLeverage: !!sizing.cappedByMaxLeverage,
+        targetMarginPct: cfg.targetMarginPct,
+      }],
+    })
   } catch { /* notification errors are non-fatal */ }
 
   return { filled: true }

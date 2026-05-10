@@ -31,21 +31,20 @@ export default function BreakoutPage() {
 
   return (
     <div>
-      <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-4 border-b border-input pb-3">
-        <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex flex-wrap items-center gap-2 mb-4 border-b border-input pb-3">
+        <div className="flex items-center gap-1.5 flex-wrap">
           <TabButton active={variant === 'A'} onClick={() => setVariant('A')}>
-            A · 10 conc · 10% margin
+            A <span className="opacity-70">· 10·10%</span>
           </TabButton>
           <TabButton active={variant === 'B'} onClick={() => setVariant('B')}>
-            B · 20 conc · 5% margin
+            B <span className="opacity-70">· 20·5%</span>
           </TabButton>
           <TabButton active={variant === 'C'} onClick={() => setVariant('C')}>
-            C · limit on edge
+            C <span className="opacity-70">· limit edge</span>
           </TabButton>
         </div>
-        <span className="sm:ml-3 text-xs text-text-secondary">
-          Три копии работают параллельно на одних и тех же сигналах. A/B входят по market,
-          C по limit на rangeEdge (maker fee, без slip).
+        <span className="text-xs text-text-secondary basis-full sm:basis-auto sm:ml-2">
+          Три копии параллельно на одних сигналах. A/B — market, C — limit на rangeEdge (maker, без slip).
         </span>
       </div>
       {/* `key` forces a fresh BreakoutPaper instance per variant so all internal
