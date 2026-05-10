@@ -213,6 +213,44 @@ export async function syncSignalStatus(
   } catch { /* signal may have been deleted manually — ignore */ }
 }
 
+/**
+ * Returns true if a variant already "took" the symbol for this UTC day and
+ * should not open another trade on it. A variant is considered busy when:
+ *   1. There is any trade with openedAt in the current UTC day (regardless of
+ *      its current status — OPEN, TP1_HIT, CLOSED, SL_HIT, EXPIRED — once today's
+ *      slot was used, it stays used until midnight UTC).
+ *   2. There is an active trade right now (OPEN/TP1_HIT/TP2_HIT) regardless of
+ *      open date — covers a TP1+ trade carrying over from a previous day. Such a
+ *      position is still in the market and a new entry would conflict on Bybit.
+ *
+ * A trade that opened yesterday and closed earlier today is NOT busy: that's
+ * yesterday's setup running to completion, today's slot is still free for a
+ * fresh breakout.
+ */
+export async function isVariantBusyOnSymbol(
+  symbol: string,
+  utcDate: string,
+  variant: BreakoutVariant,
+): Promise<boolean> {
+  const tm = tradeModel(variant) as any
+  const dayStart = new Date(`${utcDate}T00:00:00.000Z`)
+  const dayEnd = new Date(`${utcDate}T23:59:59.999Z`)
+
+  const found = await tm.findFirst({
+    where: {
+      symbol,
+      OR: [
+        // Rule 1: any trade opened today (regardless of current status)
+        { openedAt: { gte: dayStart, lte: dayEnd } },
+        // Rule 2: any currently active trade (carrying over from prior day)
+        { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+      ],
+    },
+    select: { id: true },
+  })
+  return !!found
+}
+
 async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): Promise<{ opened: number; depositDelta: number; openedTrades: OpenedTradeInfo[] }> {
   const tag = logTag(variant)
   const tm = tradeModel(variant) as any
@@ -267,6 +305,18 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
 
   for (const sig of signals) {
     if (existingIds.has(sig.id)) continue
+
+    // Same-day-per-symbol guard: skip if this variant already took a trade on
+    // this symbol today, OR has an active carry-over trade from a previous day.
+    // Mirrors the backtest's "one breakout per UTC day per coin" rule and
+    // prevents the duplicate-signal bug when the shared signal is recreated
+    // after stale-deletion.
+    if (await isVariantBusyOnSymbol(sig.symbol, sig.rangeDate, variant)) {
+      const r = `${sig.symbol} already taken today (or carry-over still active) in variant ${variant}`
+      console.log(`${tag} skip sig ${sig.id} — ${r}`)
+      await markPaperStatus(sig.id, 'SKIPPED', r)
+      continue
+    }
 
     const openTrades = await tm.findMany({
       where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },

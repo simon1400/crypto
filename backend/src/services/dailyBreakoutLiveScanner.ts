@@ -23,7 +23,7 @@ import {
   DEFAULT_BREAKOUT_CFG, BreakoutEngineConfig, BreakoutSignal,
 } from '../scalper/dailyBreakoutEngine'
 import { sendNotification, VariantOpenInfo } from './notifier'
-import { runBreakoutPaperCycle, OpenedTradeInfo } from './dailyBreakoutPaperTrader'
+import { runBreakoutPaperCycle, OpenedTradeInfo, isVariantBusyOnSymbol } from './dailyBreakoutPaperTrader'
 import { getBtcAdx1h, BTC_ADX_THRESHOLD } from './btcRegime'
 
 // Default setups (23 monetах) — refreshed 2026-05-09 after re-running universe backtest
@@ -124,8 +124,16 @@ async function scanSymbol(symbol: string, cfg: BreakoutEngineConfig): Promise<nu
     const lastCandle = candles[lastIdx]
     const utcDate = utcDateOf(lastCandle.time)
 
-    // Skip if already signaled today
+    // Skip if a fresh (un-deleted) signal already exists for today.
     if (await alreadySignaledToday(symbol, utcDate)) return 0
+
+    // Skip if BOTH variants already took this symbol today (or have an active
+    // carry-over trade from yesterday). If either variant is still free, we
+    // create the signal so it can pick it up — the per-variant guard inside
+    // openNewPaperTrades will keep the busy variant from opening a duplicate.
+    const aBusy = await isVariantBusyOnSymbol(symbol, utcDate, 'A')
+    const bBusy = await isVariantBusyOnSymbol(symbol, utcDate, 'B')
+    if (aBusy && bBusy) return 0
 
     // Detect range for this UTC date
     const range = detectRange(candles, utcDate, cfg)
