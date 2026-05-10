@@ -877,7 +877,7 @@ async function trackOpenPaperTrades(cfg: PaperConfig, variant: BreakoutVariant):
  * Вызывается из breakoutWsTracker.ts на каждый publicTrade event (с throttle).
  */
 export async function runTrackForSymbol(symbol: string, tick: OHLCV): Promise<void> {
-  for (const variant of ['A', 'B'] as BreakoutVariant[]) {
+  for (const variant of ['A', 'B', 'C'] as BreakoutVariant[]) {
     try {
       const cfg = await getOrCreateConfig(variant)
       if (!cfg || !cfg.enabled) continue
@@ -902,8 +902,11 @@ export async function runTrackForSymbol(symbol: string, tick: OHLCV): Promise<vo
       if (totalDelta !== 0) await applyDepositDelta(cfg, totalDelta, variant)
 
       // Slot refill — после terminal close сразу пробуем открыть новые сделки.
-      // Та же логика что в runBreakoutPaperCycleFast.
-      if (terminalClosed > 0) {
+      // Только A/B используют market entry (openNewPaperTrades). Variant C
+      // использует limit-on-rangeEdge через отдельный сервис dailyBreakoutLimitTrader,
+      // поэтому здесь refill не нужен — C сам подберёт свободные слоты на следующем
+      // 60s cycle limit trader'а.
+      if (terminalClosed > 0 && variant !== 'C') {
         const cfgFresh = await getOrCreateConfig(variant)
         if (cfgFresh) {
           const r2 = await openNewPaperTrades(cfgFresh, variant)
