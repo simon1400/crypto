@@ -95,7 +95,14 @@ model BreakoutPaperConfig {
   startingDepositUsd     Float     @default(500)
   currentDepositUsd      Float     @default(500)
   riskPctPerTrade        Float     @default(2.0)
+  // Legacy flat round-trip fee — kept for backwards compatibility.
+  // When feeTakerPct / feeMakerPct are set, the trader uses the realistic
+  // per-event model (entry taker, TP maker, SL/EXPIRED taker) and ignores this.
   feesRoundTripPct       Float     @default(0.08)
+  // Realistic Binance-style fee model (defaults match Binance USDT-M perp base tier).
+  feeTakerPct            Float     @default(0.05)  // entry market + SL/EXPIRED market
+  feeMakerPct            Float     @default(0.02)  // TP limit fills
+  slipTakerPct           Float     @default(0.03)  // slippage on taker fills only
   autoTrailingSL         Boolean   @default(false)
   // Margin guard
   targetMarginPct        Float     @default(10)
@@ -144,6 +151,12 @@ model BreakoutPaperTrade {
   feesPaidUsd       Float     @default(0)
   netPnlUsd         Float     @default(0)
   feesRoundTripPct  Float?
+  // Per-trade overrides for realistic fee model (null = use config defaults)
+  feeTakerPct       Float?
+  feeMakerPct       Float?
+  slipTakerPct      Float?
+  // Realised slip USD (reporting only)
+  slipPaidUsd       Float     @default(0)
   autoTrailingSL    Boolean?
   // Tracking
   lastPriceCheck    Float?
@@ -169,7 +182,12 @@ model BreakoutPaperConfigB {
   startingDepositUsd     Float     @default(320)
   currentDepositUsd      Float     @default(320)
   riskPctPerTrade        Float     @default(2.0)
+  // Legacy flat round-trip fee (see BreakoutPaperConfig for behaviour notes).
   feesRoundTripPct       Float     @default(0.08)
+  // Realistic Binance-style fee model (same defaults as variant A).
+  feeTakerPct            Float     @default(0.05)
+  feeMakerPct            Float     @default(0.02)
+  slipTakerPct           Float     @default(0.03)
   autoTrailingSL         Boolean   @default(false)
   // Margin guard
   targetMarginPct        Float     @default(5)
@@ -218,6 +236,12 @@ model BreakoutPaperTradeB {
   feesPaidUsd       Float     @default(0)
   netPnlUsd         Float     @default(0)
   feesRoundTripPct  Float?
+  // Per-trade overrides for realistic fee model (null = use config defaults)
+  feeTakerPct       Float?
+  feeMakerPct       Float?
+  slipTakerPct      Float?
+  // Realised slip USD (reporting only)
+  slipPaidUsd       Float     @default(0)
   autoTrailingSL    Boolean?
   // Tracking
   lastPriceCheck    Float?

@@ -757,11 +757,35 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                 className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
             </div>
             <div>
-              <label className="text-xs text-text-secondary block mb-1">Комиссии round-trip (%)</label>
-              <input type="number" step="0.01" min="0" defaultValue={config.feesRoundTripPct}
+              <label className="text-xs text-text-secondary block mb-1">
+                Taker fee (%) <span className="text-text-secondary/60">— market open + SL</span>
+              </label>
+              <input type="number" step="0.001" min="0" defaultValue={config.feeTakerPct ?? 0.05}
                 onBlur={async e => {
                   const v = parseFloat(e.target.value)
-                  if (v >= 0) setConfig(await updateBreakoutPaperConfig({ feesRoundTripPct: v }, variant))
+                  if (v >= 0) setConfig(await updateBreakoutPaperConfig({ feeTakerPct: v }, variant))
+                }}
+                className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
+            </div>
+            <div>
+              <label className="text-xs text-text-secondary block mb-1">
+                Maker fee (%) <span className="text-text-secondary/60">— TP limit</span>
+              </label>
+              <input type="number" step="0.001" min="0" defaultValue={config.feeMakerPct ?? 0.02}
+                onBlur={async e => {
+                  const v = parseFloat(e.target.value)
+                  if (v >= 0) setConfig(await updateBreakoutPaperConfig({ feeMakerPct: v }, variant))
+                }}
+                className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
+            </div>
+            <div>
+              <label className="text-xs text-text-secondary block mb-1">
+                Slippage taker (%/side) <span className="text-text-secondary/60">— market fills</span>
+              </label>
+              <input type="number" step="0.001" min="0" defaultValue={config.slipTakerPct ?? 0.03}
+                onBlur={async e => {
+                  const v = parseFloat(e.target.value)
+                  if (v >= 0) setConfig(await updateBreakoutPaperConfig({ slipTakerPct: v }, variant))
                 }}
                 className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
             </div>

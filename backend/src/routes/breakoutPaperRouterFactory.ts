@@ -29,12 +29,23 @@ async function getCurrentPrice(symbol: string): Promise<number | null> {
   } catch { return null }
 }
 
-function recalcFees(trade: any, feeRatePct: number): { feesPaidUsd: number; netPnlUsd: number } {
-  const closes = ((trade.closes as any[]) ?? []) as Array<{ price: number; percent: number }>
+function recalcFees(trade: any, feeRatePct: number, realRates?: { takerPct: number; makerPct: number } | null): { feesPaidUsd: number; netPnlUsd: number } {
+  const closes = ((trade.closes as any[]) ?? []) as Array<{ price: number; percent: number; reason?: string }>
   let feesPaidUsd = 0
+  // Entry fee — realistic model only. Charges taker rate on actual entry notional.
+  if (realRates) {
+    const entryNotional = (trade.positionUnits ?? 0) * (trade.entryPrice ?? 0)
+    feesPaidUsd += entryNotional * (realRates.takerPct / 100)
+  }
   for (const c of closes) {
-    const notional = trade.positionUnits * c.price * (c.percent / 100)
-    feesPaidUsd += notional * (feeRatePct / 100)
+    const notional = (trade.positionUnits ?? 0) * c.price * (c.percent / 100)
+    if (realRates) {
+      const isMaker = c.reason === 'TP1' || c.reason === 'TP2' || c.reason === 'TP3'
+      const rate = isMaker ? realRates.makerPct : realRates.takerPct
+      feesPaidUsd += notional * (rate / 100)
+    } else {
+      feesPaidUsd += notional * (feeRatePct / 100)
+    }
   }
   const netPnlUsd = (trade.realizedPnlUsd ?? 0) - feesPaidUsd
   return { feesPaidUsd, netPnlUsd }
@@ -94,6 +105,7 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
     try {
       const {
         enabled, riskPctPerTrade, feesRoundTripPct, autoTrailingSL,
+        feeTakerPct, feeMakerPct, slipTakerPct,
         targetMarginPct, marginGuardEnabled, marginGuardAutoClose,
         dailyLossLimitPct, weeklyLossLimitPct,
         maxConcurrentPositions, maxPositionsPerSymbol,
@@ -104,6 +116,9 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
           ...(enabled !== undefined ? { enabled } : {}),
           ...(riskPctPerTrade !== undefined ? { riskPctPerTrade } : {}),
           ...(feesRoundTripPct !== undefined ? { feesRoundTripPct } : {}),
+          ...(feeTakerPct !== undefined ? { feeTakerPct } : {}),
+          ...(feeMakerPct !== undefined ? { feeMakerPct } : {}),
+          ...(slipTakerPct !== undefined ? { slipTakerPct } : {}),
           ...(autoTrailingSL !== undefined ? { autoTrailingSL } : {}),
           ...(targetMarginPct !== undefined ? { targetMarginPct } : {}),
           ...(marginGuardEnabled !== undefined ? { marginGuardEnabled } : {}),
@@ -177,7 +192,11 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
         const isLong = t.side === 'BUY'
         const fillUnits = t.positionUnits * remainingFrac
         const unrealizedGross = (isLong ? price - t.entryPrice : t.entryPrice - price) * fillUnits
-        const feeRatePct = t.feesRoundTripPct ?? 0.08
+        // Exit fee estimate: under realistic model the remaining position would
+        // be closed via market on SL/EXPIRED — taker rate. Use trade override
+        // first, then config defaults, then fall back to legacy flat.
+        const takerPct = t.feeTakerPct ?? null
+        const feeRatePct = takerPct ?? t.feesRoundTripPct ?? 0.08
         const exitFeesIfClosedNow = t.positionUnits * price * remainingFrac * (feeRatePct / 100)
         // unrealizedPnl — только по нереализованному остатку. Реализованная часть
         // (realizedPnlUsd − feesPaidUsd) уже зачислена в currentDepositUsd через
@@ -367,7 +386,14 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
           const cfg = await cm.findUnique({ where: { id: 1 } })
           rate = cfg ? cfg.feesRoundTripPct : 0
         }
-        const { feesPaidUsd, netPnlUsd } = recalcFees(merged, rate)
+        // Pull realistic-model rates: per-trade override > config defaults.
+        const cfgForRates = await cm.findUnique({ where: { id: 1 } })
+        const takerPct = merged.feeTakerPct ?? cfgForRates?.feeTakerPct ?? null
+        const makerPct = merged.feeMakerPct ?? cfgForRates?.feeMakerPct ?? null
+        const realRates = (takerPct != null && makerPct != null)
+          ? { takerPct, makerPct }
+          : null
+        const { feesPaidUsd, netPnlUsd } = recalcFees(merged, rate, realRates)
         data.feesPaidUsd = feesPaidUsd
         data.netPnlUsd = netPnlUsd
       }
@@ -411,29 +437,41 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
       if (['CLOSED', 'SL_HIT', 'EXPIRED'].includes(trade.status)) {
         return res.status(400).json({ error: `Already ${trade.status}` })
       }
-      const price = await getCurrentPrice(trade.symbol)
-      if (price === null) return res.status(503).json({ error: 'Could not fetch price' })
+      const refPrice = await getCurrentPrice(trade.symbol)
+      if (refPrice === null) return res.status(503).json({ error: 'Could not fetch price' })
 
       const fills = ((trade.closes as any[]) ?? []) as any[]
       const closedPctSoFar = fills.reduce((a, c) => a + (c.percent ?? 0), 0)
       const remainingFrac = Math.max(0, 1 - closedPctSoFar / 100)
       if (remainingFrac < 1e-6) return res.status(400).json({ error: 'Already closed' })
 
+      // Manual market close = taker. Apply slip + taker fee under realistic model.
+      const cfg = await cm.findUnique({ where: { id: 1 } })
+      const takerPct = trade.feeTakerPct ?? cfg?.feeTakerPct ?? null
+      const slipPct = trade.slipTakerPct ?? cfg?.slipTakerPct ?? null
       const isLong = trade.side === 'BUY'
+      const slipFrac = (slipPct ?? 0) / 100
+      const price = slipFrac > 0
+        ? (isLong ? refPrice * (1 - slipFrac) : refPrice * (1 + slipFrac))
+        : refPrice
+
       const initialRisk = Math.abs(trade.entryPrice - trade.initialStop)
       const pnlR = ((isLong ? price - trade.entryPrice : trade.entryPrice - price) / initialRisk) * remainingFrac
       const fillUnits = trade.positionUnits * remainingFrac
       const pnlUsd = (isLong ? price - trade.entryPrice : trade.entryPrice - price) * fillUnits
+      const slipUsdNew = fillUnits * Math.abs(price - refPrice)
       fills.push({
         price, percent: remainingFrac * 100, pnlR, pnlUsd,
         closedAt: new Date().toISOString(), reason: 'MANUAL',
       })
-      const cfg = await cm.findUnique({ where: { id: 1 } })
-      const feePct = trade.feesRoundTripPct ?? (cfg ? cfg.feesRoundTripPct : 0)
-      const feeRate = feePct / 100
-      const notional = trade.positionUnits * price * remainingFrac
-      const newFeeUsd = notional * feeRate
+
+      // Fee — taker rate (realistic), or legacy flat fallback.
+      const notional = fillUnits * price
+      const newFeeUsd = takerPct != null
+        ? notional * (takerPct / 100)
+        : notional * ((trade.feesRoundTripPct ?? cfg?.feesRoundTripPct ?? 0) / 100)
       const totalFeesUsd = trade.feesPaidUsd + newFeeUsd
+      const totalSlipUsd = (trade.slipPaidUsd ?? 0) + slipUsdNew
       const realizedPnlUsd = trade.realizedPnlUsd + pnlUsd
       const netPnlUsd = realizedPnlUsd - totalFeesUsd
       const realizedR = trade.realizedR + pnlR
@@ -444,7 +482,7 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
           status: 'CLOSED',
           closes: fills as any,
           realizedR, realizedPnlUsd,
-          feesPaidUsd: totalFeesUsd, netPnlUsd,
+          feesPaidUsd: totalFeesUsd, slipPaidUsd: totalSlipUsd, netPnlUsd,
           closedAt: new Date(),
           lastPriceCheck: price,
           lastPriceCheckAt: new Date(),
@@ -490,10 +528,14 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
         closedAt: new Date().toISOString(), reason: 'MANUAL',
       })
       const cfg = await cm.findUnique({ where: { id: 1 } })
-      const feePct = trade.feesRoundTripPct ?? (cfg ? cfg.feesRoundTripPct : 0)
-      const feeRate = feePct / 100
+      // Manual close at user-supplied price = taker. Use taker rate under realistic
+      // model, fall back to legacy flat rate otherwise. No slip applied — the user
+      // already chose the price they want.
+      const takerPct = trade.feeTakerPct ?? cfg?.feeTakerPct ?? null
       const notional = trade.positionUnits * price * fillFrac
-      const newFeeUsd = notional * feeRate
+      const newFeeUsd = takerPct != null
+        ? notional * (takerPct / 100)
+        : notional * ((trade.feesRoundTripPct ?? cfg?.feesRoundTripPct ?? 0) / 100)
       const totalFeesUsd = trade.feesPaidUsd + newFeeUsd
       const realizedPnlUsd = trade.realizedPnlUsd + pnlUsd
       const netPnlUsd = realizedPnlUsd - totalFeesUsd

@@ -18,7 +18,12 @@ export interface BreakoutPaperConfig {
   startingDepositUsd: number
   currentDepositUsd: number
   riskPctPerTrade: number
+  // Legacy flat round-trip fee — kept for backwards compatibility
   feesRoundTripPct: number
+  // Realistic Binance-style fee model (defaults: 0.05 / 0.02 / 0.03)
+  feeTakerPct?: number
+  feeMakerPct?: number
+  slipTakerPct?: number
   autoTrailingSL: boolean
   // Margin guard (server-side may not always emit these on legacy DBs)
   targetMarginPct?: number
@@ -72,6 +77,10 @@ export interface BreakoutTrade {
   feesPaidUsd: number
   netPnlUsd: number
   feesRoundTripPct: number | null
+  feeTakerPct: number | null
+  feeMakerPct: number | null
+  slipTakerPct: number | null
+  slipPaidUsd: number
   autoTrailingSL: boolean | null
   lastPriceCheck: number | null
   lastPriceCheckAt: string | null

@@ -35,7 +35,12 @@ interface PaperConfig {
   startingDepositUsd: number
   currentDepositUsd: number
   riskPctPerTrade: number
+  // Legacy flat round-trip fee — used as fallback when realistic-model fields are zero
   feesRoundTripPct: number
+  // Realistic Binance-style fee model
+  feeTakerPct: number      // % per side, taker (entry market + SL/EXPIRED market)
+  feeMakerPct: number      // % per side, maker (TP limit fills — sit in book)
+  slipTakerPct: number     // % per side slippage on taker fills only
   autoTrailingSL: boolean
   targetMarginPct: number
   marginGuardEnabled: boolean
@@ -50,6 +55,43 @@ interface PaperConfig {
   totalPnLUsd: number
   peakDepositUsd: number
   maxDrawdownPct: number
+}
+
+/**
+ * Realistic fee/slip model: TP fills are maker (limit at TP price, no slip),
+ * everything else (entry market, SL stop-market, EXPIRED manual close, MARGIN
+ * close, manual market close) is taker (paid taker fee + slip applied to fill price).
+ */
+function isMakerFill(reason: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED' | 'MARGIN' | 'MANUAL'): boolean {
+  return reason === 'TP1' || reason === 'TP2' || reason === 'TP3'
+}
+
+/**
+ * Slip-adjusted price for a TAKER fill at structural price `p`.
+ * Long entry (taker buy) — slip pushes price UP.
+ * Long exit (taker sell) — slip pushes price DOWN.
+ * Short entry (taker sell) — DOWN. Short exit (taker buy) — UP.
+ */
+function takerFillPrice(structPrice: number, side: 'BUY' | 'SELL', kind: 'entry' | 'exit', slipFrac: number): number {
+  if (slipFrac <= 0) return structPrice
+  if (kind === 'entry') {
+    return side === 'BUY' ? structPrice * (1 + slipFrac) : structPrice * (1 - slipFrac)
+  } else {
+    return side === 'BUY' ? structPrice * (1 - slipFrac) : structPrice * (1 + slipFrac)
+  }
+}
+
+/**
+ * Picks effective rates for a trade. Per-trade override takes priority, otherwise
+ * config defaults are used. Returns undefined if no realistic-model rates set
+ * (caller should fall back to legacy flat fee model).
+ */
+function getRealisticRates(trade: any, cfg: PaperConfig): { takerPct: number; makerPct: number; slipPct: number } | null {
+  const takerPct = trade.feeTakerPct ?? cfg.feeTakerPct
+  const makerPct = trade.feeMakerPct ?? cfg.feeMakerPct
+  const slipPct = trade.slipTakerPct ?? cfg.slipTakerPct
+  if (takerPct == null || makerPct == null || slipPct == null) return null
+  return { takerPct, makerPct, slipPct }
 }
 
 interface CloseRecord {
@@ -140,7 +182,11 @@ async function marketCloseForMargin(tradeId: number, cfg: PaperConfig, variant: 
   const remainingFrac = Math.max(0, 1 - closedFrac)
   if (remainingFrac < 1e-6) return 0
 
-  const closePrice = t.lastPriceCheck ?? t.entryPrice
+  const refPrice = t.lastPriceCheck ?? t.entryPrice
+  // Margin-close is a taker market exit — slip pushes price worse.
+  const realRates = getRealisticRates(t, cfg)
+  const slipFrac = (realRates?.slipPct ?? 0) / 100
+  const closePrice = takerFillPrice(refPrice, t.side, 'exit', slipFrac)
   const isLong = t.side === 'BUY'
   const initialRisk = Math.abs(t.entryPrice - t.initialStop)
   const fillUnits = t.positionUnits * remainingFrac
@@ -148,6 +194,7 @@ async function marketCloseForMargin(tradeId: number, cfg: PaperConfig, variant: 
   const pnlR = initialRisk > 0
     ? ((isLong ? closePrice - t.entryPrice : t.entryPrice - closePrice) / initialRisk) * remainingFrac
     : 0
+  const slipUsdNew = fillUnits * Math.abs(closePrice - refPrice)
 
   closes.push({
     price: closePrice,
@@ -157,9 +204,13 @@ async function marketCloseForMargin(tradeId: number, cfg: PaperConfig, variant: 
     reason: 'MARGIN',
   })
 
-  const feeRatePct = t.feesRoundTripPct ?? cfg.feesRoundTripPct
-  const newFeesUsd = fillUnits * closePrice * (feeRatePct / 100)
+  // Fee = taker rate (market close). Falls back to legacy flat rate if realistic
+  // rates aren't set on this trade.
+  const newFeesUsd = realRates
+    ? fillUnits * closePrice * (realRates.takerPct / 100)
+    : fillUnits * closePrice * ((t.feesRoundTripPct ?? cfg.feesRoundTripPct) / 100)
   const totalFeesUsd = (t.feesPaidUsd ?? 0) + newFeesUsd
+  const totalSlipUsd = (t.slipPaidUsd ?? 0) + slipUsdNew
   const realizedR = (t.realizedR ?? 0) + pnlR
   const realizedPnlUsd = (t.realizedPnlUsd ?? 0) + pnlUsd
   const netPnlUsd = realizedPnlUsd - totalFeesUsd
@@ -171,6 +222,7 @@ async function marketCloseForMargin(tradeId: number, cfg: PaperConfig, variant: 
       realizedR,
       realizedPnlUsd,
       feesPaidUsd: totalFeesUsd,
+      slipPaidUsd: totalSlipUsd,
       netPnlUsd,
       closes: closes as any,
       closedAt: new Date(),
@@ -375,12 +427,18 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
       }
     }
 
+    // Realistic-fee model: entry is a taker market order. Apply slip BEFORE
+    // sizing so risk-per-trade is measured from the actual fill price (not the
+    // structural rangeEdge). This way risk stays at riskPct% regardless of slip.
+    const slipFracEntry = (cfg.slipTakerPct ?? 0) / 100
+    const slippedEntry = takerFillPrice(entryPrice, sig.side as 'BUY' | 'SELL', 'entry', slipFracEntry)
+
     const sizing = computeSizing({
       symbol: sig.symbol,
       deposit,
       riskPct: cfg.riskPctPerTrade,
       targetMarginPct: cfg.targetMarginPct,
-      entry: entryPrice,
+      entry: slippedEntry,
       sl: sig.stopLoss,
     })
     if (!sizing || sizing.positionUnits <= 0) {
@@ -425,13 +483,22 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
       }
     }
 
+    // Realistic-fee model — charge entry taker fee + record entry slip USD.
+    // The trade row stores feesPaidUsd starting with the entry fee (was 0 in
+    // the legacy flat model where only close-side fees were tracked). Slip is
+    // recorded separately in slipPaidUsd for reporting; it is already baked
+    // into the realised PnL via the slipped entry price used for sizing.
+    const entryFeeUsd = sizing.positionUnits * slippedEntry * (cfg.feeTakerPct / 100)
+    const entrySlipUsd = sizing.positionUnits * Math.abs(slippedEntry - entryPrice)
+    depositDelta -= entryFeeUsd
+
     const entryAt = new Date()
     await tm.create({
       data: {
         signalId: sig.id,
         symbol: sig.symbol,
         side: sig.side,
-        entryPrice,
+        entryPrice: slippedEntry,
         stopLoss: sig.stopLoss,
         initialStop: sig.initialStop,
         currentStop: sig.currentStop,
@@ -444,6 +511,11 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
         leverage: finalLeverage,
         marginUsd: finalMargin,
         feesRoundTripPct: cfg.feesRoundTripPct,
+        feeTakerPct: cfg.feeTakerPct,
+        feeMakerPct: cfg.feeMakerPct,
+        slipTakerPct: cfg.slipTakerPct,
+        feesPaidUsd: entryFeeUsd,
+        slipPaidUsd: entrySlipUsd,
         autoTrailingSL: cfg.autoTrailingSL,
         status: 'OPEN',
         expiresAt: sig.expiresAt,
@@ -454,7 +526,7 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
       signalId: sig.id,
       symbol: sig.symbol,
       side: sig.side as 'BUY' | 'SELL',
-      entryPrice,
+      entryPrice: slippedEntry,
       stopLoss: sig.stopLoss,
       tpLadder: sig.tpLadder as number[],
       rangeHigh: sig.rangeHigh,
@@ -535,20 +607,32 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
     | { kind: 'EXPIRED'; price: number; pnlR: number; pnlUsd: number }
   const events: FillEvent[] = []
 
+  // Realistic fee model — per-event taker/maker rates + slip on taker fills.
+  // TP fills: maker (limit at TP price, exact fill, no slip)
+  // SL/EXPIRED: taker (market/stop-market, slip pushes price worse)
+  const realRates = getRealisticRates(trade, cfg)
+  const slipFracExit = (realRates?.slipPct ?? 0) / 100
+
+  // Track slip USD on each new fill (sum into trade.slipPaidUsd at end)
+  let newSlipUsd = 0
+
   for (const c of newCandles) {
     const slHit = isLong ? c.low <= currentStop : c.high >= currentStop
     if (slHit) {
-      const pnlR = ((isLong ? currentStop - entry : entry - currentStop) / initialRisk) * remainingFrac
+      // Taker fill on SL — slip worsens the fill price
+      const slipFillPrice = takerFillPrice(currentStop, trade.side, 'exit', slipFracExit)
+      const pnlR = ((isLong ? slipFillPrice - entry : entry - slipFillPrice) / initialRisk) * remainingFrac
       const fillUnits = positionUnits * remainingFrac
-      const pnlUsd = (isLong ? currentStop - entry : entry - currentStop) * fillUnits
+      const pnlUsd = (isLong ? slipFillPrice - entry : entry - slipFillPrice) * fillUnits
       realizedR += pnlR
       realizedPnlUsd += pnlUsd
       totalPnlDeltaUsd += pnlUsd
+      newSlipUsd += fillUnits * Math.abs(slipFillPrice - currentStop)
       fills.push({
-        price: currentStop, percent: remainingFrac * 100, pnlR, pnlUsd,
+        price: slipFillPrice, percent: remainingFrac * 100, pnlR, pnlUsd,
         closedAt: new Date(c.time).toISOString(), reason: 'SL',
       })
-      events.push({ kind: 'SL', price: currentStop, pnlR, pnlUsd, trailLevel: nextTpIdx as 0 | 1 | 2 | 3 })
+      events.push({ kind: 'SL', price: slipFillPrice, pnlR, pnlUsd, trailLevel: nextTpIdx as 0 | 1 | 2 | 3 })
       remainingFrac = 0
       status = nextTpIdx === 0 ? 'SL_HIT' : 'CLOSED'
       statusChanged = true
@@ -560,6 +644,7 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
       const tpHit = isLong ? c.high >= tp : c.low <= tp
       if (!tpHit) break
 
+      // Maker fill on TP — exact price, no slip (limit order sat at TP).
       const splitFrac = SPLITS[nextTpIdx] ?? remainingFrac
       const fillFrac = Math.min(splitFrac, remainingFrac)
       const pnlR = ((isLong ? tp - entry : entry - tp) / initialRisk) * fillFrac
@@ -600,30 +685,45 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
   if (status !== 'CLOSED' && status !== 'SL_HIT' && nextTpIdx === 0 && trade.expiresAt && new Date(trade.expiresAt) < new Date()) {
     if (remainingFrac > 1e-6) {
       const lastPrice = newCandles[newCandles.length - 1].close
-      const pnlR = ((isLong ? lastPrice - entry : entry - lastPrice) / initialRisk) * remainingFrac
+      // Taker fill on EXPIRED (manual market close at EOD) — slip applies.
+      const slipFillPrice = takerFillPrice(lastPrice, trade.side, 'exit', slipFracExit)
+      const pnlR = ((isLong ? slipFillPrice - entry : entry - slipFillPrice) / initialRisk) * remainingFrac
       const fillUnits = positionUnits * remainingFrac
-      const pnlUsd = (isLong ? lastPrice - entry : entry - lastPrice) * fillUnits
+      const pnlUsd = (isLong ? slipFillPrice - entry : entry - slipFillPrice) * fillUnits
       realizedR += pnlR
       realizedPnlUsd += pnlUsd
       totalPnlDeltaUsd += pnlUsd
+      newSlipUsd += fillUnits * Math.abs(slipFillPrice - lastPrice)
       fills.push({
-        price: lastPrice, percent: remainingFrac * 100, pnlR, pnlUsd,
+        price: slipFillPrice, percent: remainingFrac * 100, pnlR, pnlUsd,
         closedAt: new Date().toISOString(), reason: 'EXPIRED',
       })
-      events.push({ kind: 'EXPIRED', price: lastPrice, pnlR, pnlUsd })
+      events.push({ kind: 'EXPIRED', price: slipFillPrice, pnlR, pnlUsd })
     }
     status = 'EXPIRED'
     statusChanged = true
   }
 
-  const feeRatePct = trade.feesRoundTripPct ?? cfg.feesRoundTripPct
+  // Per-event fee calculation: TP = maker rate, SL/EXPIRED/MARGIN/MANUAL = taker rate.
+  // Falls back to legacy flat round-trip rate if realistic-model rates aren't set
+  // (older trades from before the migration, or external override).
   const newFills = fills.slice((trade.closes as any[]).length)
   let newFeesUsd = 0
-  for (const f of newFills) {
-    const notional = positionUnits * f.price * (f.percent / 100)
-    newFeesUsd += notional * (feeRatePct / 100)
+  if (realRates) {
+    for (const f of newFills) {
+      const notional = positionUnits * f.price * (f.percent / 100)
+      const rate = isMakerFill(f.reason) ? realRates.makerPct : realRates.takerPct
+      newFeesUsd += notional * (rate / 100)
+    }
+  } else {
+    const feeRatePct = trade.feesRoundTripPct ?? cfg.feesRoundTripPct
+    for (const f of newFills) {
+      const notional = positionUnits * f.price * (f.percent / 100)
+      newFeesUsd += notional * (feeRatePct / 100)
+    }
   }
   const totalFeesUsd = (trade.feesPaidUsd ?? 0) + newFeesUsd
+  const totalSlipUsd = (trade.slipPaidUsd ?? 0) + newSlipUsd
   const netPnlUsd = realizedPnlUsd - totalFeesUsd
 
   const lastCandle = newCandles[newCandles.length - 1]
@@ -631,7 +731,7 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
     where: { id: trade.id },
     data: {
       status, currentStop, realizedR, realizedPnlUsd,
-      feesPaidUsd: totalFeesUsd, netPnlUsd,
+      feesPaidUsd: totalFeesUsd, slipPaidUsd: totalSlipUsd, netPnlUsd,
       closes: fills as any,
       lastPriceCheck: lastCandle.close,
       lastPriceCheckAt: new Date(lastCandle.time),
@@ -888,6 +988,7 @@ export async function forceOpenSignal(signalId: number, variant: BreakoutVariant
 }> {
   const tag = logTag(variant)
   const tm = tradeModel(variant) as any
+  const cm = configModel(variant) as any
 
   const cfg = await getOrCreateConfig(variant)
   if (!cfg) return { ok: false, reason: 'paper config missing' }
@@ -908,12 +1009,16 @@ export async function forceOpenSignal(signalId: number, variant: BreakoutVariant
     if (live && live > 0) entryPrice = live
   } catch { /* fallback */ }
 
+  // Force-open is also a taker market entry — apply slip before sizing.
+  const slipFracEntry = (cfg.slipTakerPct ?? 0) / 100
+  const slippedEntry = takerFillPrice(entryPrice, sig.side as 'BUY' | 'SELL', 'entry', slipFracEntry)
+
   const sizing = computeSizing({
     symbol: sig.symbol,
     deposit: cfg.currentDepositUsd,
     riskPct: cfg.riskPctPerTrade,
     targetMarginPct: cfg.targetMarginPct,
-    entry: entryPrice,
+    entry: slippedEntry,
     sl: sig.stopLoss,
   })
   if (!sizing || sizing.positionUnits <= 0) {
@@ -948,12 +1053,24 @@ export async function forceOpenSignal(signalId: number, variant: BreakoutVariant
     finalLeverage = requiredLev
   }
 
+  // Charge entry taker fee + record entry slip
+  const entryFeeUsd = sizing.positionUnits * slippedEntry * (cfg.feeTakerPct / 100)
+  const entrySlipUsd = sizing.positionUnits * Math.abs(slippedEntry - entryPrice)
+  // Deduct entry fee from deposit by adjusting via applyDepositDelta caller chain
+  // — easiest path is to record it on the trade so applyDepositDelta in subsequent
+  // ticks recomputes from net of all closes. But for force-open we want immediate
+  // depo reflection. Apply directly here:
+  await cm.update({
+    where: { id: 1 },
+    data: { currentDepositUsd: { decrement: entryFeeUsd } },
+  })
+
   const trade = await tm.create({
     data: {
       signalId: sig.id,
       symbol: sig.symbol,
       side: sig.side,
-      entryPrice,
+      entryPrice: slippedEntry,
       stopLoss: sig.stopLoss,
       initialStop: sig.initialStop,
       currentStop: sig.currentStop,
@@ -966,6 +1083,11 @@ export async function forceOpenSignal(signalId: number, variant: BreakoutVariant
       leverage: finalLeverage,
       marginUsd: finalMargin,
       feesRoundTripPct: cfg.feesRoundTripPct,
+      feeTakerPct: cfg.feeTakerPct,
+      feeMakerPct: cfg.feeMakerPct,
+      slipTakerPct: cfg.slipTakerPct,
+      feesPaidUsd: entryFeeUsd,
+      slipPaidUsd: entrySlipUsd,
       autoTrailingSL: cfg.autoTrailingSL,
       status: 'OPEN',
       expiresAt: sig.expiresAt,

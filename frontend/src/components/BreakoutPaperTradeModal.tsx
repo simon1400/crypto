@@ -308,9 +308,22 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
           )}
 
           {/* Show effective per-trade settings */}
-          {!editing && (trade.feesRoundTripPct !== null || trade.autoTrailingSL !== null) && (
+          {!editing && (trade.feeTakerPct !== null || trade.feesRoundTripPct !== null || trade.autoTrailingSL !== null) && (
             <div className="bg-card border border-input rounded p-2 mb-4 flex gap-4 text-xs flex-wrap">
-              {trade.feesRoundTripPct !== null && (
+              {trade.feeTakerPct !== null ? (
+                <>
+                  <span><span className="text-text-secondary">Taker:</span> <span className="font-mono">{trade.feeTakerPct}%</span></span>
+                  {trade.feeMakerPct !== null && (
+                    <span><span className="text-text-secondary">Maker:</span> <span className="font-mono">{trade.feeMakerPct}%</span></span>
+                  )}
+                  {trade.slipTakerPct !== null && (
+                    <span><span className="text-text-secondary">Slip:</span> <span className="font-mono">{trade.slipTakerPct}%</span></span>
+                  )}
+                  {trade.slipPaidUsd > 0 && (
+                    <span><span className="text-text-secondary">Slip paid:</span> <span className="font-mono">-${trade.slipPaidUsd.toFixed(2)}</span></span>
+                  )}
+                </>
+              ) : trade.feesRoundTripPct !== null && (
                 <span><span className="text-text-secondary">Комиссия:</span> <span className="font-mono">{trade.feesRoundTripPct}%</span></span>
               )}
               {trade.autoTrailingSL !== null && (
@@ -354,11 +367,14 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
           </div>
 
           {/* Stats */}
-          <div className="grid grid-cols-3 gap-2 mb-4">
+          <div className={`grid ${trade.slipPaidUsd > 0 ? 'grid-cols-4' : 'grid-cols-3'} gap-2 mb-4`}>
             <PriceCard label="Status" value={trade.status} />
             <PriceCard label="Realized $" value={fmtUsd(trade.realizedPnlUsd)}
               tone={trade.realizedPnlUsd > 0 ? 'long' : trade.realizedPnlUsd < 0 ? 'short' : 'neutral'} />
             <PriceCard label="Fees $" value={`-$${trade.feesPaidUsd.toFixed(2)}`} />
+            {trade.slipPaidUsd > 0 && (
+              <PriceCard label="Slip $" value={`-$${trade.slipPaidUsd.toFixed(2)}`} />
+            )}
           </div>
 
           {/* Closes log */}
