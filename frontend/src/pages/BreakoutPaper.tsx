@@ -1094,11 +1094,16 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                           const entry = t.entryPrice
                           const price = live.currentPrice
                           const isLong = t.side === 'BUY'
-                          // Reference point for the "neutral" middle: entry, OR currentStop if it has
-                          // trailed past entry into profit (TP1→BE → SL=entry; TP2→TP1 → SL=TP1).
-                          // Then "0% to SL" actually means breakeven/locked profit, not a loss.
+                          // Anchor = «нулевая точка» прогресса (середина бара).
+                          // До TP1 anchor = entry; после TP1 anchor сдвигается на ранее
+                          // достигнутый TP (TP1_HIT → anchor=TP1, TP2_HIT → anchor=TP2).
+                          // Это совпадает с поведением трейлинг-SL и даёт честную картину:
+                          // «справа зелёный — путь от TP1 к TP2», «слева серый — откат от
+                          // TP1 к SL@BE».
+                          const prevTp = tpIdx > 0 ? tps[tpIdx - 1] : null
+                          const anchor = prevTp ?? entry
                           const slLocksProfit = isLong ? sl >= entry : sl <= entry
-                          const anchor = slLocksProfit ? sl : entry
+                          const slLabel = slLocksProfit ? (sl === entry ? 'BE' : 'lock') : 'SL'
                           const distToTp = Math.abs(nextTp - anchor)
                           const distToSl = Math.abs(sl - anchor)
                           if (distToTp <= 0 && distToSl <= 0) {
@@ -1106,21 +1111,19 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                           }
                           const favorableMove = isLong ? (price - anchor) : (anchor - price)
                           const towardSL = favorableMove < 0 && distToSl > 0
-                          // If SL is at-or-better than entry, "below anchor" still isn't a loss —
-                          // mark it as moving toward the locked level rather than red danger.
                           const halfRatio = favorableMove >= 0
                             ? (distToTp > 0 ? Math.min(1, favorableMove / distToTp) : 0)
                             : (distToSl > 0 ? Math.min(1, -favorableMove / distToSl) : 0)
                           const markerPct = towardSL ? 50 - halfRatio * 50 : 50 + halfRatio * 50
                           const labelPct = Math.round(halfRatio * 100)
                           const dangerZone = towardSL && !slLocksProfit && labelPct >= 75
-                          const slLabel = slLocksProfit ? (sl === entry ? 'BE' : 'lock') : 'SL'
                           const fillColor = towardSL
                             ? (slLocksProfit ? '#848e9c' : '#f6465d')
                             : '#0ecb81'
                           const labelColorCls = towardSL
                             ? (slLocksProfit ? 'text-text-secondary' : 'text-short')
                             : 'text-long'
+                          const anchorLabel = prevTp ? `TP${tpIdx}` : 'entry'
                           return (
                             <div className="min-w-[120px]">
                               <div className="relative h-1.5 bg-input rounded overflow-hidden">
@@ -1137,12 +1140,12 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                               </div>
                               <div className="flex justify-between text-[9px] text-text-secondary mt-0.5 leading-none">
                                 <span className={slLocksProfit ? 'text-text-secondary' : 'text-short/80'}>{slLabel}</span>
-                                <span className="text-text-secondary/80">{slLocksProfit ? 'lock' : 'entry'}</span>
+                                <span className="text-text-secondary/80">{anchorLabel}</span>
                                 <span className="text-long/80">{tpLabel}</span>
                               </div>
                               <div className={`text-center text-[10px] mt-0.5 font-mono ${labelColorCls}`}>
                                 {labelPct === 0
-                                  ? (slLocksProfit ? 'в безриске' : 'на entry')
+                                  ? (slLocksProfit ? 'в безриске' : `на ${anchorLabel}`)
                                   : `${labelPct}% ${towardSL ? `к ${slLabel}${dangerZone ? ' ⚠' : ''}` : `к ${tpLabel}`}`}
                               </div>
                             </div>
