@@ -177,19 +177,19 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
         const isLong = t.side === 'BUY'
         const fillUnits = t.positionUnits * remainingFrac
         const unrealizedGross = (isLong ? price - t.entryPrice : t.entryPrice - price) * fillUnits
-        const feesPaidUsd = t.feesPaidUsd ?? 0
         const feeRatePct = t.feesRoundTripPct ?? 0.08
         const exitFeesIfClosedNow = t.positionUnits * price * remainingFrac * (feeRatePct / 100)
-        const totalUnrealized = (t.realizedPnlUsd ?? 0) + unrealizedGross - feesPaidUsd - exitFeesIfClosedNow
-        const unrealizedPnlPct = t.depositAtEntryUsd > 0
-          ? (totalUnrealized / t.depositAtEntryUsd) * 100 : 0
+        // unrealizedPnl — только по нереализованному остатку. Реализованная часть
+        // (realizedPnlUsd − feesPaidUsd) уже зачислена в currentDepositUsd через
+        // applyDepositDelta в момент TP1/TP2 hit, повторно её прибавлять нельзя —
+        // иначе equityWithOpen и плашка "+$X unrealized" задваивают TP1 partial closes.
         const remainingUnrealized = unrealizedGross - exitFeesIfClosedNow
         const remainingUnrealizedPnlPct = t.depositAtEntryUsd > 0
           ? (remainingUnrealized / t.depositAtEntryUsd) * 100 : 0
         return {
           id: t.id, status: t.status, currentPrice: price,
-          unrealizedPnl: Math.round(totalUnrealized * 100) / 100,
-          unrealizedPnlPct: Math.round(unrealizedPnlPct * 100) / 100,
+          unrealizedPnl: Math.round(remainingUnrealized * 100) / 100,
+          unrealizedPnlPct: Math.round(remainingUnrealizedPnlPct * 100) / 100,
           remainingUnrealizedPnl: Math.round(remainingUnrealized * 100) / 100,
           remainingUnrealizedPnlPct: Math.round(remainingUnrealizedPnlPct * 100) / 100,
         }

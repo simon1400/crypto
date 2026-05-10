@@ -24,7 +24,7 @@ import { prisma } from '../db/prisma'
 import { OHLCV, fetchPricesBatch } from './market'
 import { loadHistorical } from '../scalper/historicalLoader'
 import { computeSizing, evaluateOpenWithGuard, ExistingTrade, getMaxLeverage } from './marginGuard'
-import { sendNotification } from './notifier'
+import { sendNotification, VariantOpenInfo } from './notifier'
 import { BreakoutVariant, configModel, tradeModel, tgPrefix, logTag } from './breakoutVariant'
 
 const SPLITS = [0.5, 0.3, 0.2]
@@ -59,6 +59,28 @@ interface CloseRecord {
   pnlUsd: number
   closedAt: string
   reason: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED' | 'MARGIN'
+}
+
+export interface OpenedTradeInfo {
+  signalId: number
+  symbol: string
+  side: 'BUY' | 'SELL'
+  entryPrice: number
+  stopLoss: number
+  tpLadder: number[]
+  rangeHigh: number
+  rangeLow: number
+  rangeSize: number
+  riskPctPerTrade: number
+  riskUsd: number
+  positionSizeUsd: number
+  positionUnits: number
+  leverage: number
+  marginUsd: number
+  depositUsd: number
+  targetMarginPct: number
+  cappedByMaxLeverage: boolean
+  reason: string
 }
 
 async function getOrCreateConfig(variant: BreakoutVariant): Promise<PaperConfig | null> {
@@ -191,7 +213,7 @@ export async function syncSignalStatus(
   } catch { /* signal may have been deleted manually — ignore */ }
 }
 
-async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): Promise<{ opened: number; depositDelta: number }> {
+async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): Promise<{ opened: number; depositDelta: number; openedTrades: OpenedTradeInfo[] }> {
   const tag = logTag(variant)
   const tm = tradeModel(variant) as any
   const cm = configModel(variant) as any
@@ -204,7 +226,7 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
     },
     orderBy: { createdAt: 'asc' },
   })
-  if (signals.length === 0) return { opened: 0, depositDelta: 0 }
+  if (signals.length === 0) return { opened: 0, depositDelta: 0, openedTrades: [] }
 
   const existingTrades = await tm.findMany({
     where: { signalId: { in: signals.map(s => s.id) } },
@@ -214,6 +236,7 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
 
   let opened = 0
   let depositDelta = 0
+  const openedTrades: OpenedTradeInfo[] = []
 
   // Variant A writes paperStatus into the shared BreakoutSignal table; variant B
   // does not (would clash with A on the same row). Both variants log to console.
@@ -377,6 +400,27 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
       },
     })
     opened++
+    openedTrades.push({
+      signalId: sig.id,
+      symbol: sig.symbol,
+      side: sig.side as 'BUY' | 'SELL',
+      entryPrice,
+      stopLoss: sig.stopLoss,
+      tpLadder: sig.tpLadder as number[],
+      rangeHigh: sig.rangeHigh,
+      rangeLow: sig.rangeLow,
+      rangeSize: sig.rangeSize,
+      riskPctPerTrade: cfg.riskPctPerTrade,
+      riskUsd: sizing.riskUsd,
+      positionSizeUsd: sizing.positionSizeUsd,
+      positionUnits: sizing.positionUnits,
+      leverage: finalLeverage,
+      marginUsd: finalMargin,
+      depositUsd: deposit,
+      targetMarginPct: cfg.targetMarginPct,
+      cappedByMaxLeverage: sizing.cappedByMaxLeverage,
+      reason: sig.reason,
+    })
     const lvNote = sizing.cappedByMaxLeverage ? ` (capped at ${getMaxLeverage(sig.symbol)}x)` : ''
     const dsNote = finalMargin !== sizing.marginUsd
       ? ` [downsized $${sizing.marginUsd.toFixed(2)}→$${finalMargin.toFixed(2)}]`
@@ -390,7 +434,7 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
       await syncSignalStatus(sig.id, 'ACTIVE', null, null, null, null)
     }
   }
-  return { opened, depositDelta }
+  return { opened, depositDelta, openedTrades }
 }
 
 async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, variant: BreakoutVariant): Promise<{ pnlDelta: number; statusChanged: boolean; terminalClosed: boolean }> {
@@ -432,7 +476,12 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
 
   type FillEvent =
     | { kind: 'TP'; tpIdx: 1 | 2 | 3; price: number; percent: number; pnlR: number; pnlUsd: number }
-    | { kind: 'SL'; price: number; pnlR: number; pnlUsd: number; isBE: boolean }
+    // trailLevel = number of TPs already taken at the moment SL fired:
+    //   0 — SL still on initial stop (full loss)
+    //   1 — SL was trailed to entry (break-even)
+    //   2 — SL was trailed to TP1 (locked profit)
+    //   3 — SL was trailed to TP2 (locked bigger profit) — only possible if TP3 wasn't reached
+    | { kind: 'SL'; price: number; pnlR: number; pnlUsd: number; trailLevel: 0 | 1 | 2 | 3 }
     | { kind: 'EXPIRED'; price: number; pnlR: number; pnlUsd: number }
   const events: FillEvent[] = []
 
@@ -449,7 +498,7 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
         price: currentStop, percent: remainingFrac * 100, pnlR, pnlUsd,
         closedAt: new Date(c.time).toISOString(), reason: 'SL',
       })
-      events.push({ kind: 'SL', price: currentStop, pnlR, pnlUsd, isBE: realizedR >= 0 })
+      events.push({ kind: 'SL', price: currentStop, pnlR, pnlUsd, trailLevel: nextTpIdx as 0 | 1 | 2 | 3 })
       remainingFrac = 0
       status = nextTpIdx === 0 ? 'SL_HIT' : 'CLOSED'
       statusChanged = true
@@ -577,21 +626,25 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
             depositUsd,
           })
         } else if (ev.kind === 'SL') {
+          const reasonText =
+            ev.trailLevel === 0 ? 'SL сработал' :
+            ev.trailLevel === 1 ? 'SL (безубыток)' :
+            ev.trailLevel === 2 ? 'SL → TP1 (зафиксирован профит)' :
+            'SL → TP2 (зафиксирован профит)'
           await sendNotification('BREAKOUT_SL_HIT' as any, {
             symbol: symbolWithPrefix,
             slPrice: ev.price,
             realizedR: cumR,
             realizedPnlUsd: cumPnlUsd,
             depositUsd,
-            reasonText: ev.isBE ? 'SL → BE' : 'SL hit',
+            reasonText,
+            trailLevel: ev.trailLevel,
           })
         } else {
-          await sendNotification('BREAKOUT_EXPIRED' as any, {
-            symbol: symbolWithPrefix,
-            realizedR: cumR,
-            realizedPnlUsd: cumPnlUsd,
-            depositUsd,
-          })
+          // EXPIRED notifications are suppressed here — they are aggregated into
+          // a single EOD daily summary message at 23:55 UTC by sendBreakoutEodSummary().
+          // Per-trade EXPIRED spam (10+ messages at once) is replaced by two summaries:
+          // one for EOD-closed trades, one for those surviving past midnight (had TP1).
         }
       } catch (e: any) {
         console.error(`${tag} notify ${ev.kind} failed for ${trade.symbol}#${trade.id}: ${e.message}`)
@@ -699,11 +752,11 @@ async function applyDepositDelta(cfg: PaperConfig, delta: number, variant: Break
   })
 }
 
-export async function runBreakoutPaperCycle(variant: BreakoutVariant = 'A'): Promise<{ opened: number; updated: number; depositDelta: number; deposit: number }> {
+export async function runBreakoutPaperCycle(variant: BreakoutVariant = 'A'): Promise<{ opened: number; updated: number; depositDelta: number; deposit: number; openedTrades: OpenedTradeInfo[] }> {
   const tag = logTag(variant)
   const cfg = await getOrCreateConfig(variant)
-  if (!cfg) return { opened: 0, updated: 0, depositDelta: 0, deposit: 0 }
-  if (!cfg.enabled) return { opened: 0, updated: 0, depositDelta: 0, deposit: cfg.currentDepositUsd }
+  if (!cfg) return { opened: 0, updated: 0, depositDelta: 0, deposit: 0, openedTrades: [] }
+  if (!cfg.enabled) return { opened: 0, updated: 0, depositDelta: 0, deposit: cfg.currentDepositUsd, openedTrades: [] }
 
   const opened = await openNewPaperTrades(cfg, variant)
   if (opened.depositDelta !== 0) {
@@ -716,11 +769,13 @@ export async function runBreakoutPaperCycle(variant: BreakoutVariant = 'A'): Pro
 
   let openedAgain = 0
   let openedAgainDelta = 0
+  let openedAgainTrades: OpenedTradeInfo[] = []
   if (updated.terminalClosed > 0) {
     const cfgFresh = await getOrCreateConfig(variant) ?? cfgAfterOpens
     const r2 = await openNewPaperTrades(cfgFresh, variant)
     openedAgain = r2.opened
     openedAgainDelta = r2.depositDelta
+    openedAgainTrades = r2.openedTrades
     if (openedAgainDelta !== 0) {
       const cfgAfterR2 = await getOrCreateConfig(variant)
       if (cfgAfterR2) await applyDepositDelta(cfgAfterR2, openedAgainDelta, variant)
@@ -736,10 +791,11 @@ export async function runBreakoutPaperCycle(variant: BreakoutVariant = 'A'): Pro
     updated: updated.updated,
     depositDelta: updated.depositDelta + opened.depositDelta + openedAgainDelta,
     deposit: final?.currentDepositUsd ?? 0,
+    openedTrades: [...opened.openedTrades, ...openedAgainTrades],
   }
 }
 
-export async function runBreakoutPaperCycleFast(variant: BreakoutVariant = 'A'): Promise<{ updated: number; depositDelta: number; opened?: number }> {
+export async function runBreakoutPaperCycleFast(variant: BreakoutVariant = 'A'): Promise<{ updated: number; depositDelta: number; opened?: number; openedTrades?: OpenedTradeInfo[] }> {
   const tag = logTag(variant)
   const cfg = await getOrCreateConfig(variant)
   if (!cfg || !cfg.enabled) return { updated: 0, depositDelta: 0 }
@@ -747,11 +803,13 @@ export async function runBreakoutPaperCycleFast(variant: BreakoutVariant = 'A'):
   if (r.depositDelta !== 0) await applyDepositDelta(cfg, r.depositDelta, variant)
 
   let opened = 0
+  let openedTrades: OpenedTradeInfo[] = []
   if (r.terminalClosed > 0) {
     const cfgFresh = await getOrCreateConfig(variant)
     if (cfgFresh) {
       const r2 = await openNewPaperTrades(cfgFresh, variant)
       opened = r2.opened
+      openedTrades = r2.openedTrades
       if (r2.depositDelta !== 0) {
         const cfgAfter = await getOrCreateConfig(variant)
         if (cfgAfter) await applyDepositDelta(cfgAfter, r2.depositDelta, variant)
@@ -762,7 +820,7 @@ export async function runBreakoutPaperCycleFast(variant: BreakoutVariant = 'A'):
     }
   }
 
-  return { updated: r.updated, depositDelta: r.depositDelta, opened }
+  return { updated: r.updated, depositDelta: r.depositDelta, opened, openedTrades }
 }
 
 /**
@@ -913,6 +971,155 @@ export async function resetBreakoutPaperAccount(newStartingDeposit?: number, var
   return updated as PaperConfig
 }
 
+/**
+ * Telegram notify for trades opened off-cycle (timer-driven slow/fast tick when
+ * scanner inline didn't fire — e.g. boot, refill after terminal close, manual
+ * scan). Sends one message per signal with this variant's sizing block. The
+ * scanner itself uses its own consolidated path (A+B in one message) and
+ * does NOT call this helper.
+ */
+async function notifySingleVariantOpens(opened: OpenedTradeInfo[], variant: BreakoutVariant): Promise<void> {
+  for (const t of opened) {
+    const v: VariantOpenInfo = {
+      variant,
+      depositUsd: t.depositUsd,
+      riskPctPerTrade: t.riskPctPerTrade,
+      riskUsd: t.riskUsd,
+      positionSizeUsd: t.positionSizeUsd,
+      positionUnits: t.positionUnits,
+      marginUsd: t.marginUsd,
+      leverage: t.leverage,
+      cappedByMaxLeverage: t.cappedByMaxLeverage,
+      targetMarginPct: t.targetMarginPct,
+    }
+    try {
+      await sendNotification('BREAKOUT_OPENED', {
+        symbol: t.symbol,
+        side: t.side,
+        reason: t.reason,
+        variants: [v],
+      })
+      if (variant === 'A') {
+        try {
+          await prisma.breakoutSignal.update({
+            where: { id: t.signalId },
+            data: { notifiedTelegram: true },
+          })
+        } catch { /* signal may have been deleted — ignore */ }
+      }
+    } catch (e: any) {
+      console.error(`${logTag(variant)} OPENED notify failed for sig ${t.signalId}: ${e.message}`)
+    }
+  }
+}
+
+/**
+ * Build EOD summaries for both variants for a given UTC date and send two
+ * Telegram messages: one for trades EOD-closed (status=EXPIRED, also includes
+ * any CLOSED/SL_HIT that happened during the same day), and one for "surviving"
+ * trades that hit TP1+ and stay open past midnight.
+ *
+ * Idempotency: marker `eodSentForDate` is stored in BreakoutConfig.lastScanResult
+ * — sendBreakoutEodSummary is a no-op if it has already run for that date.
+ */
+async function buildVariantEodSummary(
+  variant: BreakoutVariant,
+  utcDate: string,
+): Promise<{ closed: import('./notifier').EodVariantSummary; surviving: import('./notifier').EodVariantSummary }> {
+  const tm = tradeModel(variant) as any
+  const cm = configModel(variant) as any
+
+  // Day window in UTC ms — covers the closing day exactly.
+  const dayStart = new Date(`${utcDate}T00:00:00.000Z`).getTime()
+  const dayEnd = new Date(`${utcDate}T23:59:59.999Z`).getTime()
+
+  const cfg = await cm.findUnique({ where: { id: 1 } })
+  const deposit = cfg?.currentDepositUsd ?? 0
+
+  // Closed during this UTC day — any terminal status (EXPIRED, CLOSED, SL_HIT).
+  const closedToday = await tm.findMany({
+    where: {
+      status: { in: ['EXPIRED', 'CLOSED', 'SL_HIT'] },
+      closedAt: { gte: new Date(dayStart), lte: new Date(dayEnd) },
+    },
+    orderBy: { closedAt: 'asc' },
+  })
+  const closedRows = closedToday.map((t: any) => ({
+    symbol: t.symbol,
+    side: t.side as 'BUY' | 'SELL',
+    pnlUsd: t.netPnlUsd ?? 0,
+    pnlR: t.realizedR ?? 0,
+  }))
+  const closedTotal = closedRows.reduce((s: number, r: { pnlUsd: number }) => s + r.pnlUsd, 0)
+
+  // Surviving past EOD — TP1_HIT or TP2_HIT, opened today (still active).
+  const survivingToday = await tm.findMany({
+    where: {
+      status: { in: ['TP1_HIT', 'TP2_HIT'] },
+      openedAt: { gte: new Date(dayStart), lte: new Date(dayEnd) },
+    },
+    orderBy: { openedAt: 'asc' },
+  })
+  const survivingRows = survivingToday.map((t: any) => ({
+    symbol: t.symbol,
+    side: t.side as 'BUY' | 'SELL',
+    // Net realised so far (from partial TP1/TP2 closes), not full lifecycle —
+    // remaining position is still in the market.
+    pnlUsd: (t.realizedPnlUsd ?? 0) - (t.feesPaidUsd ?? 0),
+    pnlR: t.realizedR ?? 0,
+  }))
+  const survivingTotal = survivingRows.reduce((s: number, r: { pnlUsd: number }) => s + r.pnlUsd, 0)
+
+  return {
+    closed: { variant, trades: closedRows, totalPnlUsd: closedTotal, depositUsd: deposit },
+    surviving: { variant, trades: survivingRows, totalPnlUsd: survivingTotal, depositUsd: deposit },
+  }
+}
+
+export async function sendBreakoutEodSummary(utcDate: string): Promise<void> {
+  // Idempotency check via BreakoutConfig.lastScanResult.eodSentForDate.
+  const cfg = await prisma.breakoutConfig.findUnique({ where: { id: 1 } })
+  const marker = ((cfg?.lastScanResult as any) || {}).eodSentForDate
+  if (marker === utcDate) {
+    console.log(`[BreakoutEOD] summary for ${utcDate} already sent — skipping`)
+    return
+  }
+
+  const a = await buildVariantEodSummary('A', utcDate)
+  const b = await buildVariantEodSummary('B', utcDate)
+
+  try {
+    await sendNotification('BREAKOUT_EOD_CLOSED', {
+      utcDate,
+      summaries: [a.closed, b.closed],
+    })
+  } catch (e: any) {
+    console.error(`[BreakoutEOD] CLOSED notify failed: ${e.message}`)
+  }
+
+  try {
+    await sendNotification('BREAKOUT_EOD_SURVIVING', {
+      utcDate,
+      summaries: [a.surviving, b.surviving],
+    })
+  } catch (e: any) {
+    console.error(`[BreakoutEOD] SURVIVING notify failed: ${e.message}`)
+  }
+
+  // Mark this date so we don't re-send on restart / cron restart within minutes.
+  try {
+    const prev = (cfg?.lastScanResult as any) || {}
+    await prisma.breakoutConfig.update({
+      where: { id: 1 },
+      data: { lastScanResult: { ...prev, eodSentForDate: utcDate } as any },
+    })
+  } catch (e: any) {
+    console.warn(`[BreakoutEOD] failed to persist marker: ${e.message}`)
+  }
+
+  console.log(`[BreakoutEOD] summary sent for ${utcDate}: A closed=${a.closed.trades.length} surviving=${a.surviving.trades.length}; B closed=${b.closed.trades.length} surviving=${b.surviving.trades.length}`)
+}
+
 // Independent timers per variant — both tickers run side-by-side.
 const paperIntervals: Record<BreakoutVariant, NodeJS.Timeout | null> = { A: null, B: null }
 const paperFastIntervals: Record<BreakoutVariant, NodeJS.Timeout | null> = { A: null, B: null }
@@ -934,6 +1141,9 @@ export function startBreakoutPaperTrader(variant: BreakoutVariant = 'A'): void {
       if (r.opened > 0 || r.updated > 0) {
         console.log(`${tag} slow: opened=${r.opened} updated=${r.updated} delta=${r.depositDelta.toFixed(2)} depo=$${r.deposit.toFixed(2)}`)
       }
+      if (r.openedTrades.length > 0) {
+        await notifySingleVariantOpens(r.openedTrades, variant)
+      }
     } catch (e: any) { console.error(`${tag} slow tick error:`, e.message) }
     finally { paperSlowBusy[variant] = false }
   }
@@ -944,6 +1154,9 @@ export function startBreakoutPaperTrader(variant: BreakoutVariant = 'A'): void {
       const r = await runBreakoutPaperCycleFast(variant)
       if (r.updated > 0) {
         console.log(`${tag} fast: updated=${r.updated} delta=${r.depositDelta.toFixed(2)}`)
+      }
+      if (r.openedTrades && r.openedTrades.length > 0) {
+        await notifySingleVariantOpens(r.openedTrades, variant)
       }
     } catch (e: any) { console.error(`${tag} fast tick error:`, e.message) }
     finally { paperFastBusy[variant] = false }
@@ -961,4 +1174,39 @@ export function stopBreakoutPaperTrader(variant: BreakoutVariant = 'A'): void {
   const i2 = paperFastIntervals[variant]
   if (i1) { clearInterval(i1); paperIntervals[variant] = null }
   if (i2) { clearInterval(i2); paperFastIntervals[variant] = null }
+}
+
+// === EOD daily summary cron ===
+// Single global timer: runs every minute, fires sendBreakoutEodSummary after
+// 23:55 UTC each day. Idempotent (marker in BreakoutConfig.lastScanResult), so
+// process restarts mid-window don't re-send. Per-trade EXPIRED notifications
+// are suppressed in trackOnePaper — this aggregate replaces them.
+let eodInterval: NodeJS.Timeout | null = null
+let eodBusy = false
+
+export function startBreakoutEodSummary(): void {
+  if (eodInterval) return
+  const tick = async () => {
+    if (eodBusy) return
+    eodBusy = true
+    try {
+      const now = new Date()
+      // Only fire in the 5-minute window 23:55–23:59 UTC. Marker prevents repeats.
+      const utcHour = now.getUTCHours()
+      const utcMin = now.getUTCMinutes()
+      if (utcHour !== 23 || utcMin < 55) return
+      const utcDate = now.toISOString().slice(0, 10)
+      await sendBreakoutEodSummary(utcDate)
+    } catch (e: any) {
+      console.error('[BreakoutEOD] tick error:', e.message)
+    } finally {
+      eodBusy = false
+    }
+  }
+  eodInterval = setInterval(tick, 60_000)
+  console.log('[BreakoutEOD] started (1min cron, fires once at 23:55 UTC)')
+}
+
+export function stopBreakoutEodSummary(): void {
+  if (eodInterval) { clearInterval(eodInterval); eodInterval = null }
 }

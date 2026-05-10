@@ -22,8 +22,8 @@ import {
   detectRange, generateBreakoutSignal, utcDateOf, endOfDayUTC,
   DEFAULT_BREAKOUT_CFG, BreakoutEngineConfig, BreakoutSignal,
 } from '../scalper/dailyBreakoutEngine'
-import { sendNotification } from './notifier'
-import { runBreakoutPaperCycle } from './dailyBreakoutPaperTrader'
+import { sendNotification, VariantOpenInfo } from './notifier'
+import { runBreakoutPaperCycle, OpenedTradeInfo } from './dailyBreakoutPaperTrader'
 import { getBtcAdx1h, BTC_ADX_THRESHOLD } from './btcRegime'
 
 // Default setups (23 monetах) — refreshed 2026-05-09 after re-running universe backtest
@@ -81,10 +81,9 @@ async function alreadySignaledToday(symbol: string, utcDate: string): Promise<bo
   return !!existing
 }
 
-async function saveAndNotify(
+async function saveSignal(
   symbol: string,
   sig: BreakoutSignal,
-  triggerTime: number,
 ): Promise<void> {
   const expiresAt = new Date(endOfDayUTC(sig.rangeDate))
 
@@ -108,43 +107,6 @@ async function saveAndNotify(
       expiresAt,
     },
   })
-
-  // Telegram notification — include position sizing if paper trading is configured
-  let depositUsd: number | undefined
-  let riskPctPerTrade: number | undefined
-  let targetMarginPct: number | undefined
-  try {
-    const paperCfg = await prisma.breakoutPaperConfig.findUnique({ where: { id: 1 } })
-    if (paperCfg) {
-      depositUsd = paperCfg.currentDepositUsd
-      riskPctPerTrade = paperCfg.riskPctPerTrade
-      targetMarginPct = paperCfg.targetMarginPct
-    }
-  } catch {}
-
-  try {
-    await sendNotification('BREAKOUT_NEW' as any, {
-      id: created.id,
-      symbol,
-      side: sig.side,
-      entryPrice: sig.entryPrice,
-      stopLoss: sig.stopLoss,
-      tpLadder: sig.tpLadder,
-      rangeHigh: sig.rangeHigh,
-      rangeLow: sig.rangeLow,
-      rangeSize: sig.rangeSize,
-      reason: sig.reason,
-      depositUsd,
-      riskPctPerTrade,
-      targetMarginPct,
-    })
-    await prisma.breakoutSignal.update({
-      where: { id: created.id },
-      data: { notifiedTelegram: true },
-    })
-  } catch (e: any) {
-    console.error('[BreakoutScanner] notify failed:', e.message)
-  }
 
   console.log(`[BreakoutScanner] NEW ${symbol} ${sig.side} @ ${sig.entryPrice.toFixed(4)} (range ${sig.rangeLow.toFixed(4)}-${sig.rangeHigh.toFixed(4)}, id=${created.id})`)
 }
@@ -176,7 +138,7 @@ async function scanSymbol(symbol: string, cfg: BreakoutEngineConfig): Promise<nu
     const sig = generateBreakoutSignal(candles, range, lastIdx, cfg)
     if (!sig) return 0
 
-    await saveAndNotify(symbol, sig, lastCandle.time)
+    await saveSignal(symbol, sig)
     return 1
   } catch (e: any) {
     console.error(`[BreakoutScanner] ${symbol} scan failed:`, e.message)
@@ -242,10 +204,15 @@ async function runOnce(): Promise<void> {
   if (total > 0) {
     console.log(`[BreakoutScanner] tick fired ${total} signals across ${enabledSymbols.length} symbols`)
     // Trigger paper cycle immediately for both variants so the trade opens on the same
-    // breakout candle (and the user sees it in the UI right after the Telegram alert).
-    // Each variant catches its own errors so a failure in one doesn't block the other.
+    // breakout candle. We collect what each variant actually opened, then emit ONE
+    // consolidated Telegram message per signal listing whichever variants took it
+    // (А, Б, or both). Skipped/blocked signals get no notification — Telegram only
+    // mirrors actually-opened trades.
+    let openedA: OpenedTradeInfo[] = []
+    let openedB: OpenedTradeInfo[] = []
     try {
       const r = await runBreakoutPaperCycle('A')
+      openedA = r.openedTrades
       if (r.opened > 0) {
         console.log(`[BreakoutScanner] inline paper-A open: opened=${r.opened} delta=${r.depositDelta.toFixed(2)} depo=$${r.deposit.toFixed(2)}`)
       }
@@ -254,11 +221,66 @@ async function runOnce(): Promise<void> {
     }
     try {
       const r = await runBreakoutPaperCycle('B')
+      openedB = r.openedTrades
       if (r.opened > 0) {
         console.log(`[BreakoutScanner] inline paper-B open: opened=${r.opened} delta=${r.depositDelta.toFixed(2)} depo=$${r.deposit.toFixed(2)}`)
       }
     } catch (e: any) {
       console.warn('[BreakoutScanner] inline paper-B cycle failed:', e?.message ?? e)
+    }
+
+    await notifyOpenedTrades(openedA, openedB)
+  }
+}
+
+function toVariantInfo(t: OpenedTradeInfo, variant: 'A' | 'B'): VariantOpenInfo {
+  return {
+    variant,
+    depositUsd: t.depositUsd,
+    riskPctPerTrade: t.riskPctPerTrade,
+    riskUsd: t.riskUsd,
+    positionSizeUsd: t.positionSizeUsd,
+    positionUnits: t.positionUnits,
+    marginUsd: t.marginUsd,
+    leverage: t.leverage,
+    cappedByMaxLeverage: t.cappedByMaxLeverage,
+    targetMarginPct: t.targetMarginPct,
+  }
+}
+
+async function notifyOpenedTrades(openedA: OpenedTradeInfo[], openedB: OpenedTradeInfo[]): Promise<void> {
+  // Group both variants' opens by signalId — one signal can be picked up by A,
+  // B, or both. Variant order in the message follows entry order: A first, then B.
+  const bySig = new Map<number, { a?: OpenedTradeInfo; b?: OpenedTradeInfo }>()
+  for (const t of openedA) bySig.set(t.signalId, { ...(bySig.get(t.signalId) ?? {}), a: t })
+  for (const t of openedB) bySig.set(t.signalId, { ...(bySig.get(t.signalId) ?? {}), b: t })
+
+  for (const [signalId, pair] of bySig) {
+    const ref = pair.a ?? pair.b
+    if (!ref) continue
+    const variants: VariantOpenInfo[] = []
+    if (pair.a) variants.push(toVariantInfo(pair.a, 'A'))
+    if (pair.b) variants.push(toVariantInfo(pair.b, 'B'))
+
+    try {
+      await sendNotification('BREAKOUT_OPENED', {
+        symbol: ref.symbol,
+        side: ref.side,
+        reason: ref.reason,
+        variants,
+      })
+      // Mark notify only on signals A actually saw — variant B never mutates
+      // the shared signal row (legacy contract).
+      if (pair.a) {
+        try {
+          await prisma.breakoutSignal.update({
+            where: { id: signalId },
+            data: { notifiedTelegram: true },
+          })
+        } catch { /* signal could have been deleted concurrently — ignore */ }
+      }
+    } catch (e: any) {
+      console.error(`[BreakoutScanner] OPENED notify failed for sig ${signalId}: ${e.message}`)
     }
   }
 }

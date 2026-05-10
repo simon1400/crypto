@@ -11,7 +11,7 @@ import breakoutRouter from './routes/breakout'
 import breakoutPaperRouter from './routes/breakoutPaper'
 import breakoutPaperBRouter from './routes/breakoutPaperB'
 import { startBreakoutLiveScanner, stopBreakoutLiveScanner } from './services/dailyBreakoutLiveScanner'
-import { startBreakoutPaperTrader, stopBreakoutPaperTrader } from './services/dailyBreakoutPaperTrader'
+import { startBreakoutPaperTrader, stopBreakoutPaperTrader, startBreakoutEodSummary, stopBreakoutEodSummary } from './services/dailyBreakoutPaperTrader'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -45,6 +45,7 @@ const server = app.listen(PORT, () => {
   startBreakoutLiveScanner()
   startBreakoutPaperTrader('A')
   startBreakoutPaperTrader('B')
+  startBreakoutEodSummary()
 })
 
 async function gracefulShutdown(signal: string) {
@@ -55,6 +56,7 @@ async function gracefulShutdown(signal: string) {
   stopBreakoutLiveScanner()
   stopBreakoutPaperTrader('A')
   stopBreakoutPaperTrader('B')
+  stopBreakoutEodSummary()
 
   await prisma.$disconnect()
 
