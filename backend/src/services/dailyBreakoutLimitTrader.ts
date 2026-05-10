@@ -1,34 +1,38 @@
 /**
- * Daily Breakout — variant C: limit-on-rangeEdge entry mechanics.
+ * Daily Breakout — variant C: PRE-EMPTIVE limit-on-rangeEdge entry mechanics.
  *
- * Параллельная копия paper trader'а с ОДНИМ принципиальным отличием от A/B:
- *   - A/B: market entry (taker fee + slip) на c.close триггерной свечи когда
- *     5m свеча закрылась за rangeHigh/rangeLow.
- *   - C:   limit ордер на rangeHigh (BUY) или rangeLow (SELL) выставляется
- *     СРАЗУ как только сигнал появился, и заполняется ТОЧНО по этой цене как
- *     только цена касается уровня (maker fee, без slip).
+ * Параллельная копия paper trader'а с принципиально другой механикой входа:
+ *   - A/B: scanner ждёт пробой 5m свечи → market entry (taker + slip) на c.close.
+ *           К этому моменту цена УЖЕ за rangeEdge → entry хуже на slip + range_overshoot.
+ *   - C:   как только 3h-range зафиксирован (после 03:00 UTC), для каждой монеты
+ *           СРАЗУ выставляются 2 limit-ордера: BUY @ rangeHigh + SELL @ rangeLow.
+ *           Limits сидят в стакане (post-only/maker). При пробое какой-то стороны
+ *           limit заполняется ТОЧНО по rangeEdge (maker fee, без slip). Противоположный
+ *           limit отменяется.
  *
  * Backtest 2026-05-10 (runBacktest_dailybreak_binance_AB.ts) показал ×9-22
  * улучшение доходности vs market entry (A: $1142→$10221, B: $571→$12461 за
- * 365d), DD падает с 88% до 62%. См. project_breakout_limit_entry_finding_2026_05_10.md.
+ * 365d), DD падает с 88% до 62%. Это работает ТОЛЬКО при pre-emptive placement —
+ * post-emptive (после пробоя) почти всегда даёт post-only reject (см. ранние логи
+ * "price already past limit edge").
  *
  * Жизненный цикл сделки в C:
- *   1. Сигнал создан scanner'ом → создаём ОДНУ строку в TradeC с
- *      limitOrderState='PENDING_LIMIT', limitOrderPrice=rangeHigh (BUY) /
- *      rangeLow (SELL). Sizing НЕ делаем (deposit может измениться к моменту fill).
- *   2. Каждый tick (slow 5m + WS instant) проверяем PENDING_LIMIT для символа.
- *      Если price коснулся limitOrderPrice → fillLimit():
- *      - sizing с актуальным deposit
- *      - state=FILLED, обычный lifecycle далее
- *      - charged maker fee (НЕ taker), без slip
- *   3. EOD job в 23:55 UTC: все PENDING_LIMIT за вчерашний rangeDate → CANCELLED_EOD.
+ *   1. После 03:00 UTC, для каждой из 23 монет:
+ *      - вычисляем rangeHigh/rangeLow из 36 первых 5m свечей дня (как scanner)
+ *      - проверяем slDist >= 0.4% (фильтр узких SL, как в engine)
+ *      - проверяем что price ВНУТРИ range (иначе limit уже бы reject'ился) —
+ *        если price > rangeHigh, BUY-limit невозможен; если price < rangeLow,
+ *        SELL-limit невозможен. Тот limit, который возможен, ставим.
+ *      - создаём 2 PENDING_LIMIT строки (или 1 если другая невозможна),
+ *        связаны через pairOrderId
+ *   2. WS instant fill: на каждый trade event проверяем touched ли limit.
+ *      При срабатывании одного → fill (sizing с актуальным deposit, maker fee,
+ *      slip=0, status=OPEN), второй → CANCELLED_OTHER_SIDE через pairOrderId.
+ *   3. EOD job в 23:55 UTC: все PENDING_LIMIT за вчерашний день → CANCELLED_EOD.
  *
- * PENDING_LIMIT занимает concurrent slot — без этого можно «разлить» лимиты на
- * все 23 монеты и потом не хватит депо при fill.
- *
- * Important: для C мы создаём только ОДИН trade-row на сигнал (не 2 как могло
- * быть). Сигнал уже знает направление (BUY или SELL) — scanner выбирает
- * направление пробоя при генерации сигнала. Мы просто меняем механику входа.
+ * Slot policy: каждая ПАРА (BUY+SELL) = 1 концурент-слот. После fill одной из
+ * сторон slot всё ещё занят (теперь FILLED трейдом). После cancel второй стороны
+ * slot не освобождается (FILLED занимает). Это эквивалент: «одна позиция per range».
  *
  * После fill жизненный цикл идентичен A/B — используется существующий
  * trackOnePaper через runTrackForSymbol, который уже variant-aware.
@@ -43,6 +47,9 @@ import {
 import {
   getRealisticRates, syncSignalStatus, isVariantBusyOnSymbol, runTrackForSymbol,
 } from './dailyBreakoutPaperTrader'
+import { detectRange, BreakoutEngineConfig } from '../scalper/dailyBreakoutEngine'
+import { loadHistorical } from '../scalper/historicalLoader'
+import { DEFAULT_BREAKOUT_SETUPS } from './dailyBreakoutLiveScanner'
 import { sendNotification } from './notifier'
 
 const VARIANT: BreakoutVariant = 'C'
@@ -79,135 +86,152 @@ async function getOrCreateConfigC(): Promise<PaperConfigC | null> {
 }
 
 /**
- * Для каждого нового сигнала создаём PENDING_LIMIT trade-row.
- * Limit price = rangeHigh для BUY (мы хотим купить ровно на пробое верхней
- * границы) или rangeLow для SELL.
+ * Pre-emptive placement: для каждой из 23 монет на каждом 5m цикле проверяем,
+ * сформирован ли сегодняшний 3h-range, и если нет PENDING/OPEN записи — создаём
+ * пару limit-ордеров (BUY @ rangeHigh, SELL @ rangeLow). Если price уже за
+ * одной из сторон — ту сторону не ставим (post-only бы reject'илось).
  *
  * Не делаем sizing здесь — он отложен до fill, потому что между placement и
  * fill могут пройти часы и deposit может измениться (другая C-сделка закрылась
  * с +/-).
  */
-async function placePendingLimits(cfg: PaperConfigC): Promise<{ placed: number }> {
+async function placeLimitsForRanges(cfg: PaperConfigC): Promise<{ placed: number }> {
   const tag = logTag(VARIANT)
   const tm = tradeModel(VARIANT) as any
 
-  const since = new Date(Date.now() - 24 * 60 * 60_000)
-  const signals = await prisma.breakoutSignal.findMany({
-    where: {
-      createdAt: { gte: since },
-      status: { in: ['NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT'] },
-    },
-    orderBy: { createdAt: 'asc' },
-  })
-  if (signals.length === 0) return { placed: 0 }
+  const dbCfg = await prisma.breakoutConfig.findUnique({ where: { id: 1 } })
+  if (!dbCfg) return { placed: 0 }
+  const enabledSymbols = (dbCfg.symbolsEnabled as string[]).length > 0
+    ? dbCfg.symbolsEnabled as string[]
+    : DEFAULT_BREAKOUT_SETUPS
 
-  const existingTrades = await tm.findMany({
-    where: { signalId: { in: signals.map(s => s.id) } },
-    select: { signalId: true },
-  })
-  const existingIds = new Set(existingTrades.map((t: any) => t.signalId))
+  const engineCfg: BreakoutEngineConfig = {
+    rangeBars: dbCfg.rangeBars,
+    volumeMultiplier: dbCfg.volumeMultiplier,
+    tp1Mult: 1.0, tp2Mult: 2.0, tp3Mult: 3.0,
+  }
 
+  const utcDate = new Date().toISOString().slice(0, 10)
   let placed = 0
-  for (const sig of signals) {
-    if (existingIds.has(sig.id)) continue
 
-    // Same-day-per-symbol guard (как в A/B)
-    if (await isVariantBusyOnSymbol(sig.symbol, sig.rangeDate, VARIANT)) {
-      console.log(`${tag} skip sig ${sig.id} ${sig.symbol} — already busy on symbol today`)
-      continue
-    }
-
-    // Concurrent slot guard. PENDING_LIMIT занимает слот — иначе можно разлить
-    // limit на 23 монеты разом и потом не хватит депо на fill.
-    const activeOrPending = await tm.count({
-      where: {
-        OR: [
-          { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
-          { limitOrderState: 'PENDING_LIMIT' },
-        ],
-      },
-    })
-    if (activeOrPending >= cfg.maxConcurrentPositions) {
-      console.log(`${tag} skip sig ${sig.id} — maxConcurrent=${cfg.maxConcurrentPositions} reached (incl. pending limits)`)
-      continue
-    }
-
-    // Stale signal guard (как в A/B): >30 мин — пробой устарел, range уже не актуален.
-    const STALE_MIN = 30
-    const ageMs = Date.now() - new Date(sig.createdAt).getTime()
-    if (ageMs > STALE_MIN * 60_000) {
-      console.log(`${tag} skip sig ${sig.id} ${sig.symbol} — stale ${Math.round(ageMs / 60_000)}min`)
-      continue
-    }
-
-    // Pre-flight retrace check: limit price = rangeEdge. Если live уже сильно
-    // ниже rangeHigh (для BUY) — ставить limit бессмысленно, он сразу зафиллится
-    // только при возврате цены к уровню (т.е. при ОБРАТНОМ движении), а это
-    // уже не пробой а просто торговля у уровня. Пропускаем такие сигналы.
-    let livePrice: number | null = null
+  for (const symbol of enabledSymbols) {
     try {
-      const prices = await fetchPricesBatch([sig.symbol])
-      const live = prices[sig.symbol]
-      if (live && live > 0) livePrice = live
-    } catch { /* keep livePrice null — без retrace check */ }
+      // Skip если уже есть запись на эту монету за сегодня в любом статусе.
+      if (await isVariantBusyOnSymbol(symbol, utcDate, VARIANT)) continue
 
-    if (livePrice != null) {
-      // Limit-on-rangeEdge может стоять в стакане ТОЛЬКО если live цена не пересекла
-      // уровень с другой стороны:
-      //   - BUY limit @ rangeHigh: cтавим если price <= rangeHigh (limit ниже рынка
-      //     для шорта пробоя — невозможен, для лонга это «купить на откате к уровню»;
-      //     если price > rangeHigh уже сейчас — биржа отвергнет post-only или исполнит
-      //     как market по текущей цене, не по rangeHigh — нечестно к backtest модели).
-      //   - SELL limit @ rangeLow: cтавим если price >= rangeLow.
-      // Если уже за уровнем — пробой произошёл без нас, пропускаем (как overshoot guard).
-      const limitPrice = sig.side === 'BUY' ? sig.rangeHigh : sig.rangeLow
-      const alreadyOvershot = sig.side === 'BUY'
-        ? livePrice > limitPrice
-        : livePrice < limitPrice
-      if (alreadyOvershot) {
-        console.log(`${tag} skip sig ${sig.id} ${sig.symbol} — price ${livePrice} already past limit edge ${limitPrice} (post-only would reject)`)
+      // Concurrent cap: каждая «пара» = 2 строки (BUY+SELL), но логически 1 слот.
+      // Эффективный cap по строкам = maxConcurrentPositions * 2.
+      const activeOrPending = await tm.count({
+        where: {
+          OR: [
+            { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+            { limitOrderState: 'PENDING_LIMIT' },
+          ],
+        },
+      })
+      if (activeOrPending >= cfg.maxConcurrentPositions * 2) continue
+
+      const candles = await loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
+      const range = detectRange(candles, utcDate, engineCfg)
+      if (!range) continue  // range ещё не сформирован (до 03:00 UTC)
+
+      // SL distance guard (как в engine)
+      const slDistPct = (range.rangeSize / Math.min(range.rangeHigh, range.rangeLow)) * 100
+      if (slDistPct < 0.4) {
+        console.log(`${tag} skip ${symbol} — slDist ${slDistPct.toFixed(2)}% < 0.4%`)
         continue
       }
-    }
 
-    // Создаём PENDING_LIMIT строку. Sizing-поля заполняем заглушками (0) —
-    // настоящие значения попадут в fillLimit() с актуальным deposit.
-    const limitPrice = sig.side === 'BUY' ? sig.rangeHigh : sig.rangeLow
-    const placedAt = new Date()
-    await tm.create({
-      data: {
-        signalId: sig.id,
-        symbol: sig.symbol,
-        side: sig.side,
-        entryPrice: limitPrice,
-        stopLoss: sig.stopLoss,
-        initialStop: sig.initialStop,
-        currentStop: sig.currentStop,
-        tpLadder: sig.tpLadder as any,
-        openedAt: placedAt,           // время выставления limit (обновится в fill)
-        depositAtEntryUsd: 0,         // заполнится в fill
-        riskUsd: 0,
-        positionSizeUsd: 0,
-        positionUnits: 0,
-        leverage: null,
-        marginUsd: null,
-        feesRoundTripPct: cfg.feesRoundTripPct,
-        feeTakerPct: cfg.feeTakerPct,
-        feeMakerPct: cfg.feeMakerPct,
-        slipTakerPct: cfg.slipTakerPct,
-        feesPaidUsd: 0,
-        slipPaidUsd: 0,
-        autoTrailingSL: cfg.autoTrailingSL,
-        status: 'PENDING',            // отдельный статус — НЕ участвует в trackOnePaper
-        expiresAt: sig.expiresAt,
-        // Limit-specific:
-        limitOrderState: 'PENDING_LIMIT',
-        limitOrderPrice: limitPrice,
-        limitPlacedAt: placedAt,
-      },
-    })
-    placed++
-    console.log(`${tag} placed limit ${sig.side} ${sig.symbol} @ ${limitPrice} (sig #${sig.id})`)
+      // Live price — определяем какие limit'ы возможны (post-only reject иначе)
+      let livePrice: number | null = null
+      try {
+        const prices = await fetchPricesBatch([symbol])
+        const live = prices[symbol]
+        if (live && live > 0) livePrice = live
+      } catch { /* без живой цены ставим обе стороны */ }
+
+      // Геометрия (как engine.generateBreakoutSignal):
+      //   BUY entry = rangeHigh, SL = rangeLow, TP = rangeHigh + N×rangeSize
+      //   SELL entry = rangeLow,  SL = rangeHigh, TP = rangeLow - N×rangeSize
+      const buyTpLadder = [
+        range.rangeHigh + range.rangeSize * engineCfg.tp1Mult,
+        range.rangeHigh + range.rangeSize * engineCfg.tp2Mult,
+        range.rangeHigh + range.rangeSize * engineCfg.tp3Mult,
+      ]
+      const sellTpLadder = [
+        range.rangeLow - range.rangeSize * engineCfg.tp1Mult,
+        range.rangeLow - range.rangeSize * engineCfg.tp2Mult,
+        range.rangeLow - range.rangeSize * engineCfg.tp3Mult,
+      ]
+
+      // Каждая сторона возможна только если price не за этой стороной
+      const canPlaceBuy = livePrice == null || livePrice <= range.rangeHigh
+      const canPlaceSell = livePrice == null || livePrice >= range.rangeLow
+      if (!canPlaceBuy && !canPlaceSell) continue
+
+      const placedAt = new Date()
+      const placedRows: any[] = []
+
+      if (canPlaceBuy) {
+        const buyRow = await tm.create({
+          data: {
+            signalId: 0,                          // pre-emptive — нет signalId, scanner создаст сигнал когда пробой
+            symbol, side: 'BUY',
+            entryPrice: range.rangeHigh,
+            stopLoss: range.rangeLow, initialStop: range.rangeLow, currentStop: range.rangeLow,
+            tpLadder: buyTpLadder as any,
+            openedAt: placedAt,
+            depositAtEntryUsd: 0, riskUsd: 0, positionSizeUsd: 0, positionUnits: 0,
+            leverage: null, marginUsd: null,
+            feesRoundTripPct: cfg.feesRoundTripPct,
+            feeTakerPct: cfg.feeTakerPct, feeMakerPct: cfg.feeMakerPct, slipTakerPct: cfg.slipTakerPct,
+            feesPaidUsd: 0, slipPaidUsd: 0,
+            autoTrailingSL: cfg.autoTrailingSL,
+            status: 'PENDING',
+            limitOrderState: 'PENDING_LIMIT',
+            limitOrderPrice: range.rangeHigh,
+            limitPlacedAt: placedAt,
+          },
+        })
+        placedRows.push(buyRow)
+      }
+
+      if (canPlaceSell) {
+        const sellRow = await tm.create({
+          data: {
+            signalId: 0,
+            symbol, side: 'SELL',
+            entryPrice: range.rangeLow,
+            stopLoss: range.rangeHigh, initialStop: range.rangeHigh, currentStop: range.rangeHigh,
+            tpLadder: sellTpLadder as any,
+            openedAt: placedAt,
+            depositAtEntryUsd: 0, riskUsd: 0, positionSizeUsd: 0, positionUnits: 0,
+            leverage: null, marginUsd: null,
+            feesRoundTripPct: cfg.feesRoundTripPct,
+            feeTakerPct: cfg.feeTakerPct, feeMakerPct: cfg.feeMakerPct, slipTakerPct: cfg.slipTakerPct,
+            feesPaidUsd: 0, slipPaidUsd: 0,
+            autoTrailingSL: cfg.autoTrailingSL,
+            status: 'PENDING',
+            limitOrderState: 'PENDING_LIMIT',
+            limitOrderPrice: range.rangeLow,
+            limitPlacedAt: placedAt,
+          },
+        })
+        placedRows.push(sellRow)
+      }
+
+      // Связываем пару через pairOrderId — для cancel cascade при fill одной стороны.
+      if (placedRows.length === 2) {
+        await tm.update({ where: { id: placedRows[0].id }, data: { pairOrderId: placedRows[1].id } })
+        await tm.update({ where: { id: placedRows[1].id }, data: { pairOrderId: placedRows[0].id } })
+      }
+
+      placed += placedRows.length
+      const sides = placedRows.map(r => `${r.side}@${r.limitOrderPrice}`).join(', ')
+      console.log(`${tag} ${symbol} placed ${placedRows.length} limit(s) [range ${range.rangeHigh}/${range.rangeLow}, slDist ${slDistPct.toFixed(2)}%]: ${sides}`)
+    } catch (e: any) {
+      console.warn(`${tag} ${symbol} placement failed: ${e.message}`)
+    }
   }
 
   return { placed }
@@ -358,6 +382,22 @@ async function fillLimitInner(
     data: { currentDepositUsd: { decrement: entryFeeUsd } },
   })
 
+  // Cancel pair: один limit зафиллен → противоположный отменяем (если был).
+  // Ставим updateMany с проверкой что пара ещё в PENDING_LIMIT (не успела зафиллиться сама).
+  if (trade.pairOrderId) {
+    const cancelled = await tm.updateMany({
+      where: { id: trade.pairOrderId, limitOrderState: 'PENDING_LIMIT' },
+      data: {
+        limitOrderState: 'CANCELLED_OTHER_SIDE',
+        status: 'CANCELLED',
+        closedAt: fillTime,
+      },
+    })
+    if (cancelled.count > 0) {
+      console.log(`${tag} cancelled pair limit #${trade.pairOrderId} (${trade.symbol}) — other side filled`)
+    }
+  }
+
   console.log(`${tag} ✓ filled limit #${tradeId} ${trade.symbol} ${trade.side} @ ${fillPrice} (size $${sizing.positionSizeUsd.toFixed(0)}, lev ×${finalLeverage.toFixed(1)})`)
 
   // Telegram notification — переиспользуем BREAKOUT_OPENED шаблон. Шаблон ждёт
@@ -469,16 +509,16 @@ export async function cancelStaleLimitsEod(): Promise<{ cancelled: number }> {
 
 /**
  * Один цикл variant C:
- *   1. placePendingLimits — для новых сигналов выставить лимиты
- *   2. checkPendingLimitsAgainstCandles per symbol — slow tick fill safety
- *   3. runTrackForSymbol для FILLED сделок (через общий trackOnePaper) —
- *      это уже делается в paperTrader cycle через variant routing, поэтому
- *      здесь нам нужен только placement + safety-net check.
+ *   1. placeLimitsForRanges — pre-emptive: для каждой монеты с готовым 3h-range
+ *      и без активной сделки сегодня — создаёт пару PENDING_LIMIT
+ *   2. WS instant fill отлавливает срабатывание (через processWsTradeForLimits)
+ *   3. trackOnePaper для FILLED сделок — через общий paperTrader cycle (variant C)
+ *   4. EOD cancel stale limits — через sendBreakoutEodSummary в 23:55 UTC
  */
 export async function runBreakoutLimitCycleC(): Promise<{ placed: number }> {
   const cfg = await getOrCreateConfigC()
   if (!cfg || !cfg.enabled) return { placed: 0 }
-  const r = await placePendingLimits(cfg)
+  const r = await placeLimitsForRanges(cfg)
   return r
 }
 
