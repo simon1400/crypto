@@ -32,6 +32,15 @@ const lastProcessedAt: Record<string, number> = {}
 // записать дублирующие fills.
 const busy: Record<string, boolean> = {}
 
+// Per-symbol pending buffer: между throttled ticks мы НЕ дропаем events, а копим
+// high/low в буфер. Когда throttle window истечёт — flush буфера пройдёт через
+// trackOnePaper с агрегированной synthetic candle. Без этого активная монета с
+// >5 трейдов/сек теряла бы промежуточные пики, и реальный пробой SL/TP мог бы
+// никогда не быть зафиксирован WS-трекером (только safety-net через 60s).
+type PendingTick = { high: number; low: number; latestPrice: number; latestT: number }
+const pending: Record<string, PendingTick> = {}
+const flushTimers: Record<string, NodeJS.Timeout | null> = {}
+
 async function getOpenSymbols(): Promise<string[]> {
   const [a, b] = await Promise.all([
     prisma.breakoutPaperTrade.findMany({
@@ -88,20 +97,62 @@ async function refreshSubscriptions(): Promise<void> {
   }
 }
 
-async function handleTrade(symbol: string, price: number, ts: number): Promise<void> {
-  const now = Date.now()
-  const last = lastProcessedAt[symbol] ?? 0
-  if (now - last < THROTTLE_MS) return
-  if (busy[symbol]) return
-  lastProcessedAt[symbol] = now
+function mergePending(symbol: string, high: number, low: number, latestPrice: number, latestT: number): void {
+  const cur = pending[symbol]
+  if (!cur) {
+    pending[symbol] = { high, low, latestPrice, latestT }
+    return
+  }
+  if (high > cur.high) cur.high = high
+  if (low < cur.low) cur.low = low
+  if (latestT >= cur.latestT) { cur.latestT = latestT; cur.latestPrice = latestPrice }
+}
+
+async function flushPending(symbol: string): Promise<void> {
+  const p = pending[symbol]
+  if (!p) return
+  delete pending[symbol]
+  if (busy[symbol]) {
+    // Очень редкий случай: предыдущий flush ещё крутится. Возвращаем в буфер и
+    // переплpанируем — следующий tick через throttle window.
+    mergePending(symbol, p.high, p.low, p.latestPrice, p.latestT)
+    scheduleFlush(symbol)
+    return
+  }
   busy[symbol] = true
+  lastProcessedAt[symbol] = Date.now()
   try {
-    const tick: OHLCV = { time: ts, open: price, high: price, low: price, close: price, volume: 0 }
+    const tick: OHLCV = {
+      time: p.latestT, open: p.latestPrice, high: p.high, low: p.low, close: p.latestPrice, volume: 0,
+    }
     await runTrackForSymbol(symbol, tick)
   } catch (e: any) {
-    console.warn(`[BreakoutWS] handleTrade ${symbol} failed: ${e.message}`)
+    console.warn(`[BreakoutWS] flush ${symbol} failed: ${e.message}`)
   } finally {
     busy[symbol] = false
+  }
+}
+
+function scheduleFlush(symbol: string): void {
+  if (flushTimers[symbol]) return
+  const now = Date.now()
+  const last = lastProcessedAt[symbol] ?? 0
+  const wait = Math.max(0, THROTTLE_MS - (now - last))
+  flushTimers[symbol] = setTimeout(() => {
+    flushTimers[symbol] = null
+    flushPending(symbol).catch(() => { /* logged inside */ })
+  }, wait)
+}
+
+function handleBatch(symbol: string, high: number, low: number, close: number, ts: number): void {
+  mergePending(symbol, high, low, close, ts)
+  const now = Date.now()
+  const last = lastProcessedAt[symbol] ?? 0
+  if (now - last >= THROTTLE_MS && !busy[symbol]) {
+    // Throttle window прошло — можно flush'ить сразу, без таймера.
+    flushPending(symbol).catch(() => { /* logged inside */ })
+  } else {
+    scheduleFlush(symbol)
   }
 }
 
@@ -118,18 +169,27 @@ export function startBreakoutWsTracker(): void {
       if (!data) return
       const events = Array.isArray(data) ? data : [data]
       // publicTrade event shape: { T: ts, s: symbol, S: side, p: price, v: size, ... }
-      // Берём ПОСЛЕДНИЙ trade в батче — самая свежая цена.
-      let latest: any = null
+      // Bybit батчит до 50+ трейдов в одном WS message при волатильности. Если
+      // взять только "последний по T" — потеряем промежуточные пики high/low,
+      // и реальный пробой SL/TP может быть пропущен (например batch:
+      // [0.268, 0.265, 0.266] — последний 0.266, но пик 0.268 пробил TP).
+      // Поэтому строим high/low из ВСЕХ events батча.
+      let symbol: string | null = null
+      let high = -Infinity, low = Infinity
+      let latestT = 0, latestPrice = 0
       for (const ev of events) {
-        if (!latest || (ev.T ?? 0) > (latest.T ?? 0)) latest = ev
+        const p = parseFloat(ev.p)
+        if (!p || p <= 0) continue
+        if (!symbol) symbol = ev.s
+        if (p > high) high = p
+        if (p < low) low = p
+        const t = parseInt(ev.T ?? 0, 10)
+        if (t >= latestT) { latestT = t; latestPrice = p }
       }
-      if (!latest) return
-      const symbol = latest.s
-      const price = parseFloat(latest.p)
-      const ts = parseInt(latest.T ?? Date.now(), 10)
-      if (!symbol || !price || price <= 0) return
-      // Fire-and-forget: WS callback не должен блокироваться на DB.
-      handleTrade(symbol, price, ts).catch(() => { /* logged inside */ })
+      if (!symbol || high === -Infinity) return
+      const ts = latestT || Date.now()
+      // Fire-and-forget: handleBatch только мерджит в pending буфер и планирует flush.
+      handleBatch(symbol, high, low, latestPrice, ts)
     } catch (err: any) {
       console.error('[BreakoutWS] update parse error:', err.message)
     }
@@ -162,6 +222,12 @@ export function startBreakoutWsTracker(): void {
 
 export function stopBreakoutWsTracker(): void {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
+  for (const sym of Object.keys(flushTimers)) {
+    const t = flushTimers[sym]
+    if (t) clearTimeout(t)
+    flushTimers[sym] = null
+  }
+  for (const sym of Object.keys(pending)) delete pending[sym]
   if (wsClient) {
     try { wsClient.closeAll() } catch { /* ignore */ }
     wsClient = null
