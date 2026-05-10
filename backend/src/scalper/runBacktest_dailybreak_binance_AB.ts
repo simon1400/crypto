@@ -68,6 +68,11 @@ const VARIANTS: Variant[] = [
   { name: 'B', startingDeposit: 320, maxConcurrent: 20, targetMarginPct: 5  },
 ]
 
+// Entry mode для симулятора:
+//   'taker': market entry (как сейчас в проде) — taker fee + slip pushes entry worse
+//   'limit': maker entry на rangeEdge — maker fee, без slip, fills exactly on level
+type EntryMode = 'taker' | 'limit'
+
 function sliceLastDays(arr: OHLCV[], days: number): OHLCV[] {
   const cutoff = Date.now() - (days + BUFFER_DAYS) * 24 * 60 * 60_000
   return arr.filter((c) => c.time >= cutoff)
@@ -160,6 +165,10 @@ interface BreakoutCfg {
   tp1Mult: number
   tp2Mult: number
   tp3Mult: number
+  /** Live engine formula: entry = c.close (триггерная свеча). Idealized = false → entry=rangeEdge. */
+  liveEntryFormula: boolean
+  /** Min entry→TP1 distance % filter. 0 = no filter. */
+  minEntryTp1Pct: number
 }
 
 function generateBreakoutSignals(m5: OHLCV[], cfg: BreakoutCfg, periodFrom: number, periodTo: number): LadderSignal[] {
@@ -186,13 +195,32 @@ function generateBreakoutSignals(m5: OHLCV[], cfg: BreakoutCfg, periodFrom: numb
       if (c.volume < avgVol * cfg.volMultiplier) continue
       let side: 'BUY' | 'SELL' | null = null
       let entryPrice = 0
-      if (c.high > rangeHigh && c.close > rangeHigh) { side = 'BUY'; entryPrice = rangeHigh }
-      else if (c.low < rangeLow && c.close < rangeLow) { side = 'SELL'; entryPrice = rangeLow }
+      let anchor = 0
+      if (c.high > rangeHigh && c.close > rangeHigh) {
+        side = 'BUY'
+        entryPrice = cfg.liveEntryFormula ? c.close : rangeHigh
+        anchor = rangeHigh   // TP всегда от rangeEdge (как в live engine)
+      } else if (c.low < rangeLow && c.close < rangeLow) {
+        side = 'SELL'
+        entryPrice = cfg.liveEntryFormula ? c.close : rangeLow
+        anchor = rangeLow
+      }
       if (!side) continue
       const sl = side === 'BUY' ? rangeLow : rangeHigh
       const tpLadder = side === 'BUY'
-        ? [entryPrice + rangeSize * cfg.tp1Mult, entryPrice + rangeSize * cfg.tp2Mult, entryPrice + rangeSize * cfg.tp3Mult]
-        : [entryPrice - rangeSize * cfg.tp1Mult, entryPrice - rangeSize * cfg.tp2Mult, entryPrice - rangeSize * cfg.tp3Mult]
+        ? [anchor + rangeSize * cfg.tp1Mult, anchor + rangeSize * cfg.tp2Mult, anchor + rangeSize * cfg.tp3Mult]
+        : [anchor - rangeSize * cfg.tp1Mult, anchor - rangeSize * cfg.tp2Mult, anchor - rangeSize * cfg.tp3Mult]
+
+      // TP1 overshoot guard (entry уже за TP1) — отбрасываем сразу.
+      const tp1Overshoot = side === 'BUY' ? entryPrice >= tpLadder[0] : entryPrice <= tpLadder[0]
+      if (tp1Overshoot) continue
+
+      // MIN_ENTRY_TP1_PCT: если entry слишком близко к TP1 — fast-mover, fees съедят TP1 профит.
+      if (cfg.minEntryTp1Pct > 0) {
+        const entryTp1Pct = (Math.abs(tpLadder[0] - entryPrice) / entryPrice) * 100
+        if (entryTp1Pct < cfg.minEntryTp1Pct) continue
+      }
+
       sigs.push({ side, entryTime: c.time, entryPrice, sl, tpLadder, reason: 'daily_breakout' })
       triggered = true
     }
@@ -290,6 +318,7 @@ function simulate(
   allTrades: PortfolioTrade[],
   variant: Variant,
   btc: BtcRegime,
+  entryMode: EntryMode = 'taker',
 ): SimResult {
   const sorted = [...allTrades].sort((a, b) => a.entryTime - b.entryTime)
   let currentDeposit = variant.startingDeposit
@@ -398,14 +427,18 @@ function simulate(
     if (slDist <= 0 || currentDeposit <= 0) { skippedMargin++; continue }
     if (active.length >= variant.maxConcurrent) { skippedConcurrent++; continue }
 
-    // Apply entry slip BEFORE sizing
+    // Entry price model:
+    //   'taker': market entry, slip pushes entry worse → maker rate doesn't apply, taker does
+    //   'limit': limit на rangeEdge, exact fill, no slip → maker rate
     const isLong = pt.side === 'BUY'
-    const slippedEntry = isLong ? pt.entryPrice * (1 + TAKER_SLIP) : pt.entryPrice * (1 - TAKER_SLIP)
+    const effectiveEntry = entryMode === 'limit'
+      ? pt.entryPrice  // exact fill on rangeEdge
+      : (isLong ? pt.entryPrice * (1 + TAKER_SLIP) : pt.entryPrice * (1 - TAKER_SLIP))
 
     const sizing = computeSizing({
       symbol: pt.symbol, deposit: currentDeposit,
       riskPct: RISK_PCT, targetMarginPct: variant.targetMarginPct,
-      entry: slippedEntry, sl: pt.sl,
+      entry: effectiveEntry, sl: pt.sl,
     })
     if (!sizing) { skippedMargin++; continue }
 
@@ -422,13 +455,18 @@ function simulate(
     if (!guard.canOpen) { skippedMargin++; continue }
     if (guard.toClose.length > 0) { skippedMargin++; continue }
 
-    // Charge entry taker fee + record entry slip
-    const entryNotional = sizing.positionUnits * slippedEntry
-    const entryFee = entryNotional * TAKER_FEE
+    // Charge entry fee:
+    //   'taker': taker rate + record slip
+    //   'limit': maker rate, no slip
+    const entryNotional = sizing.positionUnits * effectiveEntry
+    const entryFeeRate = entryMode === 'limit' ? MAKER_FEE : TAKER_FEE
+    const entryFee = entryNotional * entryFeeRate
     currentDeposit -= entryFee
     totalFees += entryFee
-    const entrySlip = sizing.positionUnits * Math.abs(slippedEntry - pt.entryPrice)
-    totalSlip += entrySlip
+    if (entryMode === 'taker') {
+      const entrySlip = sizing.positionUnits * Math.abs(effectiveEntry - pt.entryPrice)
+      totalSlip += entrySlip
+    }
     applyDD(pt.entryTime)
 
     takenSet.add(`${pt.symbol}|${pt.utcDate}`)
@@ -440,7 +478,7 @@ function simulate(
       marginUsd: sizing.marginUsd,
       fillsApplied: 0, closedFracPct: 0, statusKey: 'OPEN', realizedR: 0,
       riskUsd: sizing.riskUsd,
-      effectiveEntryPrice: slippedEntry,
+      effectiveEntryPrice: effectiveEntry,
     })
     opened++
   }
@@ -513,58 +551,142 @@ async function main() {
   console.log('Loading m5 + BTC regime...')
   const btc = await buildBtcRegime()
 
-  const allFull: PortfolioTrade[] = []
-  const allTrain: PortfolioTrade[] = []
-  const allTest: PortfolioTrade[] = []
   const fullStart = Date.now() - DAYS_BACK * 24 * 60 * 60_000
   const trainEnd = Date.now() - Math.round(DAYS_BACK * (1 - TRAIN_PCT)) * 24 * 60 * 60_000
   const now = Date.now()
 
+  // 4 сценария — варьируем entry-mode и filter:
+  //   1. taker market entry (как сейчас в проде, entry = c.close + slip + taker fee)
+  //   2. taker market entry + фильтр entry→TP1 ≥ 0.5%
+  //   3. limit на rangeEdge (maker fee, без slip, exact fill = idealized)
+  //   4. limit + фильтр entry→TP1 ≥ 0.5%
+  // Сигнал-генерация: всегда live formula (entry=c.close для определения тригера), но
+  // simulate подменяет entry на rangeEdge когда entryMode='limit' через pt.entryPrice
+  // ← здесь pt.entryPrice ВСЕГДА = c.close (live trigger price). Чтобы limit-режим
+  // действительно использовал rangeEdge, нужно генерировать сигналы с entry=rangeHigh.
+  // Поэтому для limit-сценариев: liveEntryFormula=false, для taker: liveEntryFormula=true.
+  const SCENARIOS: Array<{
+    label: string
+    minEntryTp1Pct: number
+    liveEntryFormula: boolean
+    entryMode: EntryMode
+  }> = [
+    { label: 'taker market (PROD now)',         minEntryTp1Pct: 0,   liveEntryFormula: true,  entryMode: 'taker' },
+    { label: 'taker market + ≥0.5% filter',     minEntryTp1Pct: 0.5, liveEntryFormula: true,  entryMode: 'taker' },
+    { label: 'limit on rangeEdge (maker)',      minEntryTp1Pct: 0,   liveEntryFormula: false, entryMode: 'limit' },
+    { label: 'limit + ≥0.5% filter',            minEntryTp1Pct: 0.5, liveEntryFormula: false, entryMode: 'limit' },
+  ]
+
+  // Загрузим m5 один раз для каждого символа.
+  const m5BySymbol = new Map<string, OHLCV[]>()
   for (const sym of PROD_SYMBOLS) {
     const cachePath = path.join(CACHE_DIR, `bybit_${sym}_5m.json`)
     if (!fs.existsSync(cachePath)) { console.warn(`[skip] ${sym} not cached`); continue }
     const all = await loadHistorical(sym, '5m', MONTHS_BACK, 'bybit', 'linear')
     const m5 = sliceLastDays(all, DAYS_BACK)
     if (m5.length < 1000) { console.warn(`[skip] ${sym} short data ${m5.length}`); continue }
-    const cfg: BreakoutCfg = { rangeBars: RANGE_BARS, volMultiplier: VOL_MULT, tp1Mult: TP_MULTS[0], tp2Mult: TP_MULTS[1], tp3Mult: TP_MULTS[2] }
-    runLadderRaw(m5, cfg, fullStart, now).forEach(t => allFull.push(toPortfolioTrade(sym, t)))
-    runLadderRaw(m5, cfg, fullStart, trainEnd).forEach(t => allTrain.push(toPortfolioTrade(sym, t)))
-    runLadderRaw(m5, cfg, trainEnd, now).forEach(t => allTest.push(toPortfolioTrade(sym, t)))
+    m5BySymbol.set(sym, m5)
   }
 
-  console.log(`Trade pool: FULL ${allFull.length} | TRAIN ${allTrain.length} | TEST ${allTest.length}`)
-  console.log()
+  type ScenarioGroup = {
+    full: { a: SimResult; b: SimResult }
+    train: { a: SimResult; b: SimResult }
+    test: { a: SimResult; b: SimResult }
+    poolSize: { full: number; train: number; test: number }
+  }
+  const scenarioResults = new Map<string, ScenarioGroup>()
 
-  function runBoth(label: string, pool: PortfolioTrade[]) {
-    console.log(`================== ${label} ==================`)
-    const a = simulate(pool, VARIANTS[0], btc)
-    const b = simulate(pool, VARIANTS[1], btc)
-    printResult(label, a)
-    printResult(label, b)
+  for (const sc of SCENARIOS) {
+    const allFull: PortfolioTrade[] = []
+    const allTrain: PortfolioTrade[] = []
+    const allTest: PortfolioTrade[] = []
+    for (const [sym, m5] of m5BySymbol.entries()) {
+      const cfg: BreakoutCfg = {
+        rangeBars: RANGE_BARS, volMultiplier: VOL_MULT,
+        tp1Mult: TP_MULTS[0], tp2Mult: TP_MULTS[1], tp3Mult: TP_MULTS[2],
+        liveEntryFormula: sc.liveEntryFormula,
+        minEntryTp1Pct: sc.minEntryTp1Pct,
+      }
+      runLadderRaw(m5, cfg, fullStart, now).forEach(t => allFull.push(toPortfolioTrade(sym, t)))
+      runLadderRaw(m5, cfg, fullStart, trainEnd).forEach(t => allTrain.push(toPortfolioTrade(sym, t)))
+      runLadderRaw(m5, cfg, trainEnd, now).forEach(t => allTest.push(toPortfolioTrade(sym, t)))
+    }
+
+    console.log(`================== Scenario: ${sc.label} ==================`)
+    console.log(`Trade pool: FULL ${allFull.length} | TRAIN ${allTrain.length} | TEST ${allTest.length}`)
     console.log()
-    return { a, b }
-  }
 
-  const full = runBoth('FULL (365d)', allFull)
-  const train = runBoth('TRAIN (60%, ~219d)', allTrain)
-  const test = runBoth('TEST (40%, ~146d)', allTest)
+    function runBoth(label: string, pool: PortfolioTrade[]) {
+      console.log(`--- ${label} ---`)
+      const a = simulate(pool, VARIANTS[0], btc, sc.entryMode)
+      const b = simulate(pool, VARIANTS[1], btc, sc.entryMode)
+      printResult(label, a)
+      printResult(label, b)
+      console.log()
+      return { a, b }
+    }
+
+    const full = runBoth('FULL (365d)', allFull)
+    const train = runBoth('TRAIN (60%, ~219d)', allTrain)
+    const test = runBoth('TEST (40%, ~146d)', allTest)
+
+    scenarioResults.set(sc.label, {
+      full, train, test,
+      poolSize: { full: allFull.length, train: allTrain.length, test: allTest.length },
+    })
+  }
 
   // Comparison table
-  console.log('================== Summary table ==================')
+  console.log('================== Summary table (live entry formula) ==================')
   function row(label: string, r: SimResult) {
     const ret = ((r.finalDeposit / r.startingDeposit - 1) * 100)
     console.log(
-      `${label.padEnd(15)} | start $${r.startingDeposit.toString().padStart(4)} | final $${r.finalDeposit.toFixed(0).padStart(6)} ` +
+      `${label.padEnd(28)} | start $${r.startingDeposit.toString().padStart(4)} | final $${r.finalDeposit.toFixed(0).padStart(6)} ` +
       `(${ret >= 0 ? '+' : ''}${ret.toFixed(0)}%) | R/tr=${fmtR(r.rPerTr)} | WR=${r.winRate.toFixed(0)}% | ` +
       `peak $${r.peakDeposit.toFixed(0).padStart(5)} | min $${r.minDeposit.toFixed(0).padStart(4)} | DD ${r.maxDD.toFixed(1)}%`
     )
   }
-  for (const [label, group] of [['FULL', full], ['TRAIN', train], ['TEST', test]] as const) {
-    console.log(`--- ${label} ---`)
-    row('Variant A', group.a)
-    row('Variant B', group.b)
+  for (const sc of SCENARIOS) {
+    const g = scenarioResults.get(sc.label)!
+    for (const [label, group] of [['FULL', g.full], ['TRAIN', g.train], ['TEST', g.test]] as const) {
+      console.log(`--- ${label} | ${sc.label} (pool=${g.poolSize[label.toLowerCase() as 'full' | 'train' | 'test']}) ---`)
+      row(`Variant A — ${sc.label}`, group.a)
+      row(`Variant B — ${sc.label}`, group.b)
+    }
     console.log()
   }
+
+  // Δ taker(no filter) → limit(no filter) — главное сравнение по запросу пользователя
+  console.log('================== Δ taker market → limit on rangeEdge ==================')
+  const noFilter = scenarioResults.get('taker market (PROD now)')!
+  const withFilter = scenarioResults.get('limit on rangeEdge (maker)')!
+  function deltaRow(label: string, before: SimResult, after: SimResult) {
+    const retBefore = ((before.finalDeposit / before.startingDeposit - 1) * 100)
+    const retAfter = ((after.finalDeposit / after.startingDeposit - 1) * 100)
+    const dropped = before.opened - after.opened
+    console.log(
+      `${label.padEnd(20)} | trades ${before.trades}→${after.trades} (-${dropped}) | ` +
+      `final $${before.finalDeposit.toFixed(0)}→$${after.finalDeposit.toFixed(0)} (${retBefore.toFixed(0)}%→${retAfter.toFixed(0)}%) | ` +
+      `R/tr ${fmtR(before.rPerTr)}→${fmtR(after.rPerTr)} | WR ${before.winRate.toFixed(0)}→${after.winRate.toFixed(0)}% | ` +
+      `DD ${before.maxDD.toFixed(1)}→${after.maxDD.toFixed(1)}%`
+    )
+  }
+  for (const [label, n, w] of [
+    ['FULL A', noFilter.full.a, withFilter.full.a],
+    ['FULL B', noFilter.full.b, withFilter.full.b],
+    ['TRAIN A', noFilter.train.a, withFilter.train.a],
+    ['TRAIN B', noFilter.train.b, withFilter.train.b],
+    ['TEST A', noFilter.test.a, withFilter.test.a],
+    ['TEST B', noFilter.test.b, withFilter.test.b],
+  ] as const) {
+    deltaRow(label, n, w)
+  }
+  console.log()
+
+  // Compatibility: для оставшейся логики (vs head-to-head) используем сценарий с фильтром.
+  const full = withFilter.full
+  const train = withFilter.train
+  const test = withFilter.test
 
   // A vs B head-to-head ratio analysis
   console.log('================== Variant A vs B (% return basis) ==================')

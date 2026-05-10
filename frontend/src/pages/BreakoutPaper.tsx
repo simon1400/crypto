@@ -47,13 +47,15 @@ function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): Posit
 type StatusFilter = 'OPEN' | 'CLOSED' | 'SIGNALS'
 
 const PAPER_STATUS_BADGE: Record<string, { bg: string; text: string; label: string }> = {
-  OPEN:    { bg: 'bg-accent/15',     text: 'text-accent',     label: 'Открыта' },
-  TP1_HIT: { bg: 'bg-long/10',       text: 'text-long',       label: 'TP1 ✓' },
-  TP2_HIT: { bg: 'bg-long/15',       text: 'text-long',       label: 'TP2 ✓' },
-  TP3_HIT: { bg: 'bg-long/20',       text: 'text-long',       label: 'TP3 ✓' },
-  CLOSED:  { bg: 'bg-long/10',       text: 'text-long',       label: 'Закрыта' },
-  SL_HIT:  { bg: 'bg-short/15',      text: 'text-short',      label: 'SL' },
-  EXPIRED: { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Истёк' },
+  OPEN:      { bg: 'bg-accent/15',     text: 'text-accent',     label: 'Открыта' },
+  TP1_HIT:   { bg: 'bg-long/10',       text: 'text-long',       label: 'TP1 ✓' },
+  TP2_HIT:   { bg: 'bg-long/15',       text: 'text-long',       label: 'TP2 ✓' },
+  TP3_HIT:   { bg: 'bg-long/20',       text: 'text-long',       label: 'TP3 ✓' },
+  CLOSED:    { bg: 'bg-long/10',       text: 'text-long',       label: 'Закрыта' },
+  SL_HIT:    { bg: 'bg-short/15',      text: 'text-short',      label: 'SL' },
+  EXPIRED:   { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Истёк' },
+  PENDING:   { bg: 'bg-accent/10',     text: 'text-accent/80',  label: '⏳ Limit pending' },
+  CANCELLED: { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Limit отменён' },
 }
 
 // Сжатый текст исхода: смотрит на массив closes и собирает «TP1 → TP2 → SL@TP1»,
@@ -194,7 +196,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
   const [showSettings, setShowSettings] = useState(false)
   // Default reset amount tracks the variant's starting deposit (A=$500, B=$320)
   // and reflects whatever the operator has saved in BreakoutPaperConfig.
-  const [resetAmount, setResetAmount] = useState(variant === 'B' ? 320 : 500)
+  const [resetAmount, setResetAmount] = useState(variant === 'A' ? 500 : 320)
   const [scanRunning, setScanRunning] = useState(false)
   const [livePrices, setLivePrices] = useState<Record<number, PaperTradeLive>>({})
   const [selectedTrade, setSelectedTrade] = useState<PaperTrade | null>(null)
@@ -210,9 +212,13 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
     setError(null)
     try {
       const isSignalsTab = statusFilter === 'SIGNALS'
-      const status = statusFilter === 'OPEN' ? ['OPEN', 'TP1_HIT', 'TP2_HIT']
-                   : statusFilter === 'CLOSED' ? ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT']
-                   : undefined
+      // Variant C добавляет PENDING (limit ждёт fill) и CANCELLED (limit отменён EOD)
+      // в открытые/закрытые соответственно. Для A/B эти статусы не существуют.
+      const status = statusFilter === 'OPEN'
+        ? (variant === 'C' ? ['OPEN', 'TP1_HIT', 'TP2_HIT', 'PENDING'] : ['OPEN', 'TP1_HIT', 'TP2_HIT'])
+        : statusFilter === 'CLOSED'
+        ? (variant === 'C' ? ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT', 'CANCELLED'] : ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT'])
+        : undefined
       // CLOSED tab: серверная пагинация по 20. Сортировка по closedAt чтобы
       // страницы шли последовательно по дате выхода (иначе при разнице
       // openedAt vs closedAt порядок между страницами рассыпается).
@@ -233,7 +239,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       setConfig(c)
       // Initialize reset amount from server config on first load so the operator
       // sees the canonical starting deposit (variant-specific) in the input.
-      setResetAmount(prev => (prev === (variant === 'B' ? 320 : 500) ? c.startingDepositUsd : prev))
+      setResetAmount(prev => (prev === (variant === 'A' ? 500 : 320) ? c.startingDepositUsd : prev))
       setScannerCfg(sc)
       setSetups(su.setups)
       setTrades(t.data)
@@ -247,7 +253,10 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         setOpenTradesAll(t.data)
       } else {
         try {
-          const openOnly = await getBreakoutPaperTrades({ status: ['OPEN', 'TP1_HIT', 'TP2_HIT'], limit: 100 }, variant)
+          const openStatuses = variant === 'C'
+            ? ['OPEN', 'TP1_HIT', 'TP2_HIT', 'PENDING']
+            : ['OPEN', 'TP1_HIT', 'TP2_HIT']
+          const openOnly = await getBreakoutPaperTrades({ status: openStatuses, limit: 100 }, variant)
           setOpenTradesAll(openOnly.data)
         } catch { /* keep stale */ }
       }
@@ -387,10 +396,12 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           <h1 className="text-2xl font-semibold">
             Daily Breakout
             {variant === 'B' && <span className="ml-2 px-2 py-0.5 rounded text-xs font-mono bg-accent/15 text-accent align-middle">B · 20 conc · 5% margin</span>}
+            {variant === 'C' && <span className="ml-2 px-2 py-0.5 rounded text-xs font-mono bg-accent/15 text-accent align-middle">C · limit on rangeEdge</span>}
           </h1>
           <p className="text-sm text-text-secondary">
             Стратегия пробоя 3h-диапазона (00:00–03:00 UTC · {pragueRange}). {enabledCoins} {enabledCoins === 1 ? 'монета' : enabledCoins >= 2 && enabledCoins <= 4 ? 'монеты' : 'монет'} · виртуальная торговля + Telegram
             {variant === 'B' && <span className="ml-1">· копия B (тот же поток сигналов, увеличенная concurrency, уменьшенная маржа)</span>}
+            {variant === 'C' && <span className="ml-1">· копия C (тот же поток сигналов, вход limit-ордером на rangeEdge — maker fee, без slip)</span>}
           </p>
           <button
             type="button"
@@ -442,6 +453,23 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
               live forward-test чтобы проверить backtest-результаты на реальном рынке.
             </div>
           )}
+          {variant === 'C' && (
+            <div className="bg-accent/10 border border-accent/30 rounded p-3 text-text-primary text-xs space-y-1">
+              <div><span className="font-semibold">Копия C — limit-on-rangeEdge experimental.</span> Тот же поток сигналов
+              что у A/B, но вход через <span className="text-accent">limit-ордер</span> ровно на rangeEdge (rangeHigh для LONG,
+              rangeLow для SHORT) вместо market entry на c.close триггерной свечи.</div>
+              <div>
+                <span className="font-semibold">Зачем:</span> backtest 365d показал ×9-22 улучшение доходности vs market entry
+                (A: $1142→$10221, B: $571→$12461). Maker fee 0.02% вместо taker 0.05%, без slip, entry точно на структурном
+                уровне → больше плечо при том же риске → больше R/tr (+0.16 → +0.53).
+              </div>
+              <div className="text-text-secondary">
+                <span className="font-semibold">Риск:</span> в реальной бирже maker fill rate может быть ниже backtest-предположения
+                (на быстрых пробоях limit может остаться пустым). PENDING_LIMIT занимает concurrent slot — иначе при сигналах на
+                всех 23 монетах сразу не хватит депо на fill. EOD незаполненные limit отменяются.
+              </div>
+            </div>
+          )}
           <section>
             <h3 className="text-text-primary font-semibold mb-1">Идея</h3>
             <p>
@@ -466,16 +494,19 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           <section>
             <h3 className="text-text-primary font-semibold mb-1">Параметры сделки</h3>
             <ul className="list-disc list-inside space-y-1 marker:text-accent">
-              <li><span className="text-text-primary">Entry:</span> на границу range (rangeHigh для LONG, rangeLow для SHORT).</li>
+              <li><span className="text-text-primary">Entry:</span> на границу range (rangeHigh для LONG, rangeLow для SHORT).
+                {variant === 'C' && <span className="text-accent"> Limit-ордер, maker fee 0.02%, без slip — fill точно на уровне.</span>}
+                {variant !== 'C' && <span> Market при пробое (taker 0.05% + slip 0.03%).</span>}
+              </li>
               <li><span className="text-text-primary">Stop Loss:</span> противоположная граница диапазона.</li>
               <li><span className="text-text-primary">Take Profits:</span> entry ± 1×rangeSize, ±2×rangeSize, ±3×rangeSize.</li>
               <li><span className="text-text-primary">Splits:</span> 50% / 30% / 20% — закрытие по TP1 / TP2 / TP3.</li>
               <li><span className="text-text-primary">Trailing SL:</span> после TP1 → BE, после TP2 → TP1, после TP3 → TP2.</li>
               <li>
                 <span className="text-text-primary">Risk:</span> 2% депо на сделку,
-                {variant === 'B'
-                  ? ' max 20 одновременных позиций (целевая маржа 5%).'
-                  : ' max 10 одновременных позиций (целевая маржа 10%).'}
+                {variant === 'A'
+                  ? ' max 10 одновременных позиций (целевая маржа 10%).'
+                  : ' max 20 одновременных позиций (целевая маржа 5%).'}
               </li>
             </ul>
           </section>
@@ -697,9 +728,9 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
               <li><span className="text-text-primary">TP3 редко достигается</span> — большинство выходов через TP1/TP2, split structure это компенсирует.</li>
               <li>
                 <span className="text-text-primary">
-                  Concurrent cap = {variant === 'B' ? '20' : '10'}
+                  Concurrent cap = {variant === 'A' ? '10' : '20'}
                 </span>
-                {variant === 'B'
+                {variant !== 'A'
                   ? ' — экспериментальная конфигурация. Backtest показал лучший R/tr и finalDepo чем у cap=10 на обновлённом 23-символьном универсе, но за счёт удвоенного DD. Forward-test проверяет реалистичность чисел в живом рынке.'
                   : ' — проверено backtest sweep [5/10/15/20/30/∞]: cap=10 даёт максимальный finalDepo на FULL/TRAIN/TEST.'}
               </li>
@@ -709,12 +740,13 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           <section>
             <h3 className="text-text-primary font-semibold mb-1">Параметры платформы</h3>
             <ul className="list-disc list-inside space-y-0.5 text-xs marker:text-accent">
-              <li>Стартовый депозит: ${variant === 'B' ? '320' : '500'}</li>
+              <li>Стартовый депозит: ${variant === 'A' ? '500' : '320'}</li>
               <li>Риск на сделку: 2% от текущего депо</li>
-              <li>Целевая маржа на сделку: {variant === 'B' ? '5%' : '10%'} (через margin guard skip-only)</li>
-              <li>Round-trip комиссии: 0.08% (Bybit crypto)</li>
+              <li>Целевая маржа на сделку: {variant === 'A' ? '10%' : '5%'} (через margin guard skip-only)</li>
+              <li>Round-trip комиссии: {variant === 'C' ? '0.04% (maker entry + maker TP fills)' : '0.08% (Bybit crypto)'}</li>
               <li>Дневной лимит убытка: 5%, недельный: 15%</li>
-              <li>Max concurrent positions: {variant === 'B' ? '20' : '10'}, max per symbol: 1</li>
+              <li>Max concurrent positions: {variant === 'A' ? '10' : '20'}, max per symbol: 1</li>
+              {variant === 'C' && <li className="text-accent">Entry: limit-ордер на rangeEdge (PENDING_LIMIT занимает слот)</li>}
             </ul>
           </section>
         </div>
@@ -1014,6 +1046,9 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                     <td className="px-3 py-2 font-mono font-medium text-text-primary">
                       <span className="flex items-center gap-2">
                         <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent" title="Demo paper trade">D</span>
+                        {t.status === 'PENDING' && (
+                          <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/10 text-accent/80" title="Limit ордер ждёт fill на rangeEdge">⏳</span>
+                        )}
                         <span className={sideColorCls}>{t.symbol.replace('USDT', '')}</span>
                         <button
                           onClick={(e) => { e.stopPropagation(); setChartTrade(t) }}

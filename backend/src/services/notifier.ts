@@ -21,7 +21,7 @@ const NOTIFY_ACTIONS: Set<OrderAction> = new Set([
 ])
 
 export interface VariantOpenInfo {
-  variant: 'A' | 'B'
+  variant: 'A' | 'B' | 'C'
   depositUsd: number
   riskPctPerTrade: number
   riskUsd: number
@@ -44,7 +44,7 @@ export interface EodTradeRow {
 }
 
 export interface EodVariantSummary {
-  variant: 'A' | 'B'
+  variant: 'A' | 'B' | 'C'
   trades: EodTradeRow[]
   totalPnlUsd: number
   depositUsd: number

@@ -254,26 +254,43 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
       })
       const winRate = closed.length > 0 ? closed.filter((t: any) => t.netPnlUsd > 0).length / closed.length : 0
 
+      // Берём ВСЕ полностью или частично закрытые сделки и распределяем netPnl
+      // (уже включает realistic taker/maker fees + slip, так как считался в
+      // trackOnePaper) пропорционально по дням закрытий. Это согласовано с
+      // currentDepositUsd, который инкрементируется через applyDepositDelta из
+      // тех же netPnlUsd. Старый расчёт по legacy feesRoundTripPct давал расхождение
+      // в $1+ на 30+ сделках (entry fees + slip пропускались).
       const allWithCloses = await tm.findMany({
         where: { NOT: { closes: { equals: [] } } },
         select: {
-          symbol: true, closes: true, positionUnits: true,
-          feesRoundTripPct: true, openedAt: true,
+          symbol: true, status: true, closes: true,
+          netPnlUsd: true, realizedPnlUsd: true, feesPaidUsd: true,
+          openedAt: true,
         },
       })
+
+      const closedStatusSet = new Set(['CLOSED', 'SL_HIT', 'EXPIRED'])
 
       const byDay: Record<string, number> = {}
       const bySymbolPnl: Record<string, number> = {}
       for (const t of allWithCloses) {
-        const closesArr = ((t.closes as any[]) ?? []) as Array<{ price: number; percent: number; pnlUsd: number; closedAt: string }>
-        const feeRatePct = t.feesRoundTripPct ?? cfg.feesRoundTripPct ?? 0
+        const closesArr = ((t.closes as any[]) ?? []) as Array<{ price: number; percent: number; pnlUsd: number; closedAt: string; reason?: string }>
+        // Total realized-net для сделки на текущий момент:
+        //  - финализированная: netPnlUsd (учитывает entry fee + все exit fees + slip)
+        //  - частичная (TP1_HIT/TP2_HIT): realizedPnlUsd - feesPaidUsd (то же самое, что считает applyDepositDelta для активных)
+        const totalNet = closedStatusSet.has(t.status)
+          ? t.netPnlUsd
+          : (t.realizedPnlUsd - t.feesPaidUsd)
+        // Распределяем totalNet между closes пропорционально их pnlUsd-вкладу.
+        // Это нужно чтобы equity curve по дням совпала с фактическим депозитом —
+        // entry fee и slip раскидываются между fills тем же весом, что P&L.
+        const grossSum = closesArr.reduce((a, c) => a + (c.pnlUsd ?? 0), 0)
         for (const c of closesArr) {
-          const notional = t.positionUnits * c.price * (c.percent / 100)
-          const fee = notional * (feeRatePct / 100)
-          const net = (c.pnlUsd ?? 0) - fee
+          const weight = grossSum !== 0 ? (c.pnlUsd ?? 0) / grossSum : 1 / closesArr.length
+          const netShare = totalNet * weight
           const day = (c.closedAt ? new Date(c.closedAt) : t.openedAt).toISOString().slice(0, 10)
-          byDay[day] = (byDay[day] ?? 0) + net
-          bySymbolPnl[t.symbol] = (bySymbolPnl[t.symbol] ?? 0) + net
+          byDay[day] = (byDay[day] ?? 0) + netShare
+          bySymbolPnl[t.symbol] = (bySymbolPnl[t.symbol] ?? 0) + netShare
         }
       }
 

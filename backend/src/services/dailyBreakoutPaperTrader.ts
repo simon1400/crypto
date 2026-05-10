@@ -428,6 +428,20 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
         await deleteSharedSignal(sig.id, `live overshot TP1 (live ${livePrice.toFixed(6)} vs TP1 ${tp1.toFixed(6)})`, sig.symbol)
         continue
       }
+
+      // Min entry→TP1 distance guard: fast-mover breakout где live entry уже подошла
+      // близко к TP1. Даже при TP1-hit fees+slip+BE-out сценарий = гарантированный
+      // микроминус (как AERO #111: entry 0.5196, TP1 0.5205, dist 0.17%, итог -$0.02).
+      // Backtest 365d (runBacktest_dailybreak_entry_tp1.ts, live formula): bucket
+      // 0.3-0.5% → R/tr -0.11, bucket 0.2-0.3% → -0.26. Фильтр ≥0.5% отбрасывает
+      // 3% сделок (52 из 1928), edge не падает на FULL/TRAIN/TEST, TEST даже растёт
+      // +0.20 → +0.21 R/tr. Фильтр >=1.0% уже режет полезные (TEST падает до +0.11).
+      const MIN_ENTRY_TP1_PCT = 0.5
+      const entryTp1Pct = (Math.abs(tp1 - livePrice) / livePrice) * 100
+      if (entryTp1Pct < MIN_ENTRY_TP1_PCT) {
+        await deleteSharedSignal(sig.id, `entry too close to TP1 (${entryTp1Pct.toFixed(2)}% < ${MIN_ENTRY_TP1_PCT}%, live ${livePrice.toFixed(6)} vs TP1 ${tp1.toFixed(6)})`, sig.symbol)
+        continue
+      }
     }
 
     // Realistic-fee model: entry is a taker market order. Apply slip BEFORE
@@ -946,7 +960,14 @@ export async function runBreakoutPaperCycle(variant: BreakoutVariant = 'A'): Pro
   if (!cfg) return { opened: 0, updated: 0, depositDelta: 0, deposit: 0, openedTrades: [] }
   if (!cfg.enabled) return { opened: 0, updated: 0, depositDelta: 0, deposit: cfg.currentDepositUsd, openedTrades: [] }
 
-  const opened = await openNewPaperTrades(cfg, variant)
+  // Variant C использует limit-on-rangeEdge entry — отдельный сервис
+  // dailyBreakoutLimitTrader.ts размещает PENDING_LIMIT'ы и filling'ом занимается WS
+  // tracker. Здесь для C только tracking уже-FILLED сделок (status=OPEN/TP1_HIT/TP2_HIT).
+  const isC = variant === 'C'
+
+  const opened = isC
+    ? { opened: 0, depositDelta: 0, openedTrades: [] as OpenedTradeInfo[] }
+    : await openNewPaperTrades(cfg, variant)
   if (opened.depositDelta !== 0) {
     const fresh = await getOrCreateConfig(variant)
     if (fresh) await applyDepositDelta(fresh, opened.depositDelta, variant)
@@ -958,7 +979,7 @@ export async function runBreakoutPaperCycle(variant: BreakoutVariant = 'A'): Pro
   let openedAgain = 0
   let openedAgainDelta = 0
   let openedAgainTrades: OpenedTradeInfo[] = []
-  if (updated.terminalClosed > 0) {
+  if (!isC && updated.terminalClosed > 0) {
     const cfgFresh = await getOrCreateConfig(variant) ?? cfgAfterOpens
     const r2 = await openNewPaperTrades(cfgFresh, variant)
     openedAgain = r2.opened
@@ -1293,13 +1314,23 @@ export async function sendBreakoutEodSummary(utcDate: string): Promise<void> {
     return
   }
 
+  // Variant C cleanup — отменить все PENDING_LIMIT за прошедший день.
+  // Не сработавший за день limit = пробой не подтвердился, range устарел.
+  try {
+    const { cancelStaleLimitsEod } = await import('./dailyBreakoutLimitTrader')
+    await cancelStaleLimitsEod()
+  } catch (e: any) {
+    console.warn(`[BreakoutEOD] C cancel stale limits failed: ${e.message}`)
+  }
+
   const a = await buildVariantEodSummary('A', utcDate)
   const b = await buildVariantEodSummary('B', utcDate)
+  const c = await buildVariantEodSummary('C', utcDate)
 
   try {
     await sendNotification('BREAKOUT_EOD_CLOSED', {
       utcDate,
-      summaries: [a.closed, b.closed],
+      summaries: [a.closed, b.closed, c.closed],
     })
   } catch (e: any) {
     console.error(`[BreakoutEOD] CLOSED notify failed: ${e.message}`)
@@ -1308,7 +1339,7 @@ export async function sendBreakoutEodSummary(utcDate: string): Promise<void> {
   try {
     await sendNotification('BREAKOUT_EOD_SURVIVING', {
       utcDate,
-      summaries: [a.surviving, b.surviving],
+      summaries: [a.surviving, b.surviving, c.surviving],
     })
   } catch (e: any) {
     console.error(`[BreakoutEOD] SURVIVING notify failed: ${e.message}`)
@@ -1333,8 +1364,8 @@ export async function sendBreakoutEodSummary(utcDate: string): Promise<void> {
 // Bybit publicTrade WebSocket. Этот тимер запускается каждую минуту: достаточно частый
 // чтобы быстро открыть новую сделку при появлении сигнала, и держит 5m candle replay
 // как fallback если WS отвалится.
-const paperIntervals: Record<BreakoutVariant, NodeJS.Timeout | null> = { A: null, B: null }
-const paperBusy: Record<BreakoutVariant, boolean> = { A: false, B: false }
+const paperIntervals: Record<BreakoutVariant, NodeJS.Timeout | null> = { A: null, B: null, C: null }
+const paperBusy: Record<BreakoutVariant, boolean> = { A: false, B: false, C: false }
 
 export function startBreakoutPaperTrader(variant: BreakoutVariant = 'A'): void {
   const tag = logTag(variant)
@@ -1353,9 +1384,9 @@ export function startBreakoutPaperTrader(variant: BreakoutVariant = 'A'): void {
     } catch (e: any) { console.error(`${tag} tick error:`, e.message) }
     finally { paperBusy[variant] = false }
   }
-  // Stagger boot: A starts at +60s, B at +65s — avoids both Bybit-fetching the
-  // same symbol cluster at the exact same instant on first tick.
-  const startDelay = variant === 'A' ? 60_000 : 65_000
+  // Stagger boot: A starts at +60s, B at +65s, C at +70s — avoids all variants
+  // Bybit-fetching the same symbol cluster at the exact same instant on first tick.
+  const startDelay = variant === 'A' ? 60_000 : variant === 'B' ? 65_000 : 70_000
   setTimeout(tick, startDelay)
   paperIntervals[variant] = setInterval(tick, 60_000)
   console.log(`${tag} started (tick=60s, realtime SL/TP via WebSocket)`)

@@ -10,8 +10,10 @@ import klinesRouter from './routes/klines'
 import breakoutRouter from './routes/breakout'
 import breakoutPaperRouter from './routes/breakoutPaper'
 import breakoutPaperBRouter from './routes/breakoutPaperB'
+import breakoutPaperCRouter from './routes/breakoutPaperC'
 import { startBreakoutLiveScanner, stopBreakoutLiveScanner } from './services/dailyBreakoutLiveScanner'
 import { startBreakoutPaperTrader, stopBreakoutPaperTrader, startBreakoutEodSummary, stopBreakoutEodSummary } from './services/dailyBreakoutPaperTrader'
+import { startBreakoutLimitTraderC, stopBreakoutLimitTraderC } from './services/dailyBreakoutLimitTrader'
 import { startBreakoutWsTracker, stopBreakoutWsTracker } from './services/breakoutWsTracker'
 
 const app = express()
@@ -38,14 +40,21 @@ app.use('/api/klines', klinesRouter)
 app.use('/api/breakout', breakoutRouter)
 app.use('/api/breakout-paper', breakoutPaperRouter)
 app.use('/api/breakout-paper-b', breakoutPaperBRouter)
+app.use('/api/breakout-paper-c', breakoutPaperCRouter)
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
 
-  // === Daily Breakout strategy live scanner & tracker ===
+  // === Daily Breakout strategy live scanner & trackers ===
   startBreakoutLiveScanner()
   startBreakoutPaperTrader('A')
   startBreakoutPaperTrader('B')
+  // Variant C — limit-on-rangeEdge experimental copy. Reads same signal stream
+  // as A/B; uses limit fills instead of market entry. See dailyBreakoutLimitTrader.ts.
+  // After PENDING_LIMIT fills → status=OPEN → tracking handled by paper trader 'C'
+  // through the shared trackOnePaper logic.
+  startBreakoutPaperTrader('C')
+  startBreakoutLimitTraderC()
   startBreakoutWsTracker()
   startBreakoutEodSummary()
 })
@@ -58,6 +67,8 @@ async function gracefulShutdown(signal: string) {
   stopBreakoutLiveScanner()
   stopBreakoutPaperTrader('A')
   stopBreakoutPaperTrader('B')
+  stopBreakoutPaperTrader('C')
+  stopBreakoutLimitTraderC()
   stopBreakoutWsTracker()
   stopBreakoutEodSummary()
 

@@ -6,10 +6,12 @@ import { BASE, getHeaders } from './base'
 //   A → /api/breakout-paper/*
 //   B → /api/breakout-paper-b/*
 // Default is A for backwards compatibility with existing call sites.
-export type BreakoutVariant = 'A' | 'B'
+export type BreakoutVariant = 'A' | 'B' | 'C'
 
 function basePath(variant: BreakoutVariant = 'A'): string {
-  return variant === 'B' ? '/api/breakout-paper-b' : '/api/breakout-paper'
+  if (variant === 'C') return '/api/breakout-paper-c'
+  if (variant === 'B') return '/api/breakout-paper-b'
+  return '/api/breakout-paper'
 }
 
 export interface BreakoutPaperConfig {
@@ -87,6 +89,12 @@ export interface BreakoutTrade {
   expiresAt: string | null
   closedAt: string | null
   openedAt: string
+  // Variant C only — limit-order lifecycle. null/undefined for A/B.
+  limitOrderState?: 'PENDING_LIMIT' | 'FILLED' | 'CANCELLED_EOD' | 'CANCELLED_OTHER_SIDE' | null
+  limitOrderPrice?: number | null
+  limitPlacedAt?: string | null
+  limitFilledAt?: string | null
+  pairOrderId?: number | null
 }
 
 export interface BreakoutStats {
@@ -242,18 +250,18 @@ export async function simulateBreakoutPaperFill(id: number, reason: 'TP1' | 'TP2
 }
 
 // === Signals
-// Variant A reads /api/breakout/signals (canonical). Variant B reads
-// /api/breakout-paper-b/signals which overlays paperStatus from B's trade table.
+// Variant A reads /api/breakout/signals (canonical). Variants B/C read
+// /api/breakout-paper-{b,c}/signals which overlays paperStatus from their own trade table.
 export async function getBreakoutSignals(opts: { status?: string[]; symbol?: string; limit?: number; offset?: number } = {}, variant: BreakoutVariant = 'A'): Promise<{ data: BreakoutSignal[]; total: number }> {
   const p = new URLSearchParams()
   if (opts.status?.length) p.set('status', opts.status.join(','))
   if (opts.symbol) p.set('symbol', opts.symbol)
   if (opts.limit) p.set('limit', String(opts.limit))
   if (opts.offset) p.set('offset', String(opts.offset))
-  const url = variant === 'B'
-    ? `${BASE}/api/breakout-paper-b/signals?${p}`
-    : `${BASE}/api/breakout/signals?${p}`
-  return handle(await fetch(url, { headers: getHeaders() }))
+  let path = '/api/breakout/signals'
+  if (variant === 'B') path = '/api/breakout-paper-b/signals'
+  else if (variant === 'C') path = '/api/breakout-paper-c/signals'
+  return handle(await fetch(`${BASE}${path}?${p}`, { headers: getHeaders() }))
 }
 
 export async function getBreakoutConfig(): Promise<BreakoutConfig> {

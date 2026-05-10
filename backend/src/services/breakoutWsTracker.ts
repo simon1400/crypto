@@ -14,6 +14,7 @@
 import { WebsocketClient } from 'bybit-api'
 import { OHLCV } from './market'
 import { runTrackForSymbol } from './dailyBreakoutPaperTrader'
+import { processWsTradeForLimits } from './dailyBreakoutLimitTrader'
 import { prisma } from '../db/prisma'
 
 let wsClient: WebsocketClient | null = null
@@ -42,7 +43,7 @@ const pending: Record<string, PendingTick> = {}
 const flushTimers: Record<string, NodeJS.Timeout | null> = {}
 
 async function getOpenSymbols(): Promise<string[]> {
-  const [a, b] = await Promise.all([
+  const [a, b, cActive, cPending] = await Promise.all([
     prisma.breakoutPaperTrade.findMany({
       where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
       select: { symbol: true },
@@ -51,10 +52,21 @@ async function getOpenSymbols(): Promise<string[]> {
       where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
       select: { symbol: true },
     }),
+    prisma.breakoutPaperTradeC.findMany({
+      where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+      select: { symbol: true },
+    }),
+    // C also needs WS subscriptions for PENDING_LIMIT (instant fill on edge touch)
+    prisma.breakoutPaperTradeC.findMany({
+      where: { limitOrderState: 'PENDING_LIMIT' },
+      select: { symbol: true },
+    }),
   ])
   const set = new Set<string>()
   for (const t of a) set.add(t.symbol)
   for (const t of b) set.add(t.symbol)
+  for (const t of cActive) set.add(t.symbol)
+  for (const t of cPending) set.add(t.symbol)
   return Array.from(set)
 }
 
@@ -125,7 +137,13 @@ async function flushPending(symbol: string): Promise<void> {
     const tick: OHLCV = {
       time: p.latestT, open: p.latestPrice, high: p.high, low: p.low, close: p.latestPrice, volume: 0,
     }
+    // Variant A/B tracking — TP/SL detection on existing FILLED trades.
     await runTrackForSymbol(symbol, tick)
+    // Variant C limit-fill detection — checks PENDING_LIMIT for symbol against
+    // both extremes (high for BUY, low for SELL). Instant fill ≈ ms latency
+    // vs slow tick safety-net (60s).
+    await processWsTradeForLimits(symbol, p.high, p.latestT).catch(() => { /* logged inside */ })
+    await processWsTradeForLimits(symbol, p.low, p.latestT).catch(() => { /* logged inside */ })
   } catch (e: any) {
     console.warn(`[BreakoutWS] flush ${symbol} failed: ${e.message}`)
   } finally {

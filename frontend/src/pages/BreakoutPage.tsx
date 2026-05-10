@@ -1,13 +1,14 @@
 /**
- * Top-level Breakout page wrapping two paper-trader variants in tabs.
+ * Top-level Breakout page wrapping three paper-trader variants in tabs.
  *
- *   - Tab A: legacy prod (10 conc, 10% target margin, $500 starting deposit)
- *   - Tab B: parallel experiment (20 conc, 5% target margin, $320 starting deposit)
+ *   - Tab A: legacy prod (10 conc, 10% target margin, $500, taker market entry)
+ *   - Tab B: parallel sizing experiment (20 conc, 5% margin, $320, taker market)
+ *   - Tab C: limit-on-rangeEdge experiment (20 conc, 5% margin, $320, maker limit)
  *
- * Both tabs render the same BreakoutPaper component with a different `variant`
- * prop. UI changes apply to both tabs simultaneously by virtue of being the
- * same component. Backend isolation is via /api/breakout-paper vs
- * /api/breakout-paper-b — see breakoutVariant.ts on the backend.
+ * All tabs render the same BreakoutPaper component with a different `variant`
+ * prop. UI changes apply to all tabs simultaneously by virtue of being the
+ * same component. Backend isolation is via /api/breakout-paper{,-b,-c} —
+ * see breakoutVariant.ts on the backend.
  */
 
 import { useState, useEffect } from 'react'
@@ -20,7 +21,8 @@ export default function BreakoutPage() {
   const [variant, setVariant] = useState<BreakoutVariant>(() => {
     if (typeof window === 'undefined') return 'A'
     const saved = localStorage.getItem(STORAGE_KEY)
-    return saved === 'B' ? 'B' : 'A'
+    if (saved === 'B' || saved === 'C') return saved
+    return 'A'
   })
 
   useEffect(() => {
@@ -30,21 +32,25 @@ export default function BreakoutPage() {
   return (
     <div>
       <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-4 border-b border-input pb-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <TabButton active={variant === 'A'} onClick={() => setVariant('A')}>
             A · 10 conc · 10% margin
           </TabButton>
           <TabButton active={variant === 'B'} onClick={() => setVariant('B')}>
             B · 20 conc · 5% margin
           </TabButton>
+          <TabButton active={variant === 'C'} onClick={() => setVariant('C')}>
+            C · limit on edge
+          </TabButton>
         </div>
         <span className="sm:ml-3 text-xs text-text-secondary">
-          Обе копии работают параллельно на одних и тех же сигналах. Sizing независимый.
+          Три копии работают параллельно на одних и тех же сигналах. A/B входят по market,
+          C по limit на rangeEdge (maker fee, без slip).
         </span>
       </div>
       {/* `key` forces a fresh BreakoutPaper instance per variant so all internal
           state (selected trade, expanded panels, pagination, etc.) stays separate
-          between A and B — flipping the tab feels like opening a different page. */}
+          between variants — flipping the tab feels like opening a different page. */}
       <BreakoutPaper key={variant} variant={variant} />
     </div>
   )

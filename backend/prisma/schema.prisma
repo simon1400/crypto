@@ -254,3 +254,87 @@ model BreakoutPaperTradeB {
   @@index([openedAt])
   @@index([signalId])
 }
+
+// === Variant C — limit-on-rangeEdge experimental copy ===
+// Schema-копия B + поля для limit-order lifecycle. Логика: при формировании
+// 3h range движок выставляет 2 PENDING_LIMIT (BUY @ rangeHigh, SELL @ rangeLow).
+// При срабатывании одного — второй CANCELLED_OTHER_SIDE. EOD не сработавшие
+// CANCELLED_EOD. PENDING_LIMIT занимает concurrent slot.
+// См. project_breakout_limit_entry_finding_2026_05_10.md.
+model BreakoutPaperConfigC {
+  id                     Int       @id @default(1)
+  enabled                Boolean   @default(false)
+  startingDepositUsd     Float     @default(320)
+  currentDepositUsd      Float     @default(320)
+  riskPctPerTrade        Float     @default(2.0)
+  feesRoundTripPct       Float     @default(0.07)
+  feeTakerPct            Float     @default(0.05)
+  feeMakerPct            Float     @default(0.02)
+  slipTakerPct           Float     @default(0.03)
+  autoTrailingSL         Boolean   @default(true)
+  targetMarginPct        Float     @default(5)
+  marginGuardEnabled     Boolean   @default(true)
+  marginGuardAutoClose   Boolean   @default(false)
+  dailyLossLimitPct      Float     @default(5)
+  weeklyLossLimitPct     Float     @default(15)
+  maxConcurrentPositions Int       @default(20)
+  maxPositionsPerSymbol  Int       @default(1)
+  totalTrades            Int       @default(0)
+  totalWins              Int       @default(0)
+  totalLosses            Int       @default(0)
+  totalPnLUsd            Float     @default(0)
+  peakDepositUsd         Float     @default(320)
+  maxDrawdownPct         Float     @default(0)
+  startedAt              DateTime  @default(now())
+  resetAt                DateTime?
+  updatedAt              DateTime  @updatedAt
+  createdAt              DateTime  @default(now())
+}
+
+model BreakoutPaperTradeC {
+  id                Int       @id @default(autoincrement())
+  signalId          Int
+  symbol            String
+  side              String
+  entryPrice        Float
+  stopLoss          Float
+  initialStop       Float
+  currentStop       Float
+  tpLadder          Json
+  depositAtEntryUsd Float
+  riskUsd           Float
+  positionSizeUsd   Float
+  positionUnits     Float
+  leverage          Float?
+  marginUsd         Float?
+  status            String    @default("OPEN")
+  closes            Json      @default("[]")
+  realizedR         Float     @default(0)
+  realizedPnlUsd    Float     @default(0)
+  feesPaidUsd       Float     @default(0)
+  netPnlUsd         Float     @default(0)
+  feesRoundTripPct  Float?
+  feeTakerPct       Float?
+  feeMakerPct       Float?
+  slipTakerPct      Float?
+  slipPaidUsd       Float     @default(0)
+  autoTrailingSL    Boolean?
+  lastPriceCheck    Float?
+  lastPriceCheckAt  DateTime?
+  expiresAt         DateTime?
+  closedAt          DateTime?
+  openedAt          DateTime  @default(now())
+  // Limit-order lifecycle (специфично для C)
+  // limitOrderState: PENDING_LIMIT, FILLED, CANCELLED_EOD, CANCELLED_OTHER_SIDE
+  limitOrderState   String?
+  limitOrderPrice   Float?
+  limitPlacedAt     DateTime?
+  limitFilledAt     DateTime?
+  // pairOrderId — id противоположного лимита от того же сигнала (для cancel cascade)
+  pairOrderId       Int?
+
+  @@index([status, symbol])
+  @@index([openedAt])
+  @@index([signalId])
+  @@index([limitOrderState, symbol])
+}
