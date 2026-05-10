@@ -559,7 +559,7 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
   return { opened, depositDelta, openedTrades }
 }
 
-async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, variant: BreakoutVariant): Promise<{ pnlDelta: number; statusChanged: boolean; terminalClosed: boolean }> {
+async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, variant: BreakoutVariant, isFastTick: boolean = false): Promise<{ pnlDelta: number; statusChanged: boolean; terminalClosed: boolean }> {
   const tag = logTag(variant)
   const tm = tradeModel(variant) as any
   const cm = configModel(variant) as any
@@ -727,6 +727,19 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
   const netPnlUsd = realizedPnlUsd - totalFeesUsd
 
   const lastCandle = newCandles[newCandles.length - 1]
+  // Fast tick uses synthetic ticks with time=Date.now(), but real 5m candles have
+  // time=bucket-start (e.g. 08:20:00). If we wrote now() as lastPriceCheckAt, the
+  // next slow tick would filter out the not-yet-closed 5m candle that contained
+  // a real low/high crossing of SL/TP — and the wick would never be detected.
+  // For fast ticks, anchor lastPriceCheckAt to the start of the CURRENT 5m bucket
+  // minus 1ms, so the slow tick always re-evaluates the freshly-closed candle.
+  let nextCheckAt: Date
+  if (isFastTick) {
+    const bucketStart = Math.floor(lastCandle.time / (5 * 60_000)) * (5 * 60_000)
+    nextCheckAt = new Date(bucketStart - 1)
+  } else {
+    nextCheckAt = new Date(lastCandle.time)
+  }
   await tm.update({
     where: { id: trade.id },
     data: {
@@ -734,7 +747,7 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
       feesPaidUsd: totalFeesUsd, slipPaidUsd: totalSlipUsd, netPnlUsd,
       closes: fills as any,
       lastPriceCheck: lastCandle.close,
-      lastPriceCheckAt: new Date(lastCandle.time),
+      lastPriceCheckAt: nextCheckAt,
       ...(status === 'CLOSED' || status === 'SL_HIT' || status === 'EXPIRED'
         ? { closedAt: new Date() } : {}),
     },
@@ -854,7 +867,7 @@ async function trackOpenPaperTradesFast(cfg: PaperConfig, variant: BreakoutVaria
     if (!price || price <= 0) continue
     const tick: OHLCV = { time: now, open: price, high: price, low: price, close: price, volume: 0 }
     try {
-      const r = await trackOnePaper(tr, [tick], cfg, variant)
+      const r = await trackOnePaper(tr, [tick], cfg, variant, true)
       totalDelta += r.pnlDelta
       if (r.statusChanged) updated++
       if (r.terminalClosed) terminalClosed++
