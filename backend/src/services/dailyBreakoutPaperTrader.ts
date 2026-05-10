@@ -1029,30 +1029,51 @@ async function buildVariantEodSummary(
   const tm = tradeModel(variant) as any
   const cm = configModel(variant) as any
 
-  // Day window in UTC ms — covers the closing day exactly.
   const dayStart = new Date(`${utcDate}T00:00:00.000Z`).getTime()
   const dayEnd = new Date(`${utcDate}T23:59:59.999Z`).getTime()
 
   const cfg = await cm.findUnique({ where: { id: 1 } })
   const deposit = cfg?.currentDepositUsd ?? 0
 
-  // Closed during this UTC day — any terminal status (EXPIRED, CLOSED, SL_HIT).
-  const closedToday = await tm.findMany({
-    where: {
-      status: { in: ['EXPIRED', 'CLOSED', 'SL_HIT'] },
-      closedAt: { gte: new Date(dayStart), lte: new Date(dayEnd) },
+  // CLOSED rows = per close-event during this UTC day (TP1/TP2/TP3/SL/EXPIRED/MANUAL).
+  // This matches the dashboard's "P&L дня" computation: a trade that hit TP1
+  // today and SL tomorrow shows up here today as one row (TP1) and tomorrow
+  // as another row (SL). Σ in this section equals dashboard's daily P&L.
+  const tradesWithCloses = await tm.findMany({
+    where: { NOT: { closes: { equals: [] } } },
+    select: {
+      symbol: true, side: true, closes: true,
+      positionUnits: true, feesRoundTripPct: true, openedAt: true,
     },
-    orderBy: { closedAt: 'asc' },
   })
-  const closedRows = closedToday.map((t: any) => ({
-    symbol: t.symbol,
-    side: t.side as 'BUY' | 'SELL',
-    pnlUsd: t.netPnlUsd ?? 0,
-    pnlR: t.realizedR ?? 0,
-  }))
-  const closedTotal = closedRows.reduce((s: number, r: { pnlUsd: number }) => s + r.pnlUsd, 0)
+  const feeRateDefault = cfg?.feesRoundTripPct ?? 0.08
+  const closedRows: import('./notifier').EodTradeRow[] = []
+  for (const t of tradesWithCloses) {
+    const arr = ((t.closes as any[]) ?? []) as Array<{
+      price: number; percent: number; pnlUsd: number; pnlR: number;
+      closedAt: string; reason: string;
+    }>
+    const feeRatePct = t.feesRoundTripPct ?? feeRateDefault
+    for (const c of arr) {
+      const ts = c.closedAt ? new Date(c.closedAt).getTime() : new Date(t.openedAt).getTime()
+      if (ts < dayStart || ts > dayEnd) continue
+      const notional = t.positionUnits * c.price * (c.percent / 100)
+      const fee = notional * (feeRatePct / 100)
+      const net = (c.pnlUsd ?? 0) - fee
+      closedRows.push({
+        symbol: t.symbol,
+        side: t.side as 'BUY' | 'SELL',
+        pnlUsd: net,
+        pnlR: c.pnlR ?? 0,
+        reason: (c.reason as any) ?? undefined,
+      })
+    }
+  }
+  closedRows.sort((a, b) => a.symbol.localeCompare(b.symbol))
+  const closedTotal = closedRows.reduce((s, r) => s + r.pnlUsd, 0)
 
-  // Surviving past EOD — TP1_HIT or TP2_HIT, opened today (still active).
+  // SURVIVING = trades that hit TP1+ today and continue past midnight.
+  // pnlUsd = realised net so far from partial closes (the remainder is still open).
   const survivingToday = await tm.findMany({
     where: {
       status: { in: ['TP1_HIT', 'TP2_HIT'] },
@@ -1060,15 +1081,13 @@ async function buildVariantEodSummary(
     },
     orderBy: { openedAt: 'asc' },
   })
-  const survivingRows = survivingToday.map((t: any) => ({
+  const survivingRows: import('./notifier').EodTradeRow[] = survivingToday.map((t: any) => ({
     symbol: t.symbol,
     side: t.side as 'BUY' | 'SELL',
-    // Net realised so far (from partial TP1/TP2 closes), not full lifecycle —
-    // remaining position is still in the market.
     pnlUsd: (t.realizedPnlUsd ?? 0) - (t.feesPaidUsd ?? 0),
     pnlR: t.realizedR ?? 0,
   }))
-  const survivingTotal = survivingRows.reduce((s: number, r: { pnlUsd: number }) => s + r.pnlUsd, 0)
+  const survivingTotal = survivingRows.reduce((s, r) => s + r.pnlUsd, 0)
 
   return {
     closed: { variant, trades: closedRows, totalPnlUsd: closedTotal, depositUsd: deposit },

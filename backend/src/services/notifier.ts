@@ -36,8 +36,12 @@ export interface VariantOpenInfo {
 export interface EodTradeRow {
   symbol: string
   side: 'BUY' | 'SELL'
-  pnlUsd: number      // net PnL in USD over the lifetime of the trade
-  pnlR: number        // realized R
+  pnlUsd: number      // net PnL in USD for what happened during the day
+  pnlR: number        // R for the same window
+  // For closed-summary rows: which close-event (TP1/TP2/TP3/SL/EXPIRED) this row
+  // represents. A multi-day trade can produce multiple rows on different days.
+  // For surviving rows: undefined.
+  reason?: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED' | 'MANUAL' | 'MARGIN'
 }
 
 export interface EodVariantSummary {
@@ -45,6 +49,69 @@ export interface EodVariantSummary {
   trades: EodTradeRow[]
   totalPnlUsd: number
   depositUsd: number
+}
+
+function pnlEmoji(pnlUsd: number): string {
+  if (pnlUsd > 0.005) return '🟢'
+  if (pnlUsd < -0.005) return '🔴'
+  return '⚪'
+}
+
+function signedUsd(n: number): string {
+  return `${n >= 0 ? '+' : '−'}$${Math.abs(n).toFixed(2)}`
+}
+
+function signedR(n: number): string {
+  return `${n >= 0 ? '+' : '−'}${Math.abs(n).toFixed(2)}R`
+}
+
+// Bold + sign + emoji wrapper for the section totals.
+function formatPnlBlock(n: number): string {
+  return `${pnlEmoji(n)} <b>${signedUsd(n)}</b>`
+}
+
+function pad(s: string, len: number): string {
+  if (s.length >= len) return s
+  return s + ' '.repeat(len - s.length)
+}
+
+function padLeft(s: string, len: number): string {
+  if (s.length >= len) return s
+  return ' '.repeat(len - s.length) + s
+}
+
+/**
+ * Builds a fixed-width table row inside a <pre> block. The leading emoji is
+ * outside the table (Telegram renders emoji at variable width inside <pre>),
+ * so we emit it before the <pre> open of each line. Layout per row:
+ *
+ *   🟢 SYMBOL    L  TP1   +$8.82   +0.75R
+ *   🔴 KASUSDT   S  SL    −$13.06  −1.00R
+ *
+ * Width hint comes from the longest symbol/reason in the dataset.
+ */
+function buildPnlTable(rows: EodTradeRow[], showReason: boolean): string {
+  if (rows.length === 0) return ''
+  const symW = Math.max(8, ...rows.map(r => r.symbol.length))
+  const reasonW = showReason ? Math.max(3, ...rows.map(r => (r.reason ?? '').length)) : 0
+  const usdStrs = rows.map(r => signedUsd(r.pnlUsd))
+  const usdW = Math.max(...usdStrs.map(s => s.length))
+  const rStrs = rows.map(r => signedR(r.pnlR))
+  const rW = Math.max(...rStrs.map(s => s.length))
+
+  const lines: string[] = []
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]
+    const emoji = pnlEmoji(r.pnlUsd)
+    const sym = pad(r.symbol, symW)
+    const sideTag = r.side === 'BUY' ? 'L' : 'S'
+    const reasonChunk = showReason ? `  ${pad(r.reason ?? '', reasonW)}` : ''
+    const usd = padLeft(usdStrs[i], usdW)
+    const rR = padLeft(rStrs[i], rW)
+    // Emoji outside <pre>, fixed-width body inside <pre> for alignment.
+    lines.push(`${emoji} <code>${sym}  ${sideTag}${reasonChunk}  ${usd}  ${rR}</code>`)
+  }
+  return lines.join('\n')
 }
 
 function formatMessage(action: OrderAction, details?: Record<string, any>): string {
@@ -122,35 +189,34 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
 
     case 'BREAKOUT_EOD_CLOSED': {
       // d.summaries: EodVariantSummary[]; d.utcDate: string
+      // Each row in s.trades is ONE close-event that occurred on this UTC day:
+      // partial TP1/TP2/TP3 fills and final SL/EXPIRED/MANUAL closes. A trade
+      // that hits TP1 today and SL tomorrow appears as one row here today
+      // (TP1) and one row tomorrow (SL). Σ matches the dashboard's "P&L дня".
       const summaries: EodVariantSummary[] = (d.summaries as EodVariantSummary[]) ?? []
       const dateStr = d.utcDate ?? ''
       if (summaries.every((s) => s.trades.length === 0)) {
-        return `⏱ <b>EOD ${dateStr}</b>  · нет закрытых сделок`
+        return `⏱ <b>EOD ${dateStr}</b>  · нет закрытий`
       }
       const blocks = summaries.map((s) => {
         if (s.trades.length === 0) {
-          return `<b>Вариант ${s.variant}</b>  · нет закрытых сделок`
+          return `<b>Вариант ${s.variant}</b>  · нет закрытий`
         }
-        const sign = (n: number) => `${n >= 0 ? '+' : ''}$${n.toFixed(2)}`
-        const lines = s.trades.map((t) => {
-          const sideEmoji = t.side === 'BUY' ? '🟢' : '🔴'
-          const pnlR = `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(2)}R`
-          return `   ${sideEmoji} ${t.symbol} → <b>${sign(t.pnlUsd)}</b>  (${pnlR})`
-        }).join('\n')
         return [
-          `<b>Вариант ${s.variant}</b>  · Σ <b>${sign(s.totalPnlUsd)}</b>  · 💼 <code>$${s.depositUsd.toFixed(2)}</code>`,
-          lines,
+          `<b>Вариант ${s.variant}</b>  · Σ ${formatPnlBlock(s.totalPnlUsd)}  · 💼 <code>$${s.depositUsd.toFixed(2)}</code>`,
+          buildPnlTable(s.trades, true),
         ].join('\n')
       }).join('\n\n')
       return [
-        `⏱ <b>EOD ${dateStr}</b>  · закрытые сделки`,
+        `⏱ <b>EOD ${dateStr}</b>  · закрытия за день`,
         `━━━━━━━━━━━━━━━━━━`,
         blocks,
       ].join('\n')
     }
 
     case 'BREAKOUT_EOD_SURVIVING': {
-      // d.summaries: EodVariantSummary[] — trades that hit TP1+ and continue past midnight
+      // Trades that hit TP1+ today and continue past midnight. pnlUsd = realised
+      // net so far from partial closes; the remaining position is still in the market.
       const summaries: EodVariantSummary[] = (d.summaries as EodVariantSummary[]) ?? []
       const dateStr = d.utcDate ?? ''
       if (summaries.every((s) => s.trades.length === 0)) {
@@ -160,19 +226,13 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
         if (s.trades.length === 0) {
           return `<b>Вариант ${s.variant}</b>  · нет переходящих сделок`
         }
-        const sign = (n: number) => `${n >= 0 ? '+' : ''}$${n.toFixed(2)}`
-        const lines = s.trades.map((t) => {
-          const sideEmoji = t.side === 'BUY' ? '🟢' : '🔴'
-          const pnlR = `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(2)}R`
-          return `   ${sideEmoji} ${t.symbol} → <b>${sign(t.pnlUsd)}</b>  (${pnlR}, реализовано)`
-        }).join('\n')
         return [
-          `<b>Вариант ${s.variant}</b>  · реализовано Σ <b>${sign(s.totalPnlUsd)}</b>`,
-          lines,
+          `<b>Вариант ${s.variant}</b>  · реализовано Σ ${formatPnlBlock(s.totalPnlUsd)}`,
+          buildPnlTable(s.trades, false),
         ].join('\n')
       }).join('\n\n')
       return [
-        `🌙 <b>EOD ${dateStr}</b>  · сделки продолжают идти (TP1+)`,
+        `🌙 <b>EOD ${dateStr}</b>  · продолжают идти (TP1+)`,
         `━━━━━━━━━━━━━━━━━━`,
         blocks,
         ``,
