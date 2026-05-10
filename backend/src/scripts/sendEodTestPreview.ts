@@ -26,11 +26,12 @@ async function buildVariantSummary(
   const cfg = await (cm as any).findUnique({ where: { id: 1 } })
   const deposit = cfg?.currentDepositUsd ?? 0
 
-  // CLOSED rows = per close-event during this UTC day (matches dashboard P&L дня).
+  // CLOSED rows = one row per trade, aggregating all close-events of that trade
+  // that fired this UTC day. Matches dashboard's "P&L дня".
   const tradesWithCloses = await (tm as any).findMany({
     where: { NOT: { closes: { equals: [] } } },
     select: {
-      symbol: true, side: true, closes: true,
+      id: true, symbol: true, side: true, closes: true,
       positionUnits: true, feesRoundTripPct: true, openedAt: true,
     },
   })
@@ -42,20 +43,26 @@ async function buildVariantSummary(
       closedAt: string; reason: string;
     }>
     const feeRatePct = t.feesRoundTripPct ?? feeRateDefault
+    let pnlSum = 0
+    let rSum = 0
+    const reasons: string[] = []
     for (const c of arr) {
       const ts = c.closedAt ? new Date(c.closedAt).getTime() : new Date(t.openedAt).getTime()
       if (ts < dayStart.getTime() || ts > dayEnd.getTime()) continue
       const notional = t.positionUnits * c.price * (c.percent / 100)
       const fee = notional * (feeRatePct / 100)
-      const net = (c.pnlUsd ?? 0) - fee
-      closedRows.push({
-        symbol: t.symbol,
-        side: t.side as 'BUY' | 'SELL',
-        pnlUsd: net,
-        pnlR: c.pnlR ?? 0,
-        reason: (c.reason as any) ?? undefined,
-      })
+      pnlSum += (c.pnlUsd ?? 0) - fee
+      rSum += c.pnlR ?? 0
+      if (c.reason) reasons.push(c.reason)
     }
+    if (reasons.length === 0) continue
+    closedRows.push({
+      symbol: t.symbol,
+      side: t.side as 'BUY' | 'SELL',
+      pnlUsd: pnlSum,
+      pnlR: rSum,
+      reasons: reasons.join('+'),
+    })
   }
   closedRows.sort((a, b) => a.symbol.localeCompare(b.symbol))
   const closedTotal = closedRows.reduce((s, r) => s + r.pnlUsd, 0)

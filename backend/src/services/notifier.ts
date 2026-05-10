@@ -36,12 +36,11 @@ export interface VariantOpenInfo {
 export interface EodTradeRow {
   symbol: string
   side: 'BUY' | 'SELL'
-  pnlUsd: number      // net PnL in USD for what happened during the day
-  pnlR: number        // R for the same window
-  // For closed-summary rows: which close-event (TP1/TP2/TP3/SL/EXPIRED) this row
-  // represents. A multi-day trade can produce multiple rows on different days.
-  // For surviving rows: undefined.
-  reason?: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED' | 'MANUAL' | 'MARGIN'
+  pnlUsd: number      // net PnL in USD aggregated across all close-events of this trade during the day
+  pnlR: number        // R aggregated across the same events
+  // Closed-summary rows: chain of events that fired today, e.g. "TP1+TP2+SL"
+  // (single trade, multiple partials within the same UTC day). Surviving rows: undefined.
+  reasons?: string
 }
 
 export interface EodVariantSummary {
@@ -65,9 +64,11 @@ function signedR(n: number): string {
   return `${n >= 0 ? '+' : '−'}${Math.abs(n).toFixed(2)}R`
 }
 
-// Bold + sign + emoji wrapper for the section totals.
+// Bold + sign + coloured-square emoji wrapper for section totals — matches
+// the per-row 🟩/🟥 anchor used inside buildPnlTable for visual consistency.
 function formatPnlBlock(n: number): string {
-  return `${pnlEmoji(n)} <b>${signedUsd(n)}</b>`
+  const block = n > 0.005 ? '🟩' : n < -0.005 ? '🟥' : '⬜'
+  return `${block} <b>${signedUsd(n)}</b>`
 }
 
 function pad(s: string, len: number): string {
@@ -81,35 +82,38 @@ function padLeft(s: string, len: number): string {
 }
 
 /**
- * Builds a fixed-width table row inside a <pre> block. The leading emoji is
- * outside the table (Telegram renders emoji at variable width inside <pre>),
- * so we emit it before the <pre> open of each line. Layout per row:
+ * Builds a fixed-width table row. Telegram renders <code>/<pre> blocks in a
+ * single colour (its monospace blue), which kills the green/red contrast for
+ * P&L. So the layout splits each row into TWO regions:
  *
- *   🟢 SYMBOL    L  TP1   +$8.82   +0.75R
- *   🔴 KASUSDT   S  SL    −$13.06  −1.00R
+ *   - Left: symbol + side + reason inside <code> (aligned, monospace).
+ *   - Right: P&L cell OUTSIDE <code>, where Telegram applies the regular
+ *     text style. We sandwich the number between coloured square emojis
+ *     (🟩 profit, 🟥 loss, ⬜ zero) so the eye locks onto sign instantly.
  *
- * Width hint comes from the longest symbol/reason in the dataset.
+ * Example:
+ *   🟢 SYMBOL    L  TP1   →  🟩 +$8.82  +0.75R
+ *   🔴 KASUSDT   S  SL    →  🟥 −$13.06  −1.00R
  */
 function buildPnlTable(rows: EodTradeRow[], showReason: boolean): string {
   if (rows.length === 0) return ''
   const symW = Math.max(8, ...rows.map(r => r.symbol.length))
-  const reasonW = showReason ? Math.max(3, ...rows.map(r => (r.reason ?? '').length)) : 0
+  const reasonW = showReason ? Math.max(7, ...rows.map(r => (r.reasons ?? '').length)) : 0
   const usdStrs = rows.map(r => signedUsd(r.pnlUsd))
   const usdW = Math.max(...usdStrs.map(s => s.length))
-  const rStrs = rows.map(r => signedR(r.pnlR))
-  const rW = Math.max(...rStrs.map(s => s.length))
 
   const lines: string[] = []
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]
-    const emoji = pnlEmoji(r.pnlUsd)
+    const blockEmoji = r.pnlUsd > 0.005 ? '🟩' : r.pnlUsd < -0.005 ? '🟥' : '⬜'
     const sym = pad(r.symbol, symW)
     const sideTag = r.side === 'BUY' ? 'L' : 'S'
-    const reasonChunk = showReason ? `  ${pad(r.reason ?? '', reasonW)}` : ''
+    const reasonChunk = showReason ? `  ${pad(r.reasons ?? '', reasonW)}` : ''
     const usd = padLeft(usdStrs[i], usdW)
-    const rR = padLeft(rStrs[i], rW)
-    // Emoji outside <pre>, fixed-width body inside <pre> for alignment.
-    lines.push(`${emoji} <code>${sym}  ${sideTag}${reasonChunk}  ${usd}  ${rR}</code>`)
+    const rR = signedR(r.pnlR)
+    // Left half (aligned, monospaced) + right half (outside <code> so the
+    // bold renders in normal weight and the block emoji is the visual anchor).
+    lines.push(`<code>${sym}  ${sideTag}${reasonChunk}</code>  ${blockEmoji} <b>${usd}</b>  ${rR}`)
   }
   return lines.join('\n')
 }

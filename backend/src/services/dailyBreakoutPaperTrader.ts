@@ -1035,14 +1035,15 @@ async function buildVariantEodSummary(
   const cfg = await cm.findUnique({ where: { id: 1 } })
   const deposit = cfg?.currentDepositUsd ?? 0
 
-  // CLOSED rows = per close-event during this UTC day (TP1/TP2/TP3/SL/EXPIRED/MANUAL).
-  // This matches the dashboard's "P&L дня" computation: a trade that hit TP1
-  // today and SL tomorrow shows up here today as one row (TP1) and tomorrow
-  // as another row (SL). Σ in this section equals dashboard's daily P&L.
+  // CLOSED rows = ONE row per trade, aggregating all close-events of that trade
+  // that happened during this UTC day. A trade that hit TP1+TP2+SL the same day
+  // appears as a single row "TP1+TP2+SL" with summed P&L. A trade whose TP1 fired
+  // today but final SL tomorrow appears here today as "TP1" only, and tomorrow's
+  // EOD will show the SL row separately. Σ matches dashboard's "P&L дня".
   const tradesWithCloses = await tm.findMany({
     where: { NOT: { closes: { equals: [] } } },
     select: {
-      symbol: true, side: true, closes: true,
+      id: true, symbol: true, side: true, closes: true,
       positionUnits: true, feesRoundTripPct: true, openedAt: true,
     },
   })
@@ -1054,20 +1055,26 @@ async function buildVariantEodSummary(
       closedAt: string; reason: string;
     }>
     const feeRatePct = t.feesRoundTripPct ?? feeRateDefault
+    let pnlSum = 0
+    let rSum = 0
+    const reasons: string[] = []
     for (const c of arr) {
       const ts = c.closedAt ? new Date(c.closedAt).getTime() : new Date(t.openedAt).getTime()
       if (ts < dayStart || ts > dayEnd) continue
       const notional = t.positionUnits * c.price * (c.percent / 100)
       const fee = notional * (feeRatePct / 100)
-      const net = (c.pnlUsd ?? 0) - fee
-      closedRows.push({
-        symbol: t.symbol,
-        side: t.side as 'BUY' | 'SELL',
-        pnlUsd: net,
-        pnlR: c.pnlR ?? 0,
-        reason: (c.reason as any) ?? undefined,
-      })
+      pnlSum += (c.pnlUsd ?? 0) - fee
+      rSum += c.pnlR ?? 0
+      if (c.reason) reasons.push(c.reason)
     }
+    if (reasons.length === 0) continue
+    closedRows.push({
+      symbol: t.symbol,
+      side: t.side as 'BUY' | 'SELL',
+      pnlUsd: pnlSum,
+      pnlR: rSum,
+      reasons: reasons.join('+'),
+    })
   }
   closedRows.sort((a, b) => a.symbol.localeCompare(b.symbol))
   const closedTotal = closedRows.reduce((s, r) => s + r.pnlUsd, 0)
