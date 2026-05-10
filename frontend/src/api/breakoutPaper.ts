@@ -231,6 +231,15 @@ export async function closeBreakoutPaperTradeManual(id: number, price: number, p
     body: JSON.stringify({ price, percent }),
   }))
 }
+// Симулирует TP1/TP2/TP3/SL fill точно так же, как это делает движок
+// (maker fees/без slip для TP, taker fees+slip для SL, авто-трейлинг SL).
+export async function simulateBreakoutPaperFill(id: number, reason: 'TP1' | 'TP2' | 'TP3' | 'SL', variant: BreakoutVariant = 'A'): Promise<BreakoutTrade> {
+  return handle(await fetch(`${BASE}${basePath(variant)}/trades/${id}/simulate-fill`, {
+    method: 'POST',
+    headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  }))
+}
 
 // === Signals
 // Variant A reads /api/breakout/signals (canonical). Variant B reads

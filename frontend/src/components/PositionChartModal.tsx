@@ -317,10 +317,25 @@ export default function PositionChartModal({ position, onClose }: Props) {
     }
 
     if (position.partialCloses && position.partialCloses.length > 0) {
+      // Find the bar where price first touched the close level after entry —
+      // visually anchors the marker to the actual wick that hit it. Useful when
+      // closedAt is the click-time (manual fast-close) rather than the candle
+      // time (auto-engine close). Falls back to closedAt if no touch found.
+      const findTouchBar = (price: number, isSlClose: boolean): UTCTimestamp | null => {
+        if (entryTime == null) return null
+        for (const k of klines) {
+          if ((k.time as number) < (entryTime as number)) continue
+          const touchedTp = isLong ? k.high >= price : k.low <= price
+          const touchedSl = isLong ? k.low <= price : k.high >= price
+          if (isSlClose ? touchedSl : touchedTp) return k.time as UTCTimestamp
+        }
+        return null
+      }
       for (const close of position.partialCloses) {
         const closeSec = toUnix(close.closedAt)
         if (closeSec == null) continue
-        const time = snapToBar(closeSec, intervalSec)
+        const touchBar = findTouchBar(close.price, !!close.isSL)
+        const time = touchBar ?? snapToBar(closeSec, intervalSec)
         markers.push({
           time,
           position: close.isSL ? (isLong ? 'belowBar' : 'aboveBar') : (isLong ? 'aboveBar' : 'belowBar'),
@@ -332,6 +347,10 @@ export default function PositionChartModal({ position, onClose }: Props) {
     }
 
     if (markers.length > 0) {
+      // lightweight-charts требует строго возрастающее time у маркеров,
+      // иначе тихо роняет/перерисовывает. После touch-bar резолва порядок
+      // партиалок может разъехаться — сортируем.
+      markers.sort((a, b) => (a.time as number) - (b.time as number))
       createSeriesMarkers(candleSeries, markers)
     }
 

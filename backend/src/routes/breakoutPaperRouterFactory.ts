@@ -16,6 +16,7 @@ import { Router } from 'express'
 import { prisma } from '../db/prisma'
 import {
   resetBreakoutPaperAccount, syncSignalStatus, forceOpenSignal,
+  getRealisticRates, takerFillPrice, isMakerFill,
 } from '../services/dailyBreakoutPaperTrader'
 import { loadHistorical } from '../scalper/historicalLoader'
 import { fetchPricesBatch } from '../services/market'
@@ -562,6 +563,153 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
           status as any,
           realizedR,
           price,
+          isTerminal ? new Date() : null,
+          fills,
+        )
+      }
+      await recomputeDepositAndStats()
+      const fresh = await tm.findUnique({ where: { id } })
+      res.json(fresh)
+    } catch (e: any) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
+  // Симуляция fill TP/SL «как будто это сделал движок» — для ручного тестирования
+  // из модала. Повторяет логику dailyBreakoutPaperTrader: TP = maker fill (без slip),
+  // split 50/30/20, авто-трейлинг SL (TP1→BE, TP2→TP1); SL = taker fill со slip.
+  // Терминальные статусы: TP3 → CLOSED, SL после TP → CLOSED, SL без TP → SL_HIT.
+  router.post('/trades/:id/simulate-fill', async (req, res) => {
+    try {
+      const SPLITS = [0.5, 0.3, 0.2]
+      const id = parseInt(req.params.id, 10)
+      const trade = await tm.findUnique({ where: { id } })
+      if (!trade) return res.status(404).json({ error: 'Not found' })
+      if (['CLOSED', 'SL_HIT', 'EXPIRED'].includes(trade.status)) {
+        return res.status(400).json({ error: `Already ${trade.status}` })
+      }
+      const { reason } = req.body as { reason?: 'TP1' | 'TP2' | 'TP3' | 'SL' }
+      if (!reason || !['TP1', 'TP2', 'TP3', 'SL'].includes(reason)) {
+        return res.status(400).json({ error: 'reason must be TP1|TP2|TP3|SL' })
+      }
+
+      const fills = ((trade.closes as any[]) ?? []) as any[]
+      const closedPctSoFar = fills.reduce((a, c) => a + (c.percent ?? 0), 0)
+      const remainingFrac = Math.max(0, 1 - closedPctSoFar / 100)
+      if (remainingFrac < 1e-6) return res.status(400).json({ error: 'Already fully closed' })
+
+      const tpLadder = (trade.tpLadder as number[]).slice(0, 3)
+      const isLong = trade.side === 'BUY'
+      const entry = trade.entryPrice
+      const initialRisk = Math.abs(entry - trade.initialStop)
+      const positionUnits = trade.positionUnits
+      const cfg = await cm.findUnique({ where: { id: 1 } })
+      const realRates = getRealisticRates(trade, cfg as any)
+      const slipFracExit = (realRates?.slipPct ?? 0) / 100
+
+      // nextTpIdx = сколько TP уже взято (0/1/2). Определяем по уже сохранённым closes.
+      const tpFillsCount = fills.filter(f => f.reason === 'TP1' || f.reason === 'TP2' || f.reason === 'TP3').length
+      const nextTpIdx = tpFillsCount as 0 | 1 | 2
+
+      let realizedR = trade.realizedR
+      let realizedPnlUsd = trade.realizedPnlUsd
+      let totalSlipUsd = trade.slipPaidUsd ?? 0
+      let currentStop = trade.currentStop
+      let status: string = trade.status
+      let newRemainingFrac = remainingFrac
+
+      const newFills: any[] = []
+
+      if (reason === 'SL') {
+        const slipFillPrice = takerFillPrice(currentStop, trade.side as any, 'exit', slipFracExit)
+        const pnlR = ((isLong ? slipFillPrice - entry : entry - slipFillPrice) / initialRisk) * remainingFrac
+        const fillUnits = positionUnits * remainingFrac
+        const pnlUsd = (isLong ? slipFillPrice - entry : entry - slipFillPrice) * fillUnits
+        realizedR += pnlR
+        realizedPnlUsd += pnlUsd
+        totalSlipUsd += fillUnits * Math.abs(slipFillPrice - currentStop)
+        const fill = {
+          price: slipFillPrice, percent: remainingFrac * 100, pnlR, pnlUsd,
+          closedAt: new Date().toISOString(), reason: 'SL',
+        }
+        fills.push(fill); newFills.push(fill)
+        newRemainingFrac = 0
+        status = nextTpIdx === 0 ? 'SL_HIT' : 'CLOSED'
+      } else {
+        // TP — должен идти строго по очереди (TP1 → TP2 → TP3). Иначе ошибка.
+        const requestedIdx = reason === 'TP1' ? 0 : reason === 'TP2' ? 1 : 2
+        if (requestedIdx !== nextTpIdx) {
+          return res.status(400).json({
+            error: `Cannot simulate ${reason} — next expected TP is TP${nextTpIdx + 1}`,
+          })
+        }
+        if (requestedIdx >= tpLadder.length) {
+          return res.status(400).json({ error: `TP${requestedIdx + 1} not in ladder` })
+        }
+        const tp = tpLadder[requestedIdx]
+        const splitFrac = SPLITS[requestedIdx] ?? newRemainingFrac
+        const fillFrac = Math.min(splitFrac, newRemainingFrac)
+        const pnlR = ((isLong ? tp - entry : entry - tp) / initialRisk) * fillFrac
+        const fillUnits = positionUnits * fillFrac
+        const pnlUsd = (isLong ? tp - entry : entry - tp) * fillUnits
+        realizedR += pnlR
+        realizedPnlUsd += pnlUsd
+        const fill = {
+          price: tp, percent: fillFrac * 100, pnlR, pnlUsd,
+          closedAt: new Date().toISOString(), reason,
+        }
+        fills.push(fill); newFills.push(fill)
+        newRemainingFrac -= fillFrac
+
+        // Auto-trailing SL: TP1→entry (BE), TP2→TP1, TP3→TP2.
+        const trailEnabled = trade.autoTrailingSL ?? cfg?.autoTrailingSL ?? true
+        if (trailEnabled) {
+          if (requestedIdx === 0) currentStop = entry
+          else currentStop = tpLadder[requestedIdx - 1]
+        }
+
+        status = newRemainingFrac <= 1e-6
+          ? (requestedIdx === 2 ? 'TP3_HIT' : 'CLOSED')
+          : (requestedIdx === 0 ? 'TP1_HIT' : 'TP2_HIT')
+      }
+
+      // Fees: maker для TP, taker для SL. Считаем только по newFills.
+      let newFeesUsd = 0
+      if (realRates) {
+        for (const f of newFills) {
+          const notional = positionUnits * f.price * (f.percent / 100)
+          const rate = isMakerFill(f.reason) ? realRates.makerPct : realRates.takerPct
+          newFeesUsd += notional * (rate / 100)
+        }
+      } else {
+        const feeRatePct = trade.feesRoundTripPct ?? cfg?.feesRoundTripPct ?? 0
+        for (const f of newFills) {
+          const notional = positionUnits * f.price * (f.percent / 100)
+          newFeesUsd += notional * (feeRatePct / 100)
+        }
+      }
+      const totalFeesUsd = (trade.feesPaidUsd ?? 0) + newFeesUsd
+      const netPnlUsd = realizedPnlUsd - totalFeesUsd
+      const isTerminal = status === 'CLOSED' || status === 'SL_HIT' || status === 'EXPIRED'
+
+      await tm.update({
+        where: { id },
+        data: {
+          status, currentStop, realizedR, realizedPnlUsd,
+          feesPaidUsd: totalFeesUsd, slipPaidUsd: totalSlipUsd, netPnlUsd,
+          closes: fills as any,
+          lastPriceCheck: newFills[0].price,
+          lastPriceCheckAt: new Date(),
+          ...(isTerminal ? { closedAt: new Date() } : {}),
+        },
+      })
+
+      if (variant === 'A' && trade.signalId) {
+        await syncSignalStatus(
+          trade.signalId,
+          status as any,
+          realizedR,
+          newFills[0].price,
           isTerminal ? new Date() : null,
           fills,
         )

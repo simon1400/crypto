@@ -951,10 +951,9 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                 <th className="text-left px-3 py-2">Монета</th>
                 <th className="text-right px-3 py-2">Вход</th>
                 {statusFilter !== 'CLOSED' && <th className="text-right px-3 py-2">Цена</th>}
-                <th className="text-right px-3 py-2">Размер</th>
                 <th className="text-right px-3 py-2">Маржа</th>
-                <th className="text-right px-3 py-2">SL</th>
-                <th className="text-right px-3 py-2">TP</th>
+                <th className="text-center px-3 py-2" title="Рекомендуемое плечо">Плечо</th>
+                <th className="text-right px-3 py-2">Размер</th>
                 {statusFilter !== 'CLOSED' && <th className="text-center px-3 py-2" title="Где цена между SL и ближайшим живым TP">Прогресс</th>}
                 {statusFilter !== 'CLOSED' && <th className="text-right px-3 py-2">Рлз.</th>}
                 <th className="text-right px-3 py-2">P&L</th>
@@ -962,9 +961,9 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={13} className="text-center py-12 text-text-secondary">Загрузка...</td></tr>}
+              {loading && <tr><td colSpan={14} className="text-center py-12 text-text-secondary">Загрузка...</td></tr>}
               {!loading && trades.length === 0 && (
-                <tr><td colSpan={13} className="text-center py-12 text-text-secondary">
+                <tr><td colSpan={14} className="text-center py-12 text-text-secondary">
                   {config.enabled
                     ? 'Сделок ещё нет. Демо-счёт работает — виртуальные сделки появятся при пробое 3h-диапазона.'
                     : 'Демо-счёт выключен. Включи кнопкой ● Выкл сверху.'}
@@ -979,12 +978,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                 const displayPnlPct = isOpen && live
                   ? live.unrealizedPnlPct
                   : (t.depositAtEntryUsd > 0 ? (t.netPnlUsd / t.depositAtEntryUsd) * 100 : 0)
-                const slDir = t.side === 'BUY' ? 1 : -1
-                const slPct = ((t.currentStop - t.entryPrice) / t.entryPrice) * 100 * slDir
                 const tps = (t.tpLadder ?? []).slice(0, 3)
-                const lastTp = tps.length > 0 ? tps[tps.length - 1] : null
-                const tpDir = t.side === 'BUY' ? 1 : -1
-                const tpPct = lastTp != null ? ((lastTp - t.entryPrice) / t.entryPrice) * 100 * tpDir : null
                 const sideColorCls = t.side === 'BUY' ? 'text-long' : 'text-short'
                 const closedPctNum = Math.round(closedFrac * 100)
                 const isFinished = ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT'].includes(t.status)
@@ -1042,21 +1036,6 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                     )}
                     <td className="px-3 py-2 text-right font-mono leading-tight">
                       {isFinished ? (
-                        <span className="text-text-secondary">${fmt2(t.positionSizeUsd)}</span>
-                      ) : (
-                        <>
-                          <span className="text-text-primary">${fmt2(remainingPositionUsd)}</span>
-                          {closedPctNum > 0 && closedPctNum < 100 && (
-                            <div className="text-[10px] text-text-secondary">было ${fmt2(t.positionSizeUsd)}</div>
-                          )}
-                        </>
-                      )}
-                      {t.depositAtEntryUsd > 0 && t.positionSizeUsd > 0 && (
-                        <div className="text-[10px] text-accent/80" title="Рекомендуемое плечо">×{lev.toFixed(1)}</div>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono leading-tight">
-                      {isFinished ? (
                         <span className="text-text-secondary" title="Маржа">${fmt2(marginFull)}</span>
                       ) : (
                         <>
@@ -1067,18 +1046,26 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                         </>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-right font-mono leading-tight">
-                      <span className="text-short">${fmtPrice(t.currentStop)}</span>
-                      <div className="text-[10px] text-short/70">{fmt2(slPct)}%</div>
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono leading-tight">
-                      {lastTp != null && tpPct != null ? (
-                        <>
-                          <span className="text-long">${fmtPrice(lastTp)}</span>
-                          <div className="text-[10px] text-long/70">+{fmt2(tpPct)}%</div>
-                        </>
+                    <td className="px-3 py-2 text-center font-mono leading-tight">
+                      {t.depositAtEntryUsd > 0 && t.positionSizeUsd > 0 ? (
+                        <span
+                          className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent"
+                          title="Рекомендуемое плечо"
+                        >×{lev.toFixed(1)}</span>
                       ) : (
                         <span className="text-text-secondary">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono leading-tight">
+                      {isFinished ? (
+                        <span className="text-text-secondary">${fmt2(t.positionSizeUsd)}</span>
+                      ) : (
+                        <>
+                          <span className="text-text-primary">${fmt2(remainingPositionUsd)}</span>
+                          {closedPctNum > 0 && closedPctNum < 100 && (
+                            <div className="text-[10px] text-text-secondary">было ${fmt2(t.positionSizeUsd)}</div>
+                          )}
+                        </>
                       )}
                     </td>
                     {statusFilter !== 'CLOSED' && (
@@ -1338,6 +1325,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       {selectedTrade && (
         <BreakoutPaperTradeModal
           trade={selectedTrade}
+          live={livePrices[selectedTrade.id] ?? null}
           variant={variant}
           onClose={() => setSelectedTrade(null)}
           onUpdate={(updated) => {

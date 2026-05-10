@@ -1,19 +1,35 @@
 import { useState } from 'react'
 import {
   type BreakoutTrade as PaperTrade, type BreakoutClose as PaperClose,
+  type BreakoutTradeLive,
   type BreakoutVariant,
   editBreakoutPaperTrade as editPaperTrade, deleteBreakoutPaperTrade as deletePaperTrade,
   closeBreakoutPaperTradeMarket as closePaperTradeMarket, closeBreakoutPaperTradeManual as closePaperTradeManual,
+  simulateBreakoutPaperFill,
 } from '../api/breakoutPaper'
 import { formatPrice } from '../lib/formatters'
 
 interface Props {
   trade: PaperTrade
+  /** Live unrealized snapshot from /trades/live poller. Optional — only useful for OPEN trades. */
+  live?: BreakoutTradeLive | null
   onClose: () => void
   onUpdate?: (updated: PaperTrade) => void
   onDelete?: (id: number) => void
   /** Which paper-trader variant this modal acts on. Defaults to 'A'. */
   variant?: BreakoutVariant
+}
+
+function fmtDuration(fromIso: string, toIso?: string | null): string {
+  const from = new Date(fromIso).getTime()
+  const to = toIso ? new Date(toIso).getTime() : Date.now()
+  const sec = Math.max(0, Math.round((to - from) / 1000))
+  const d = Math.floor(sec / 86400)
+  const h = Math.floor((sec % 86400) / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  if (d > 0) return `${d}д ${h}ч`
+  if (h > 0) return `${h}ч ${m}м`
+  return `${m}м`
 }
 
 function fmtUsd(n: number): string {
@@ -35,13 +51,32 @@ function pct(from: number, to: number, side: 'BUY' | 'SELL'): string {
 const isOpen = (status: string) => ['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(status)
 const STATUS_OPTIONS = ['OPEN', 'TP1_HIT', 'TP2_HIT', 'TP3_HIT', 'CLOSED', 'SL_HIT', 'EXPIRED']
 
-export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate, onDelete, variant = 'A' }: Props) {
+export default function PaperTradeModal({ trade: initialTrade, live = null, onClose, onUpdate, onDelete, variant = 'A' }: Props) {
   const [trade, setTrade] = useState<PaperTrade>(initialTrade)
   const step = priceStep(trade.entryPrice)
   const sideText = trade.side === 'BUY' ? 'LONG' : 'SHORT'
   const sideColor = trade.side === 'BUY' ? 'text-long' : 'text-short'
   const sideEmoji = trade.side === 'BUY' ? '🟢' : '🔴'
   const splits = [50, 30, 20]
+  const isStillOpen = isOpen(trade.status)
+  const tpFillsCount = trade.closes.filter(c => c.reason === 'TP1' || c.reason === 'TP2' || c.reason === 'TP3').length
+  const closedFrac = trade.closes.reduce((a, c) => a + c.percent, 0) / 100
+  const remainingPositionUsd = trade.positionSizeUsd * Math.max(0, 1 - closedFrac)
+  const closedPctNum = Math.round(closedFrac * 100)
+  const lev = trade.leverage && trade.leverage > 0
+    ? trade.leverage
+    : (trade.depositAtEntryUsd > 0 && trade.positionSizeUsd > 0
+      ? Math.min(100, Math.max(1, trade.positionSizeUsd / trade.depositAtEntryUsd))
+      : 1)
+  const marginFull = trade.marginUsd ?? (trade.positionSizeUsd / lev)
+  const marginRemaining = marginFull * Math.max(0, 1 - closedFrac)
+  const slPct = ((trade.currentStop - trade.entryPrice) / trade.entryPrice) * 100 * (trade.side === 'BUY' ? 1 : -1)
+  const slInitialPct = ((trade.initialStop - trade.entryPrice) / trade.entryPrice) * 100 * (trade.side === 'BUY' ? 1 : -1)
+  const slMoved = trade.currentStop !== trade.initialStop
+  const livePrice = live?.currentPrice ?? trade.lastPriceCheck ?? null
+  const remainingPnl = isStillOpen && live ? (live.remainingUnrealizedPnl ?? live.unrealizedPnl) : 0
+  const remainingPnlPct = isStillOpen && live ? (live.remainingUnrealizedPnlPct ?? live.unrealizedPnlPct) : 0
+  const totalPnl = isStillOpen && live ? trade.realizedPnlUsd - trade.feesPaidUsd + remainingPnl : trade.netPnlUsd
 
   const [editing, setEditing] = useState(false)
   const [editEntry, setEditEntry] = useState(trade.entryPrice)
@@ -107,6 +142,19 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
     } catch (e: any) { setError(e.message); setBusy(false) }
   }
 
+  const fillAt = async (reason: 'TP1' | 'TP2' | 'TP3' | 'SL') => {
+    const what = reason === 'SL'
+      ? `Закрыть остаток по SL @ ${formatPrice(trade.currentStop)}?`
+      : `Закрыть ${[50, 30, 20][reason === 'TP1' ? 0 : reason === 'TP2' ? 1 : 2]}% по ${reason} @ ${formatPrice(trade.tpLadder[reason === 'TP1' ? 0 : reason === 'TP2' ? 1 : 2])}?`
+    if (!confirm(what)) return
+    setBusy(true); setError(null)
+    try {
+      const updated = await simulateBreakoutPaperFill(trade.id, reason, variant)
+      setTrade(updated); onUpdate?.(updated)
+    } catch (e: any) { setError(e.message) }
+    finally { setBusy(false) }
+  }
+
   const closeMarket = async () => {
     if (!confirm('Закрыть оставшуюся часть демо-сделки по текущей рыночной цене?')) return
     setBusy(true); setError(null)
@@ -149,7 +197,7 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div
-        className="bg-primary border border-input rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+        className="bg-primary border border-input rounded-lg shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-input p-4 flex justify-between items-start">
@@ -163,6 +211,33 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
             </div>
             <p className="text-sm text-text-secondary">
               открыто {new Date(trade.openedAt).toLocaleString('ru-RU')}
+              <span className="mx-2 text-text-secondary/50">·</span>
+              <span title="Длительность сделки">⏱ {fmtDuration(trade.openedAt, trade.closedAt)}</span>
+              {trade.closedAt && (
+                <>
+                  <span className="mx-2 text-text-secondary/50">·</span>
+                  закрыто {new Date(trade.closedAt).toLocaleString('ru-RU')}
+                </>
+              )}
+              {isStillOpen && trade.expiresAt && (
+                <>
+                  <span className="mx-2 text-text-secondary/50">·</span>
+                  <span title="Когда EOD-движок закроет/откроет проверки">
+                    истекает {new Date(trade.expiresAt).toLocaleString('ru-RU')}
+                  </span>
+                </>
+              )}
+            </p>
+            <p className="text-xs text-text-secondary mt-0.5">
+              <span title="ID сигнала-источника (3h breakout setup)">signal #{trade.signalId}</span>
+              {trade.lastPriceCheckAt && (
+                <>
+                  <span className="mx-2 text-text-secondary/50">·</span>
+                  <span title="Последняя проверка цены движком">
+                    last tick {new Date(trade.lastPriceCheckAt).toLocaleTimeString('ru-RU')}
+                  </span>
+                </>
+              )}
             </p>
           </div>
           <button onClick={onClose} className="text-text-secondary hover:text-text-primary text-xl">×</button>
@@ -240,29 +315,141 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
             </div>
           )}
 
+          {/* Симуляция fill TP/SL — повторяет логику движка (TP=maker, SL=taker+slip,
+              авто-трейлинг). Доступно только для открытых сделок и не в режиме редактирования. */}
+          {!editing && canEdit && (
+            <div className="bg-card border border-input rounded p-3 mb-4">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="font-semibold text-sm">Быстрое закрытие</h4>
+                <span className="text-[10px] text-text-secondary">по уровню (как движок)</span>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {(['TP1', 'TP2', 'TP3'] as const).map((tp, i) => {
+                  const tpHit = tpFillsCount > i
+                  const tpExpected = tpFillsCount === i
+                  const tpPrice = trade.tpLadder[i]
+                  const split = [50, 30, 20][i]
+                  return (
+                    <button
+                      key={tp}
+                      onClick={() => fillAt(tp)}
+                      disabled={busy || !tpExpected || !tpPrice}
+                      title={tpHit ? 'уже закрыт' : !tpExpected ? `сначала закрой TP${tpFillsCount + 1}` : `закрыть по ${tp} @ ${tpPrice ? formatPrice(tpPrice) : '—'}`}
+                      className={`px-3 py-2 rounded text-sm font-medium border transition ${
+                        tpHit
+                          ? 'bg-long/10 border-long/40 text-long/60 cursor-not-allowed'
+                          : tpExpected
+                          ? 'bg-long/15 border-long/40 text-long hover:bg-long/25'
+                          : 'bg-card border-input text-text-secondary cursor-not-allowed opacity-50'
+                      }`}
+                    >
+                      <div className="font-mono font-bold">{tpHit ? '✓ ' : ''}{tp}</div>
+                      <div className="text-[10px] opacity-80 font-mono">
+                        {tpPrice ? formatPrice(tpPrice) : '—'} · {split}%
+                      </div>
+                    </button>
+                  )
+                })}
+                <button
+                  onClick={() => fillAt('SL')}
+                  disabled={busy}
+                  title={`закрыть по SL @ ${formatPrice(trade.currentStop)} (${tpFillsCount > 0 ? 'CLOSED' : 'SL_HIT'})`}
+                  className="px-3 py-2 rounded text-sm font-medium border bg-short/15 border-short/40 text-short hover:bg-short/25 transition"
+                >
+                  <div className="font-mono font-bold">SL</div>
+                  <div className="text-[10px] opacity-80 font-mono">
+                    {formatPrice(trade.currentStop)} · {Math.round((1 - closedFrac) * 100)}%
+                  </div>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Position info — USD-based */}
-          <div className="grid grid-cols-2 gap-3 mb-4">
-            <PriceCard label="Размер позиции" value={`$${trade.positionSizeUsd.toFixed(0)}`}
-              sub={`Депо при входе: $${trade.depositAtEntryUsd.toFixed(2)}`} />
-            <PriceCard label="Риск" value={`$${trade.riskUsd.toFixed(2)}`}
-              sub={`Net P&L: ${fmtUsd(trade.netPnlUsd)}`}
-              tone={trade.netPnlUsd > 0 ? 'long' : trade.netPnlUsd < 0 ? 'short' : 'neutral'} />
+          <div className="grid grid-cols-4 gap-3 mb-3">
+            <PriceCard
+              label="Размер позиции"
+              value={isStillOpen && closedPctNum > 0 && closedPctNum < 100
+                ? `$${remainingPositionUsd.toFixed(0)}`
+                : `$${trade.positionSizeUsd.toFixed(0)}`}
+              sub={isStillOpen && closedPctNum > 0 && closedPctNum < 100
+                ? `было $${trade.positionSizeUsd.toFixed(0)} · закрыто ${closedPctNum}%`
+                : `депо при входе $${trade.depositAtEntryUsd.toFixed(2)}`}
+            />
+            <PriceCard
+              label="Маржа"
+              value={isStillOpen && closedPctNum > 0 && closedPctNum < 100
+                ? `$${marginRemaining.toFixed(2)}`
+                : `$${marginFull.toFixed(2)}`}
+              sub={isStillOpen && closedPctNum > 0 && closedPctNum < 100
+                ? `было $${marginFull.toFixed(2)}`
+                : undefined}
+            />
+            <div className="bg-card border border-input rounded p-3">
+              <div className="text-xs text-text-secondary">Плечо</div>
+              <div className="mt-1">
+                <span className="inline-block px-2 py-0.5 rounded text-sm font-bold font-mono bg-accent/15 text-accent">
+                  ×{lev.toFixed(1)}
+                </span>
+              </div>
+              <div className="text-xs text-text-secondary mt-0.5">{trade.positionUnits.toFixed(4)} units</div>
+            </div>
+            <PriceCard
+              label="Риск (initial)"
+              value={`$${trade.riskUsd.toFixed(2)}`}
+              sub={`R-multiple: ${trade.realizedR >= 0 ? '+' : ''}${trade.realizedR.toFixed(2)}R`}
+              tone={trade.realizedR > 0 ? 'long' : trade.realizedR < 0 ? 'short' : 'neutral'}
+            />
           </div>
 
-          {/* Geometry */}
-          <div className="grid grid-cols-2 gap-3 mb-3">
+          {/* Geometry — entry / current price / SL initial / SL current */}
+          <div className="grid grid-cols-4 gap-3 mb-3">
             {editing ? (
               <EditableCard label="Вход" step={step} value={editEntry} onChange={setEditEntry} />
             ) : (
               <PriceCard label="Вход" value={formatPrice(trade.entryPrice)} />
             )}
+            {!editing && (
+              isStillOpen && livePrice != null ? (
+                <PriceCard
+                  label="Текущая цена"
+                  value={formatPrice(livePrice)}
+                  sub={live ? `unreal: ${fmtUsd(remainingPnl)} (${remainingPnlPct >= 0 ? '+' : ''}${remainingPnlPct.toFixed(2)}%)` : 'нет live'}
+                  tone={remainingPnl > 0 ? 'long' : remainingPnl < 0 ? 'short' : 'neutral'}
+                />
+              ) : (
+                <PriceCard
+                  label="Последняя цена"
+                  value={livePrice != null ? formatPrice(livePrice) : '—'}
+                />
+              )
+            )}
+            {editing ? (
+              <EditableCard label="SL initial" step={step} tone="short" value={editInitialSL} onChange={setEditInitialSL} />
+            ) : (
+              <PriceCard
+                label="SL initial"
+                value={formatPrice(trade.initialStop)}
+                sub={`${slInitialPct >= 0 ? '+' : ''}${slInitialPct.toFixed(2)}%`}
+                tone="short"
+              />
+            )}
             {editing ? (
               <EditableCard label="SL текущий" step={step} tone="short" value={editSL} onChange={setEditSL} />
             ) : (
-              <PriceCard label="SL" value={formatPrice(trade.currentStop)}
-                sub={pct(trade.entryPrice, trade.currentStop, trade.side)} tone="short" />
+              <PriceCard
+                label={slMoved ? 'SL trailed' : 'SL текущий'}
+                value={formatPrice(trade.currentStop)}
+                sub={`${slPct >= 0 ? '+' : ''}${slPct.toFixed(2)}%${slMoved ? ` · сдвинут с ${formatPrice(trade.initialStop)}` : ''}`}
+                tone={slPct >= 0 ? (trade.side === 'BUY' ? 'long' : 'short') : 'short'}
+              />
             )}
           </div>
+
+          {/* Big progress tracker — full width, only for open trades */}
+          {!editing && isStillOpen && livePrice != null && trade.tpLadder.length > 0 && (
+            <ProgressTracker trade={trade} price={livePrice} />
+          )}
 
           {editing && (
             <div className="grid grid-cols-2 gap-3 mb-3">
@@ -366,13 +553,38 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
             })}
           </div>
 
-          {/* Stats */}
-          <div className={`grid ${trade.slipPaidUsd > 0 ? 'grid-cols-4' : 'grid-cols-3'} gap-2 mb-4`}>
+          {/* Stats — для открытых: Realized + Unrealized = Total. Для закрытых: только Net. */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
             <PriceCard label="Status" value={trade.status} />
-            <PriceCard label="Realized $" value={fmtUsd(trade.realizedPnlUsd)}
-              tone={trade.realizedPnlUsd > 0 ? 'long' : trade.realizedPnlUsd < 0 ? 'short' : 'neutral'} />
-            <PriceCard label="Fees $" value={`-$${trade.feesPaidUsd.toFixed(2)}`} />
-            {trade.slipPaidUsd > 0 && (
+            <PriceCard
+              label={isStillOpen ? 'Реализовано' : 'Net P&L'}
+              value={fmtUsd(isStillOpen ? trade.realizedPnlUsd - trade.feesPaidUsd : trade.netPnlUsd)}
+              sub={isStillOpen
+                ? `gross ${fmtUsd(trade.realizedPnlUsd)} − fees $${trade.feesPaidUsd.toFixed(2)}`
+                : `R: ${trade.realizedR >= 0 ? '+' : ''}${trade.realizedR.toFixed(2)}`}
+              tone={(isStillOpen ? trade.realizedPnlUsd - trade.feesPaidUsd : trade.netPnlUsd) > 0 ? 'long'
+                : (isStillOpen ? trade.realizedPnlUsd - trade.feesPaidUsd : trade.netPnlUsd) < 0 ? 'short' : 'neutral'}
+            />
+            {isStillOpen && (
+              <PriceCard
+                label="Unrealized"
+                value={live ? fmtUsd(remainingPnl) : '—'}
+                sub={live ? `${remainingPnlPct >= 0 ? '+' : ''}${remainingPnlPct.toFixed(2)}% на остаток` : 'нет live'}
+                tone={remainingPnl > 0 ? 'long' : remainingPnl < 0 ? 'short' : 'neutral'}
+              />
+            )}
+            {isStillOpen && (
+              <PriceCard
+                label="Total (тек.)"
+                value={live ? fmtUsd(totalPnl) : fmtUsd(trade.realizedPnlUsd - trade.feesPaidUsd)}
+                sub="реализовано + unreal"
+                tone={totalPnl > 0 ? 'long' : totalPnl < 0 ? 'short' : 'neutral'}
+              />
+            )}
+            {!isStillOpen && (
+              <PriceCard label="Fees $" value={`-$${trade.feesPaidUsd.toFixed(2)}`} />
+            )}
+            {!isStillOpen && trade.slipPaidUsd > 0 && (
               <PriceCard label="Slip $" value={`-$${trade.slipPaidUsd.toFixed(2)}`} />
             )}
           </div>
@@ -422,8 +634,8 @@ export default function PaperTradeModal({ trade: initialTrade, onClose, onUpdate
                     <span className={`font-mono text-xs ${c.pnlR > 0 ? 'text-long' : c.pnlR < 0 ? 'text-short' : ''}`}>
                       {c.pnlR >= 0 ? '+' : ''}{c.pnlR.toFixed(2)}R
                     </span>
-                    <span className="text-xs text-text-secondary text-right">
-                      {new Date(c.closedAt).toLocaleTimeString('ru-RU')}
+                    <span className="text-xs text-text-secondary text-right" title={new Date(c.closedAt).toLocaleString('ru-RU')}>
+                      {new Date(c.closedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </div>
                 ))}
@@ -445,6 +657,99 @@ function PriceCard({ label, value, sub, tone }: {
       <div className="text-xs text-text-secondary">{label}</div>
       <div className={`text-base font-mono font-semibold ${color}`}>{value}</div>
       {sub && <div className="text-xs text-text-secondary">{sub}</div>}
+    </div>
+  )
+}
+
+// Большой трекер прогресса — детальная версия мини-бара из таблицы.
+// Anchor (середина шкалы) = entry до TP1, TP1 после TP1_HIT, TP2 после TP2_HIT.
+// Линейка показывает SL ← anchor → следующий TP с маркером цены.
+function ProgressTracker({ trade, price }: { trade: PaperTrade; price: number }) {
+  const tps = trade.tpLadder.slice(0, 3)
+  const tpIdx = trade.status === 'TP2_HIT' ? 2 : trade.status === 'TP1_HIT' ? 1 : 0
+  const nextTp = tps[tpIdx] ?? tps[tps.length - 1]
+  const tpLabel = `TP${tpIdx + 1}`
+  const sl = trade.currentStop
+  const entry = trade.entryPrice
+  const isLong = trade.side === 'BUY'
+  const prevTp = tpIdx > 0 ? tps[tpIdx - 1] : null
+  const anchor = prevTp ?? entry
+  const slLocksProfit = isLong ? sl >= entry : sl <= entry
+  const slLabel = slLocksProfit ? (sl === entry ? 'BE' : 'lock') : 'SL'
+  const distToTp = Math.abs(nextTp - anchor)
+  const distToSl = Math.abs(sl - anchor)
+  if (distToTp <= 0 && distToSl <= 0) return null
+  const favorableMove = isLong ? (price - anchor) : (anchor - price)
+  const towardSL = favorableMove < 0 && distToSl > 0
+  const halfRatio = favorableMove >= 0
+    ? (distToTp > 0 ? Math.min(1, favorableMove / distToTp) : 0)
+    : (distToSl > 0 ? Math.min(1, -favorableMove / distToSl) : 0)
+  const markerPct = towardSL ? 50 - halfRatio * 50 : 50 + halfRatio * 50
+  const labelPct = Math.round(halfRatio * 100)
+  const dangerZone = towardSL && !slLocksProfit && labelPct >= 75
+  const fillColor = towardSL
+    ? (slLocksProfit ? '#848e9c' : '#f6465d')
+    : '#0ecb81'
+  const labelColorCls = towardSL
+    ? (slLocksProfit ? 'text-text-secondary' : 'text-short')
+    : 'text-long'
+  const anchorLabel = prevTp ? `TP${tpIdx}` : 'entry'
+  // Цена в процентах от anchor — для подсказки риск/профит сейчас.
+  const priceFromAnchorPct = anchor > 0 ? ((price - anchor) / anchor) * 100 * (isLong ? 1 : -1) : 0
+  const distToTpPct = anchor > 0 ? ((nextTp - anchor) / anchor) * 100 * (isLong ? 1 : -1) : 0
+  const distToSlPct = anchor > 0 ? ((sl - anchor) / anchor) * 100 * (isLong ? 1 : -1) : 0
+
+  return (
+    <div className="bg-card border border-input rounded p-3 mb-3">
+      <div className="flex items-center justify-between mb-2">
+        <h4 className="font-semibold text-sm">Прогресс к {tpLabel}</h4>
+        <span className={`text-xs font-mono ${labelColorCls}`}>
+          {labelPct === 0
+            ? (slLocksProfit ? 'в безриске' : `на ${anchorLabel}`)
+            : `${labelPct}% ${towardSL ? `к ${slLabel}${dangerZone ? ' ⚠' : ''}` : `к ${tpLabel}`}`}
+        </span>
+      </div>
+      <div className="relative h-3 bg-input rounded overflow-hidden">
+        <div className="absolute top-0 bottom-0 w-px bg-text-secondary/60" style={{ left: '50%' }} />
+        <div
+          className="absolute top-0 h-full"
+          style={{
+            left: towardSL ? `${markerPct}%` : '50%',
+            width: `${Math.abs(markerPct - 50)}%`,
+            background: fillColor,
+            opacity: 0.85,
+          }}
+        />
+        {/* Маркер цены */}
+        <div
+          className="absolute top-[-3px] bottom-[-3px] w-[2px] bg-text-primary"
+          style={{ left: `calc(${markerPct}% - 1px)` }}
+          title={`Цена ${formatPrice(price)}`}
+        />
+      </div>
+      <div className="grid grid-cols-3 mt-1.5 text-[11px] font-mono">
+        <div className={`text-left ${slLocksProfit ? 'text-text-secondary' : 'text-short'}`}>
+          <div className="font-semibold">{slLabel}</div>
+          <div>{formatPrice(sl)}</div>
+          <div className="text-[10px] opacity-70">
+            {distToSlPct >= 0 ? '+' : ''}{distToSlPct.toFixed(2)}%
+          </div>
+        </div>
+        <div className="text-center text-text-secondary">
+          <div className="font-semibold">{anchorLabel}</div>
+          <div>{formatPrice(anchor)}</div>
+          <div className="text-[10px] opacity-70">
+            цена {priceFromAnchorPct >= 0 ? '+' : ''}{priceFromAnchorPct.toFixed(2)}%
+          </div>
+        </div>
+        <div className="text-right text-long">
+          <div className="font-semibold">{tpLabel}</div>
+          <div>{formatPrice(nextTp)}</div>
+          <div className="text-[10px] opacity-70">
+            {distToTpPct >= 0 ? '+' : ''}{distToTpPct.toFixed(2)}%
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
