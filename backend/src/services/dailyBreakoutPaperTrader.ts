@@ -1,9 +1,12 @@
 /**
  * Daily Breakout Paper Trader — virtual ($) trading engine.
  *
- * Two cycles run in parallel:
- *   - Slow (every 5 min): opens new paper trades, replays 5m klines for TP/SL/expiry.
- *   - Fast (every 2 sec): polls last-price via Bybit batch endpoint.
+ * Tick architecture:
+ *   - 60s tick (this file): opens new paper trades from BreakoutSignal stream and
+ *     replays 5m klines as a SAFETY-NET for SL/TP detection.
+ *   - WebSocket tracker (breakoutWsTracker.ts): real-time SL/TP detection via Bybit
+ *     publicTrade stream — every actual trade triggers trackOnePaper for matching
+ *     symbols, with 200ms per-symbol throttle. Replaces the old 2s fast-poll tick.
  *
  * Trailing: FULL (TP1→BE, TP2→TP1, TP3→TP2) — как в backtest где Daily Breakout
  * показал TEST R/tr +0.34. Это отличается от Levels (там было только TP1→BE).
@@ -850,32 +853,54 @@ async function trackOpenPaperTrades(cfg: PaperConfig, variant: BreakoutVariant):
   return { updated, depositDelta: totalDelta, terminalClosed }
 }
 
-async function trackOpenPaperTradesFast(cfg: PaperConfig, variant: BreakoutVariant): Promise<{ updated: number; depositDelta: number; terminalClosed: number }> {
-  const tag = logTag(variant)
-  const tm = tradeModel(variant) as any
-  const open = await tm.findMany({
-    where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
-  })
-  if (open.length === 0) return { updated: 0, depositDelta: 0, terminalClosed: 0 }
-
-  const symbols: string[] = Array.from(new Set(open.map((t: any) => String(t.symbol))))
-  const prices = await fetchPricesBatch(symbols)
-  const now = Date.now()
-  let totalDelta = 0, updated = 0, terminalClosed = 0
-  for (const tr of open) {
-    const price = prices[tr.symbol]
-    if (!price || price <= 0) continue
-    const tick: OHLCV = { time: now, open: price, high: price, low: price, close: price, volume: 0 }
+/**
+ * WebSocket entrypoint — обрабатывает один трейд (или одну агрегированную свечу) для
+ * конкретного символа. Идёт по обоим вариантам (A и B), применяет depositDelta,
+ * шлёт terminal-close уведомления через notifySingleVariantOpens-аналог сделан внутри
+ * trackOnePaper. После terminal close — пытается тут же открыть новые сделки в этом же
+ * варианте (slot refill), как это делал fast tick.
+ *
+ * Вызывается из breakoutWsTracker.ts на каждый publicTrade event (с throttle).
+ */
+export async function runTrackForSymbol(symbol: string, tick: OHLCV): Promise<void> {
+  for (const variant of ['A', 'B'] as BreakoutVariant[]) {
     try {
-      const r = await trackOnePaper(tr, [tick], cfg, variant, true)
-      totalDelta += r.pnlDelta
-      if (r.statusChanged) updated++
-      if (r.terminalClosed) terminalClosed++
+      const cfg = await getOrCreateConfig(variant)
+      if (!cfg || !cfg.enabled) continue
+
+      const tm = tradeModel(variant) as any
+      const open = await tm.findMany({
+        where: { symbol, status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+      })
+      if (open.length === 0) continue
+
+      let totalDelta = 0
+      let terminalClosed = 0
+      for (const tr of open) {
+        try {
+          const r = await trackOnePaper(tr, [tick], cfg, variant, true)
+          totalDelta += r.pnlDelta
+          if (r.terminalClosed) terminalClosed++
+        } catch (e: any) {
+          console.warn(`${logTag(variant)}WS ${symbol}#${tr.id} failed: ${e.message}`)
+        }
+      }
+      if (totalDelta !== 0) await applyDepositDelta(cfg, totalDelta, variant)
+
+      // Slot refill — после terminal close сразу пробуем открыть новые сделки.
+      // Та же логика что в runBreakoutPaperCycleFast.
+      if (terminalClosed > 0) {
+        const cfgFresh = await getOrCreateConfig(variant)
+        if (cfgFresh) {
+          const r2 = await openNewPaperTrades(cfgFresh, variant)
+          if (r2.depositDelta !== 0) await applyDepositDelta(cfgFresh, r2.depositDelta, variant)
+          if (r2.openedTrades.length > 0) await notifySingleVariantOpens(r2.openedTrades, variant)
+        }
+      }
     } catch (e: any) {
-      console.warn(`${tag}Fast ${tr.symbol}#${tr.id} failed: ${e.message}`)
+      console.warn(`[BreakoutWS] ${variant} ${symbol} cycle failed: ${e.message}`)
     }
   }
-  return { updated, depositDelta: totalDelta, terminalClosed }
 }
 
 async function applyDepositDelta(cfg: PaperConfig, delta: number, variant: BreakoutVariant): Promise<void> {
@@ -956,34 +981,6 @@ export async function runBreakoutPaperCycle(variant: BreakoutVariant = 'A'): Pro
     deposit: final?.currentDepositUsd ?? 0,
     openedTrades: [...opened.openedTrades, ...openedAgainTrades],
   }
-}
-
-export async function runBreakoutPaperCycleFast(variant: BreakoutVariant = 'A'): Promise<{ updated: number; depositDelta: number; opened?: number; openedTrades?: OpenedTradeInfo[] }> {
-  const tag = logTag(variant)
-  const cfg = await getOrCreateConfig(variant)
-  if (!cfg || !cfg.enabled) return { updated: 0, depositDelta: 0 }
-  const r = await trackOpenPaperTradesFast(cfg, variant)
-  if (r.depositDelta !== 0) await applyDepositDelta(cfg, r.depositDelta, variant)
-
-  let opened = 0
-  let openedTrades: OpenedTradeInfo[] = []
-  if (r.terminalClosed > 0) {
-    const cfgFresh = await getOrCreateConfig(variant)
-    if (cfgFresh) {
-      const r2 = await openNewPaperTrades(cfgFresh, variant)
-      opened = r2.opened
-      openedTrades = r2.openedTrades
-      if (r2.depositDelta !== 0) {
-        const cfgAfter = await getOrCreateConfig(variant)
-        if (cfgAfter) await applyDepositDelta(cfgAfter, r2.depositDelta, variant)
-      }
-      if (opened > 0) {
-        console.log(`${tag}Fast: filled ${opened} freed slot(s) inline after ${r.terminalClosed} terminal close(s)`)
-      }
-    }
-  }
-
-  return { updated: r.updated, depositDelta: r.depositDelta, opened, openedTrades }
 }
 
 /**
@@ -1331,60 +1328,41 @@ export async function sendBreakoutEodSummary(utcDate: string): Promise<void> {
   console.log(`[BreakoutEOD] summary sent for ${utcDate}: A closed=${a.closed.trades.length} surviving=${a.surviving.trades.length}; B closed=${b.closed.trades.length} surviving=${b.surviving.trades.length}`)
 }
 
-// Independent timers per variant — both tickers run side-by-side.
+// Single timer per variant. Тики опрашивают БД на новые BreakoutSignal-ы и проигрывают
+// 5m свечи как safety-net — реалтайм SL/TP detection делает breakoutWsTracker через
+// Bybit publicTrade WebSocket. Этот тимер запускается каждую минуту: достаточно частый
+// чтобы быстро открыть новую сделку при появлении сигнала, и держит 5m candle replay
+// как fallback если WS отвалится.
 const paperIntervals: Record<BreakoutVariant, NodeJS.Timeout | null> = { A: null, B: null }
-const paperFastIntervals: Record<BreakoutVariant, NodeJS.Timeout | null> = { A: null, B: null }
-// Reentrancy guards — fastTick runs every 2s, but a single tick may take longer
-// (Bybit fetch + Telegram notify). Without a guard, overlapping ticks read the
-// same trade row before the first one's UPDATE commits, both see the same TP
-// hit and both fire notifications. Skip-if-busy: a missed 2s tick is harmless.
-const paperSlowBusy: Record<BreakoutVariant, boolean> = { A: false, B: false }
-const paperFastBusy: Record<BreakoutVariant, boolean> = { A: false, B: false }
+const paperBusy: Record<BreakoutVariant, boolean> = { A: false, B: false }
 
 export function startBreakoutPaperTrader(variant: BreakoutVariant = 'A'): void {
   const tag = logTag(variant)
   if (paperIntervals[variant]) return
-  const slowTick = async () => {
-    if (paperSlowBusy[variant]) return
-    paperSlowBusy[variant] = true
+  const tick = async () => {
+    if (paperBusy[variant]) return
+    paperBusy[variant] = true
     try {
       const r = await runBreakoutPaperCycle(variant)
       if (r.opened > 0 || r.updated > 0) {
-        console.log(`${tag} slow: opened=${r.opened} updated=${r.updated} delta=${r.depositDelta.toFixed(2)} depo=$${r.deposit.toFixed(2)}`)
+        console.log(`${tag} tick: opened=${r.opened} updated=${r.updated} delta=${r.depositDelta.toFixed(2)} depo=$${r.deposit.toFixed(2)}`)
       }
       if (r.openedTrades.length > 0) {
         await notifySingleVariantOpens(r.openedTrades, variant)
       }
-    } catch (e: any) { console.error(`${tag} slow tick error:`, e.message) }
-    finally { paperSlowBusy[variant] = false }
+    } catch (e: any) { console.error(`${tag} tick error:`, e.message) }
+    finally { paperBusy[variant] = false }
   }
-  const fastTick = async () => {
-    if (paperFastBusy[variant]) return
-    paperFastBusy[variant] = true
-    try {
-      const r = await runBreakoutPaperCycleFast(variant)
-      if (r.updated > 0) {
-        console.log(`${tag} fast: updated=${r.updated} delta=${r.depositDelta.toFixed(2)}`)
-      }
-      if (r.openedTrades && r.openedTrades.length > 0) {
-        await notifySingleVariantOpens(r.openedTrades, variant)
-      }
-    } catch (e: any) { console.error(`${tag} fast tick error:`, e.message) }
-    finally { paperFastBusy[variant] = false }
-  }
-  // Stagger boot: A starts at +90s, B at +95s — avoids both Bybit-fetching the
+  // Stagger boot: A starts at +60s, B at +65s — avoids both Bybit-fetching the
   // same symbol cluster at the exact same instant on first tick.
-  const slowDelay = variant === 'A' ? 90_000 : 95_000
-  setTimeout(slowTick, slowDelay)
-  paperIntervals[variant] = setInterval(slowTick, 5 * 60_000)
-  paperFastIntervals[variant] = setInterval(fastTick, 2_000)
-  console.log(`${tag} started (slow=5min, fast=2s)`)
+  const startDelay = variant === 'A' ? 60_000 : 65_000
+  setTimeout(tick, startDelay)
+  paperIntervals[variant] = setInterval(tick, 60_000)
+  console.log(`${tag} started (tick=60s, realtime SL/TP via WebSocket)`)
 }
 export function stopBreakoutPaperTrader(variant: BreakoutVariant = 'A'): void {
-  const i1 = paperIntervals[variant]
-  const i2 = paperFastIntervals[variant]
-  if (i1) { clearInterval(i1); paperIntervals[variant] = null }
-  if (i2) { clearInterval(i2); paperFastIntervals[variant] = null }
+  const i = paperIntervals[variant]
+  if (i) { clearInterval(i); paperIntervals[variant] = null }
 }
 
 // === EOD daily summary cron ===
