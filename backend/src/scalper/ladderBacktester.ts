@@ -50,15 +50,10 @@ export interface LadderConfig {
   trailing: boolean
   /**
    * Trailing mode (only relevant if trailing=true):
-   *   'full'    — TP1→BE, TP2→TP1, TP3→TP2 (default, classic trailing)
+   *   'full'   — TP1→BE, TP2→TP1, TP3→TP2 (default, classic trailing)
    *   'tp1Only' — TP1→BE only, TP2/TP3 do NOT move SL further (let runners run)
-   *   'midStep' — SL движется на каждой середине ступени:
-   *               midEntryTp1 → SL=BE, TP1 → SL=midEntryTp1,
-   *               midTp1Tp2  → SL=TP1, TP2 → SL=midTp1Tp2,
-   *               midTp2Tp3  → SL=TP2, TP3 → SL=midTp2Tp3
-   *               (partials всё ещё берутся на TP1/TP2/TP3 со штатными splits — на mid-точках только SL двигается).
    */
-  trailingMode?: 'full' | 'tp1Only' | 'midStep'
+  trailingMode?: 'full' | 'tp1Only'
   maxHoldBars: number // 0 = no limit
   /**
    * Override: if set, ignore `splits` and close 100% of position on this TP index.
@@ -114,8 +109,6 @@ interface OpenPos {
   /** distributed split amounts aligned with ladder (length = min(ladder, splits)) */
   splitsForThis: number[]
   fills: Array<{ idx: number; price: number; frac: number; rContrib: number }>
-  /** midStep mode only: next "mid" anchor index that hasn't fired yet (0 = mid(entry, TP1), 1 = mid(TP1, TP2)...). */
-  nextMidIdx: number
 }
 
 /**
@@ -162,32 +155,6 @@ export function runLadderBacktest(
 
     if (pos) {
       const isLong = pos.sig.side === 'BUY'
-
-      // 0) midStep trailing — двигаем SL ДО SL-check'а ЕСЛИ бар ЗАКРЫЛСЯ за mid-точкой между entry/TP(k-1) и TP(k).
-      // Используем c.close (а не wick), потому что intra-bar sequence неизвестен:
-      // wick до mid + откат к low ниже нового SL = ложный SL hit на том же баре.
-      // С close-based confirmation: бар уверенно закрылся выше mid → следующий бар входит уже с подтянутым SL.
-      if (cfg.trailing && (cfg.trailingMode === 'midStep')) {
-        let progressedMid = true
-        while (progressedMid && pos.nextMidIdx < pos.sig.tpLadder.length) {
-          progressedMid = false
-          const midIdx = pos.nextMidIdx
-          const anchorPrice = midIdx === 0 ? pos.fillPrice : pos.sig.tpLadder[midIdx - 1]
-          const tpPrice = pos.sig.tpLadder[midIdx]
-          const midPrice = (anchorPrice + tpPrice) / 2
-          // close-based: бар должен ЗАКРЫТЬСЯ за mid (не просто коснуться wick'ом)
-          const midReached = isLong ? c.close >= midPrice : c.close <= midPrice
-          if (midReached) {
-            const newSL = anchorPrice
-            const better = isLong ? newSL > pos.trailingSL : newSL < pos.trailingSL
-            if (better) pos.trailingSL = newSL
-            pos.nextMidIdx++
-            progressedMid = true
-          } else {
-            break  // если этот mid не достигнут — последующие тоже не могут быть (они дальше)
-          }
-        }
-      }
 
       // 1) SL check (intra-bar)
       const slHit = isLong ? c.low <= pos.trailingSL : c.high >= pos.trailingSL
@@ -239,23 +206,12 @@ export function runLadderBacktest(
             // Trailing SL
             if (cfg.trailing) {
               const mode = cfg.trailingMode ?? 'full'
-              let newSL: number | null = null
-              if (mode === 'midStep') {
-                // midStep: при достижении TP(k) SL → mid(entry/TP(k-1), TP(k))
-                const anchor = tpIdx === 0 ? pos.fillPrice : pos.sig.tpLadder[tpIdx - 1]
-                newSL = (anchor + pos.sig.tpLadder[tpIdx]) / 2
-                // продвигаем nextMidIdx — этот mid уже устарел (мы прошли сам TP).
-                if (pos.nextMidIdx <= tpIdx) pos.nextMidIdx = tpIdx + 1
-              } else if (tpIdx === 0) {
-                newSL = pos.fillPrice // BE — applies to 'full' and 'tp1Only'
+              if (tpIdx === 0) {
+                pos.trailingSL = pos.fillPrice // BE — applies to both modes
               } else if (mode === 'full') {
-                newSL = pos.sig.tpLadder[tpIdx - 1]
+                pos.trailingSL = pos.sig.tpLadder[tpIdx - 1]
               }
               // tp1Only: do NOT move SL further after TP1
-              if (newSL != null) {
-                const better = isLong ? newSL > pos.trailingSL : newSL < pos.trailingSL
-                if (better) pos.trailingSL = newSL
-              }
             }
           }
           pos.nextTpIdx++
@@ -309,7 +265,6 @@ export function runLadderBacktest(
       risk,
       openIdx: i,
       nextTpIdx: 0,
-      nextMidIdx: 0,
       remainingFrac: 1,
       splitsForThis: cfg.singleTpIdx !== undefined
         ? buildSingleTpSplits(sig.tpLadder.length, cfg.singleTpIdx)

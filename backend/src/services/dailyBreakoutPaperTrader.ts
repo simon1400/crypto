@@ -29,12 +29,6 @@ import { loadHistorical } from '../scalper/historicalLoader'
 import { computeSizing, evaluateOpenWithGuard, ExistingTrade, getMaxLeverage } from './marginGuard'
 import { sendNotification, VariantOpenInfo } from './notifier'
 import { BreakoutVariant, configModel, tradeModel, tgPrefix, logTag } from './breakoutVariant'
-import {
-  placeScaleInLimitForPrimaryB,
-  cancelScaleInForPrimaryB,
-  cancelStaleScaleInLimitsBEod,
-  checkScaleInLimitsAgainstCandlesB,
-} from './dailyBreakoutScaleInB'
 
 const SPLITS = [0.5, 0.3, 0.2]
 
@@ -382,21 +376,8 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
     const openTrades = await tm.findMany({
       where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
     })
-    // Concurrent cap: для B со scale-in PENDING_LIMIT scale-in row тоже занимает
-    // слот (как pending limit, который скоро может стать FILLED позицией).
-    // Без этого 20 primary + 20 PENDING scale-in = 40 row, но cap 20 — счётчик
-    // 20 уже исчерпан, новые сигналы блокируются "не сразу". С учётом PENDING
-    // — корректное соответствие backtest'у (там portfolio simulator считает
-    // все active scale-in).
-    let activeCount = openTrades.length
-    if (variant === 'B') {
-      const pendingScaleIn = await tm.count({
-        where: { tradeType: 'SCALE_IN', limitOrderState: 'PENDING_LIMIT' },
-      })
-      activeCount += pendingScaleIn
-    }
-    if (activeCount >= cfg.maxConcurrentPositions) {
-      const r = `maxConcurrent=${cfg.maxConcurrentPositions} reached (active=${activeCount})`
+    if (openTrades.length >= cfg.maxConcurrentPositions) {
+      const r = `maxConcurrent=${cfg.maxConcurrentPositions} reached`
       console.log(`${tag} skip sig ${sig.id} — ${r}`)
       await markPaperStatus(sig.id, 'SKIPPED', r)
       continue
@@ -529,7 +510,7 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
     depositDelta -= entryFeeUsd
 
     const entryAt = new Date()
-    const createdPrimary = await tm.create({
+    await tm.create({
       data: {
         signalId: sig.id,
         symbol: sig.symbol,
@@ -558,42 +539,6 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
       },
     })
     opened++
-
-    // Scale-in UP (только для B, и только если feature flag включён в config).
-    // Создаём отдельную SCALE_IN row в PENDING_LIMIT. WS tracker подхватит и
-    // зафиллит когда цена коснётся triggerPrice.
-    if (variant === 'B' && (cfg as any).scaleInEnabled) {
-      try {
-        await placeScaleInLimitForPrimaryB(
-          {
-            id: createdPrimary.id,
-            signalId: sig.id,
-            symbol: sig.symbol,
-            side: sig.side,
-            entryPrice: slippedEntry,
-            stopLoss: sig.stopLoss,
-            initialStop: sig.initialStop,
-            currentStop: sig.currentStop,
-            tpLadder: sig.tpLadder as any,
-            expiresAt: sig.expiresAt,
-          },
-          {
-            id: cfg.id,
-            enabled: cfg.enabled,
-            scaleInEnabled: (cfg as any).scaleInEnabled,
-            scaleInTriggerPct: (cfg as any).scaleInTriggerPct ?? 33,
-            scaleInSizePct: (cfg as any).scaleInSizePct ?? 75,
-            currentDepositUsd: cfg.currentDepositUsd,
-            riskPctPerTrade: cfg.riskPctPerTrade,
-            feeMakerPct: cfg.feeMakerPct,
-            targetMarginPct: cfg.targetMarginPct,
-            marginGuardEnabled: cfg.marginGuardEnabled,
-          },
-        )
-      } catch (e: any) {
-        console.warn(`${tag} scale-in placement failed for primary #${createdPrimary.id}: ${e.message}`)
-      }
-    }
     openedTrades.push({
       signalId: sig.id,
       symbol: sig.symbol,
@@ -888,21 +833,6 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
   }
 
   const terminalClosed = statusChanged && (status === 'CLOSED' || status === 'SL_HIT' || status === 'EXPIRED')
-
-  // Cancel cascade: если терминально закрылась PRIMARY B-сделка с висящим
-  // scale-in PENDING_LIMIT — отменяем scale-in. Только для variant B; на C
-  // (где scale-in пока не реализован) — no-op (функция найдёт 0 записей).
-  // Скейл-ин, который к этому моменту уже filled (status='OPEN'/'TP1_HIT'/etc),
-  // живёт сам по себе и закроется по своему SL/TP — cancel'ить его не нужно
-  // (он не в PENDING_LIMIT).
-  if (variant === 'B' && terminalClosed && trade.tradeType === 'PRIMARY') {
-    try {
-      await cancelScaleInForPrimaryB(trade.id, 'primary_closed')
-    } catch (e: any) {
-      console.warn(`${tag} scale-in cancel cascade failed for primary #${trade.id}: ${e.message}`)
-    }
-  }
-
   return { pnlDelta: totalPnlDeltaUsd - newFeesUsd, statusChanged, terminalClosed }
 }
 
@@ -929,14 +859,6 @@ async function trackOpenPaperTrades(cfg: PaperConfig, variant: BreakoutVariant):
         totalDelta += r.pnlDelta
         if (r.statusChanged) updated++
         if (r.terminalClosed) terminalClosed++
-      }
-      // Slow tick safety net for B scale-in PENDING_LIMIT — на случай WS
-      // disconnect. WS instant fill уже обработал большинство, но если WS
-      // лежал — этот REST-проход через 5m candles подберёт пропущенные fill.
-      if (variant === 'B') {
-        await checkScaleInLimitsAgainstCandlesB(symbol, candles).catch((e: any) => {
-          console.warn(`${tag} scale-in slow check ${symbol} failed: ${e.message}`)
-        })
       }
     } catch (e: any) {
       console.warn(`${tag} track ${symbol} failed: ${e.message}`)
@@ -1402,16 +1324,6 @@ export async function sendBreakoutEodSummary(utcDate: string): Promise<void> {
     await cancelStaleLimitsEod()
   } catch (e: any) {
     console.warn(`[BreakoutEOD] C cancel stale limits failed: ${e.message}`)
-  }
-
-  // Variant B scale-in cleanup — отменить все PENDING_LIMIT scale-in старше 24h.
-  // Если primary за день вылетела по SL/TP3, scale-in уже cancelled через cascade
-  // (cancelScaleInForPrimaryB в trackOnePaper); здесь подчищаем "осиротевшие"
-  // случаи (например primary до сих пор открыта но scale-in устарел).
-  try {
-    await cancelStaleScaleInLimitsBEod()
-  } catch (e: any) {
-    console.warn(`[BreakoutEOD] B cancel stale scale-in limits failed: ${e.message}`)
   }
 
   const a = await buildVariantEodSummary('A', utcDate)

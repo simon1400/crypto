@@ -35,11 +35,6 @@ export interface BreakoutPaperConfig {
   weeklyLossLimitPct: number
   maxConcurrentPositions: number
   maxPositionsPerSymbol: number
-  // Variant B scale-in UP (pyramiding) — optional, undefined for A/C.
-  // Backtest 33%/75% улучшил FULL B с +6% до +108% годовых.
-  scaleInEnabled?: boolean
-  scaleInTriggerPct?: number  // 33 по умолчанию (% пути от entry к TP1)
-  scaleInSizePct?: number     // 75 по умолчанию (% от primary positionUnits)
   totalTrades: number
   totalWins: number
   totalLosses: number
@@ -95,18 +90,11 @@ export interface BreakoutTrade {
   closedAt: string | null
   openedAt: string
   // Variant C only — limit-order lifecycle. null/undefined for A/B.
-  // For B with scale-in enabled: limitOrderState includes 'CANCELLED_PRIMARY_DONE'
-  // (scale-in cancelled because primary closed before mid-trigger).
-  limitOrderState?: 'PENDING_LIMIT' | 'FILLED' | 'CANCELLED_EOD' | 'CANCELLED_OTHER_SIDE' | 'CANCELLED_PRIMARY_DONE' | 'FILLING' | null
+  limitOrderState?: 'PENDING_LIMIT' | 'FILLED' | 'CANCELLED_EOD' | 'CANCELLED_OTHER_SIDE' | null
   limitOrderPrice?: number | null
   limitPlacedAt?: string | null
   limitFilledAt?: string | null
   pairOrderId?: number | null
-  // Variant B scale-in UP fields — добавлено 2026-05-11.
-  // tradeType='PRIMARY' для обычных сделок (как было раньше), 'SCALE_IN' для
-  // pyramid-add позиций. parentTradeId на SCALE_IN указывает на primary.
-  tradeType?: 'PRIMARY' | 'SCALE_IN'
-  parentTradeId?: number | null
 }
 
 export interface BreakoutStats {
@@ -212,16 +200,6 @@ export async function getBreakoutPaperTrades(opts: { status?: string[]; symbol?:
 }
 export async function getBreakoutPaperStats(variant: BreakoutVariant = 'A'): Promise<BreakoutStats> {
   return handle(await fetch(`${BASE}${basePath(variant)}/stats`, { headers: getHeaders() }))
-}
-// Variant B scale-in: загрузить связанные SCALE_IN row'ы для списка primary IDs.
-// Возвращает данные scale-in (PENDING_LIMIT, FILLED, CANCELLED) — frontend сам
-// решает что показать (inline маркер в строке primary).
-export async function getBreakoutScaleInByParent(
-  primaryIds: number[], variant: BreakoutVariant = 'A',
-): Promise<{ data: BreakoutTrade[] }> {
-  if (primaryIds.length === 0 || variant !== 'B') return { data: [] }
-  const p = new URLSearchParams({ ids: primaryIds.join(',') })
-  return handle(await fetch(`${BASE}${basePath(variant)}/scale-in/by-parent?${p}`, { headers: getHeaders() }))
 }
 export async function editBreakoutPaperTrade(id: number, patch: {
   entryPrice?: number; stopLoss?: number; currentStop?: number; initialStop?: number; tpLadder?: number[]

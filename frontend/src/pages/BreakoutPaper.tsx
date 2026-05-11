@@ -4,7 +4,7 @@ import {
   getBreakoutPaperTrades, getBreakoutPaperStats,
   getBreakoutPaperLivePrices, wipeAllBreakoutPaper,
   getBreakoutConfig, updateBreakoutConfig, scanBreakoutNow, getBreakoutSetups,
-  getBreakoutSignals, getBreakoutScaleInByParent,
+  getBreakoutSignals,
   type BreakoutPaperConfig as PaperConfig,
   type BreakoutTrade as PaperTrade,
   type BreakoutStats as PaperStats,
@@ -184,10 +184,6 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
   // Открытые сделки держим отдельно от `trades` — нужны для расчёта equity-with-unrealized
   // в верхней статистике независимо от выбранной вкладки.
   const [openTradesAll, setOpenTradesAll] = useState<PaperTrade[]>([])
-  // Variant B scale-in: связанные PENDING_LIMIT/FILLED scale-in row'ы для
-  // открытых primary trades. Map<primary.id, scaleIn trade>. Загружается из
-  // /scale-in/by-parent после fetch trades. Для A/C всегда пустой.
-  const [scaleInsByParent, setScaleInsByParent] = useState<Record<number, PaperTrade>>({})
   const [stats, setStats] = useState<PaperStats | null>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('OPEN')
   // Пагинация только для вкладки "Закрытые" (открытых обычно <= 10 штук, лимит маленький)
@@ -261,33 +257,13 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       // и отдельный запрос не нужен. Иначе делаем дополнительный fetch.
       // PENDING-сделки C не входят в "Открытые" — у них margin=0 и unrealized=0,
       // верхняя статистика их игнорирует.
-      let openAll: PaperTrade[] = []
       if (statusFilter === 'OPEN') {
-        openAll = t.data
-        setOpenTradesAll(openAll)
+        setOpenTradesAll(t.data)
       } else {
         try {
           const openOnly = await getBreakoutPaperTrades({ status: ['OPEN', 'TP1_HIT', 'TP2_HIT'], limit: 100 }, variant)
-          openAll = openOnly.data
-          setOpenTradesAll(openAll)
+          setOpenTradesAll(openOnly.data)
         } catch { /* keep stale */ }
-      }
-
-      // Variant B scale-in: дозагрузить PENDING/FILLED scale-in row'ы для всех
-      // открытых primary trades (по их parentTradeId). Frontend join'ит их inline
-      // в строку primary в табе "Открытые".
-      if (variant === 'B' && openAll.length > 0) {
-        try {
-          const primaryIds = openAll.filter(t => t.tradeType !== 'SCALE_IN').map(t => t.id)
-          const si = await getBreakoutScaleInByParent(primaryIds, variant)
-          const map: Record<number, PaperTrade> = {}
-          for (const s of si.data) {
-            if (s.parentTradeId != null) map[s.parentTradeId] = s as any
-          }
-          setScaleInsByParent(map)
-        } catch { /* non-fatal */ }
-      } else {
-        setScaleInsByParent({})
       }
     } catch (e: any) {
       setError(e?.message ?? 'Failed to load')
@@ -864,15 +840,6 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                 onChange={async e => setConfig(await updateBreakoutPaperConfig({ autoTrailingSL: e.target.checked }, variant))} />
               <label htmlFor="autoTrailing" className="text-sm">Авто-трейлинг SL (TP1→BE, TP2→TP1)</label>
             </div>
-            {variant === 'B' && (
-              <div className="flex items-center gap-2">
-                <input type="checkbox" id="scaleInEnabled" checked={!!config.scaleInEnabled}
-                  onChange={async e => setConfig(await updateBreakoutPaperConfig({ scaleInEnabled: e.target.checked } as any, variant))} />
-                <label htmlFor="scaleInEnabled" className="text-sm" title="При fill primary B-сделки автоматически выставляется limit на цене (entry + 33% × (TP1 - entry)) размером +75% от primary. Backtest показал улучшение FULL с +6% до +108% годовых.">
-                  Scale-in UP (+75% @ 33% к TP1)
-                </label>
-              </div>
-            )}
           </div>
           <div className="mt-4 pt-4 border-t border-input flex items-center gap-3">
             <input type="number" value={resetAmount}
@@ -1205,31 +1172,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                         </button>
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-right font-mono text-text-primary">
-                      ${fmtPrice(t.entryPrice)}
-                      {/* Variant B scale-in inline marker — показывается на строке primary trade.
-                          PENDING_LIMIT — желтый ⏳ ждёт срабатывания.
-                          FILLED — зелёный ✓ scale-in уже добавлен, position увеличен.
-                          (CANCELLED не показываем — скейл-ин больше не релевантен.) */}
-                      {variant === 'B' && t.tradeType !== 'SCALE_IN' && scaleInsByParent[t.id] && (() => {
-                        const si = scaleInsByParent[t.id]
-                        if (si.limitOrderState === 'PENDING_LIMIT') {
-                          return (
-                            <div className="text-[10px] text-yellow-500 mt-0.5" title={`Scale-in PENDING @ $${fmtPrice(si.limitOrderPrice ?? 0)} (33% к TP1, +75%)`}>
-                              ⏳ +75% @ ${fmtPrice(si.limitOrderPrice ?? 0)}
-                            </div>
-                          )
-                        }
-                        if (si.limitOrderState === 'FILLED' || si.status === 'OPEN' || si.status === 'TP1_HIT' || si.status === 'TP2_HIT') {
-                          return (
-                            <div className="text-[10px] text-long mt-0.5" title={`Scale-in FILLED @ $${fmtPrice(si.entryPrice)} (units +${si.positionUnits.toFixed(4)})`}>
-                              ✓ +75% @ ${fmtPrice(si.entryPrice)}
-                            </div>
-                          )
-                        }
-                        return null
-                      })()}
-                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-text-primary">${fmtPrice(t.entryPrice)}</td>
                     {statusFilter !== 'CLOSED' && (
                       <td className="px-3 py-2 text-right font-mono">
                         {isOpen && live?.currentPrice != null ? (
