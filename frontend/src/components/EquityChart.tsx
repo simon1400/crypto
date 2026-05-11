@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { createChart, IChartApi, AreaSeries, LineSeries } from 'lightweight-charts'
+import { createChart, IChartApi, ISeriesApi, AreaSeries, LineSeries } from 'lightweight-charts'
 
 interface Props {
   data: { date: string; equity: number }[]
@@ -10,10 +10,15 @@ interface Props {
 export default function EquityChart({ data, startEquity, height = 260 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
+  const areaRef = useRef<ISeriesApi<'Area'> | null>(null)
+  const baselineRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const lastColorUpRef = useRef<boolean | null>(null)
 
+  // Создаём chart один раз. Перерисовка данных идёт через setData,
+  // чтобы каждые 3с (livePrices tick → новая ссылка data) не было
+  // remove()+createChart() — иначе layout shift сбрасывает скролл страницы.
   useEffect(() => {
     if (!containerRef.current) return
-    if (!data || data.length === 0) return
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
@@ -45,35 +50,23 @@ export default function EquityChart({ data, startEquity, height = 260 }: Props) 
 
     chartRef.current = chart
 
-    const equityFirst = data[0].equity
-    const equityLast = data[data.length - 1].equity
-    const isUp = equityLast >= equityFirst
-    const lineColor = isUp ? '#0ecb81' : '#f6465d'
-    const topColor = isUp ? 'rgba(14, 203, 129, 0.28)' : 'rgba(246, 70, 93, 0.28)'
-    const bottomColor = isUp ? 'rgba(14, 203, 129, 0.02)' : 'rgba(246, 70, 93, 0.02)'
-
-    const series = chart.addSeries(AreaSeries, {
-      lineColor,
-      topColor,
-      bottomColor,
+    const area = chart.addSeries(AreaSeries, {
+      lineColor: '#0ecb81',
+      topColor: 'rgba(14, 203, 129, 0.28)',
+      bottomColor: 'rgba(14, 203, 129, 0.02)',
       lineWidth: 2,
       priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
     })
+    areaRef.current = area
 
-    series.setData(data.map(d => ({ time: d.date as any, value: d.equity })))
-
-    if (typeof startEquity === 'number' && startEquity > 0) {
-      const baseline = chart.addSeries(LineSeries, {
-        color: '#848e9c',
-        lineWidth: 1,
-        lineStyle: 2,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      })
-      baseline.setData(data.map(d => ({ time: d.date as any, value: startEquity })))
-    }
-
-    chart.timeScale().fitContent()
+    const baseline = chart.addSeries(LineSeries, {
+      color: '#848e9c',
+      lineWidth: 1,
+      lineStyle: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    })
+    baselineRef.current = baseline
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -86,8 +79,47 @@ export default function EquityChart({ data, startEquity, height = 260 }: Props) 
       resizeObserver.disconnect()
       chart.remove()
       chartRef.current = null
+      areaRef.current = null
+      baselineRef.current = null
+      lastColorUpRef.current = null
     }
-  }, [data, startEquity, height])
+  }, [height])
+
+  // Обновляем данные без пересоздания chart.
+  useEffect(() => {
+    const area = areaRef.current
+    const baseline = baselineRef.current
+    const chart = chartRef.current
+    if (!area || !baseline || !chart) return
+    if (!data || data.length === 0) {
+      area.setData([])
+      baseline.setData([])
+      return
+    }
+
+    const equityFirst = data[0].equity
+    const equityLast = data[data.length - 1].equity
+    const isUp = equityLast >= equityFirst
+
+    if (lastColorUpRef.current !== isUp) {
+      area.applyOptions({
+        lineColor: isUp ? '#0ecb81' : '#f6465d',
+        topColor: isUp ? 'rgba(14, 203, 129, 0.28)' : 'rgba(246, 70, 93, 0.28)',
+        bottomColor: isUp ? 'rgba(14, 203, 129, 0.02)' : 'rgba(246, 70, 93, 0.02)',
+      })
+      lastColorUpRef.current = isUp
+    }
+
+    area.setData(data.map(d => ({ time: d.date as any, value: d.equity })))
+
+    if (typeof startEquity === 'number' && startEquity > 0) {
+      baseline.setData(data.map(d => ({ time: d.date as any, value: startEquity })))
+    } else {
+      baseline.setData([])
+    }
+
+    chart.timeScale().fitContent()
+  }, [data, startEquity])
 
   if (!data || data.length === 0) {
     return (
