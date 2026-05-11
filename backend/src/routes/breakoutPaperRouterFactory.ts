@@ -110,6 +110,8 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
         targetMarginPct, marginGuardEnabled, marginGuardAutoClose,
         dailyLossLimitPct, weeklyLossLimitPct,
         maxConcurrentPositions, maxPositionsPerSymbol,
+        // Variant B scale-in UP (pyramiding) — optional на A/C (schema их не имеет).
+        scaleInEnabled, scaleInTriggerPct, scaleInSizePct,
       } = req.body
       const cfg = await cm.update({
         where: { id: 1 },
@@ -128,6 +130,11 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
           ...(weeklyLossLimitPct !== undefined ? { weeklyLossLimitPct } : {}),
           ...(maxConcurrentPositions !== undefined ? { maxConcurrentPositions } : {}),
           ...(maxPositionsPerSymbol !== undefined ? { maxPositionsPerSymbol } : {}),
+          // Только для variant B (schema A/C не содержит этих колонок). Игнорируем
+          // если variant !== 'B' чтобы избежать P2009 от Prisma на A/C обновлении.
+          ...(variant === 'B' && scaleInEnabled !== undefined ? { scaleInEnabled } : {}),
+          ...(variant === 'B' && scaleInTriggerPct !== undefined ? { scaleInTriggerPct } : {}),
+          ...(variant === 'B' && scaleInSizePct !== undefined ? { scaleInSizePct } : {}),
         },
       })
       res.json(cfg)
@@ -226,6 +233,18 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
       const where: any = {}
       if (status) where.status = { in: status.split(',') }
       if (symbol) where.symbol = symbol
+      // Variant B со scale-in: SCALE_IN row'ы со status PENDING/CANCELLED не
+      // показываются в /trades — они "под-сделки" primary, видны только через
+      // /scale-in/by-parent endpoint. SCALE_IN со status OPEN/TP1_HIT/TP2_HIT/CLOSED/
+      // SL_HIT/EXPIRED (т.е. реально открытые и закрытые) попадают в обычный список
+      // как полноценные сделки.
+      // Variant A и C не имеют поля tradeType в schema — для них фильтр не применяется.
+      if (variant === 'B') {
+        where.OR = [
+          { tradeType: { not: 'SCALE_IN' } },
+          { tradeType: 'SCALE_IN', status: { notIn: ['PENDING', 'CANCELLED'] } },
+        ]
+      }
       const order: any = orderBy === 'closedAt'
         ? [{ closedAt: 'desc' }, { openedAt: 'desc' }]
         : { openedAt: 'desc' }
@@ -238,6 +257,25 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
         tm.count({ where }),
       ])
       res.json({ data, total })
+    } catch (e: any) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
+  // Variant B scale-in (pyramiding) — возвращает scale-in row'ы для заданных
+  // primary IDs. Frontend дозагружает после загрузки open primary trades чтобы
+  // показать inline маркер "⏳ +75% @ $X" в строке primary.
+  // Для A/C поле tradeType отсутствует в schema → endpoint возвращает [].
+  router.get('/scale-in/by-parent', async (req, res) => {
+    try {
+      if (variant !== 'B') { res.json({ data: [] }); return }
+      const idsStr = (req.query.ids as string | undefined) ?? ''
+      const ids = idsStr.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n))
+      if (ids.length === 0) { res.json({ data: [] }); return }
+      const data = await tm.findMany({
+        where: { tradeType: 'SCALE_IN', parentTradeId: { in: ids } },
+      })
+      res.json({ data })
     } catch (e: any) {
       res.status(500).json({ error: e.message })
     }

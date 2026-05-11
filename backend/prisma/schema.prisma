@@ -198,6 +198,13 @@ model BreakoutPaperConfigB {
   weeklyLossLimitPct     Float     @default(15)
   maxConcurrentPositions Int       @default(20)
   maxPositionsPerSymbol  Int       @default(1)
+  // Scale-in UP (pyramiding): при fill primary автоматически выставляем limit
+  // на цене (entry + triggerPct% * (TP1 - entry)) с размером primary * sizePct%.
+  // Backtest (33%/75%) для B показал улучшение с +6% до +108% годовых на FULL.
+  // По умолчанию выключено (false) — feature flag для безопасной выкатки.
+  scaleInEnabled         Boolean   @default(false)
+  scaleInTriggerPct      Float     @default(33)
+  scaleInSizePct         Float     @default(75)
   // Stats
   totalTrades            Int       @default(0)
   totalWins              Int       @default(0)
@@ -249,10 +256,35 @@ model BreakoutPaperTradeB {
   expiresAt         DateTime?
   closedAt          DateTime?
   openedAt          DateTime  @default(now())
+  // Scale-in UP (pyramiding) — добавлено 2026-05-11.
+  // tradeType:
+  //   'PRIMARY'   — обычная сделка (market entry, как было до scale-in)
+  //   'SCALE_IN'  — добавочная позиция, открывается limit-ордером на цене
+  //                 (primary.entry + triggerPct% * (TP1 - primary.entry)).
+  //                 SCALE_IN row создаётся вместе с primary, начинает жизнь
+  //                 в limitOrderState='PENDING_LIMIT' и status='PENDING'.
+  //                 При срабатывании limit переходит в status='OPEN' и
+  //                 trackOnePaper подхватывает её как обычную позицию.
+  // parentTradeId — на SCALE_IN указывает на PRIMARY (для cancel cascade
+  //                 при SL primary и для UI inline-отображения).
+  tradeType         String    @default("PRIMARY")
+  parentTradeId     Int?
+  // limitOrderState (только для SCALE_IN):
+  //   PENDING_LIMIT — limit висит, ждёт срабатывания
+  //   FILLING       — atomic claim (промежуточное)
+  //   FILLED        — limit сработал, позиция открыта (status='OPEN')
+  //   CANCELLED_PRIMARY_DONE — primary закрылась (SL/TP3/EXPIRED) до fill scale-in
+  //   CANCELLED_EOD — лимит не сработал к 23:55 UTC, отменён
+  limitOrderState   String?
+  limitOrderPrice   Float?
+  limitPlacedAt     DateTime?
+  limitFilledAt     DateTime?
 
   @@index([status, symbol])
   @@index([openedAt])
   @@index([signalId])
+  @@index([parentTradeId])
+  @@index([limitOrderState, symbol])
 }
 
 // === Variant C — limit-on-rangeEdge experimental copy ===

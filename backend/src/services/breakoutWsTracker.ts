@@ -15,6 +15,7 @@ import { WebsocketClient } from 'bybit-api'
 import { OHLCV } from './market'
 import { runTrackForSymbol } from './dailyBreakoutPaperTrader'
 import { processWsTradeForLimits } from './dailyBreakoutLimitTrader'
+import { processWsTradeForBScaleIn } from './dailyBreakoutScaleInB'
 import { prisma } from '../db/prisma'
 
 let wsClient: WebsocketClient | null = null
@@ -144,6 +145,11 @@ async function flushPending(symbol: string): Promise<void> {
     // vs slow tick safety-net (60s).
     await processWsTradeForLimits(symbol, p.high, p.latestT).catch(() => { /* logged inside */ })
     await processWsTradeForLimits(symbol, p.low, p.latestT).catch(() => { /* logged inside */ })
+    // Variant B scale-in limit-fill detection — same instant-fill mechanism
+    // as C, но для SCALE_IN trade rows (pyramiding @ 33% to TP1). Если scale-in
+    // отключён в config B, функция найдёт 0 PENDING_LIMIT и сразу вернётся.
+    await processWsTradeForBScaleIn(symbol, p.high, p.latestT).catch(() => { /* logged inside */ })
+    await processWsTradeForBScaleIn(symbol, p.low, p.latestT).catch(() => { /* logged inside */ })
   } catch (e: any) {
     console.warn(`[BreakoutWS] flush ${symbol} failed: ${e.message}`)
   } finally {
