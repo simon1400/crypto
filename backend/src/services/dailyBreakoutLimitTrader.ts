@@ -47,7 +47,7 @@ import {
 import {
   getRealisticRates, syncSignalStatus, isVariantBusyOnSymbol, runTrackForSymbol,
 } from './dailyBreakoutPaperTrader'
-import { detectRange, BreakoutEngineConfig } from '../scalper/dailyBreakoutEngine'
+import { detectRange, endOfDayUTC, BreakoutEngineConfig } from '../scalper/dailyBreakoutEngine'
 import { loadHistorical } from '../scalper/historicalLoader'
 import { DEFAULT_BREAKOUT_SETUPS } from './dailyBreakoutLiveScanner'
 import { sendNotification } from './notifier'
@@ -371,6 +371,7 @@ async function fillLimitInner(
       feesPaidUsd: entryFeeUsd,
       slipPaidUsd: 0,                      // limit fill — slip = 0
       openedAt: fillTime,                  // обновляем — это и есть время реального открытия
+      expiresAt: new Date(endOfDayUTC(fillTime.toISOString().slice(0, 10))),
       limitOrderState: 'FILLED',
       limitFilledAt: fillTime,
     },
