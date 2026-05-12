@@ -232,6 +232,11 @@ export async function closeBreakoutPaperTradeMarket(id: number, variant: Breakou
     method: 'POST', headers: getHeaders(),
   }))
 }
+export async function closeAllBreakoutPaperTradesMarket(variant: BreakoutVariant = 'A'): Promise<{ closed: number; failed: number; ids: number[] }> {
+  return handle(await fetch(`${BASE}${basePath(variant)}/trades/close-all-market`, {
+    method: 'POST', headers: getHeaders(),
+  }))
+}
 export async function closeBreakoutPaperTradeManual(id: number, price: number, percent?: number, variant: BreakoutVariant = 'A'): Promise<BreakoutTrade> {
   return handle(await fetch(`${BASE}${basePath(variant)}/trades/${id}/close-manual`, {
     method: 'POST',

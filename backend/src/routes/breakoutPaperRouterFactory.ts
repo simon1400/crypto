@@ -447,6 +447,88 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
     }
   })
 
+  // Bulk close — market-close every active trade (OPEN/TP1_HIT/TP2_HIT) of
+  // this variant. Reuses the same accounting as single /trades/:id/close-market:
+  // taker slip + taker fee on the remaining fraction, MANUAL fill record,
+  // status=CLOSED, then full deposit/stats recompute at the end.
+  router.post('/trades/close-all-market', async (_req, res) => {
+    try {
+      const active = await tm.findMany({
+        where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+      })
+      if (active.length === 0) return res.json({ closed: 0, failed: 0, trades: [] })
+
+      const symbols = Array.from(new Set(active.map((t: any) => t.symbol as string))) as string[]
+      const prices = await fetchPricesBatch(symbols)
+      const cfg = await cm.findUnique({ where: { id: 1 } })
+
+      let closed = 0
+      let failed = 0
+      const closedIds: number[] = []
+
+      for (const trade of active) {
+        const refPrice = prices[trade.symbol]
+        if (!refPrice || refPrice <= 0) { failed++; continue }
+
+        const fills = ((trade.closes as any[]) ?? []) as any[]
+        const closedPctSoFar = fills.reduce((a, c) => a + (c.percent ?? 0), 0)
+        const remainingFrac = Math.max(0, 1 - closedPctSoFar / 100)
+        if (remainingFrac < 1e-6) { failed++; continue }
+
+        const takerPct = trade.feeTakerPct ?? cfg?.feeTakerPct ?? null
+        const slipPct = trade.slipTakerPct ?? cfg?.slipTakerPct ?? null
+        const isLong = trade.side === 'BUY'
+        const slipFrac = (slipPct ?? 0) / 100
+        const price = slipFrac > 0
+          ? (isLong ? refPrice * (1 - slipFrac) : refPrice * (1 + slipFrac))
+          : refPrice
+
+        const initialRisk = Math.abs(trade.entryPrice - trade.initialStop)
+        const pnlR = ((isLong ? price - trade.entryPrice : trade.entryPrice - price) / initialRisk) * remainingFrac
+        const fillUnits = trade.positionUnits * remainingFrac
+        const pnlUsd = (isLong ? price - trade.entryPrice : trade.entryPrice - price) * fillUnits
+        const slipUsdNew = fillUnits * Math.abs(price - refPrice)
+        fills.push({
+          price, percent: remainingFrac * 100, pnlR, pnlUsd,
+          closedAt: new Date().toISOString(), reason: 'MANUAL',
+        })
+
+        const notional = fillUnits * price
+        const newFeeUsd = takerPct != null
+          ? notional * (takerPct / 100)
+          : notional * ((trade.feesRoundTripPct ?? cfg?.feesRoundTripPct ?? 0) / 100)
+        const totalFeesUsd = trade.feesPaidUsd + newFeeUsd
+        const totalSlipUsd = (trade.slipPaidUsd ?? 0) + slipUsdNew
+        const realizedPnlUsd = trade.realizedPnlUsd + pnlUsd
+        const netPnlUsd = realizedPnlUsd - totalFeesUsd
+        const realizedR = trade.realizedR + pnlR
+
+        await tm.update({
+          where: { id: trade.id },
+          data: {
+            status: 'CLOSED',
+            closes: fills as any,
+            realizedR, realizedPnlUsd,
+            feesPaidUsd: totalFeesUsd, slipPaidUsd: totalSlipUsd, netPnlUsd,
+            closedAt: new Date(),
+            lastPriceCheck: price,
+            lastPriceCheckAt: new Date(),
+          },
+        })
+        if (variant === 'A' && trade.signalId) {
+          await syncSignalStatus(trade.signalId, 'CLOSED', realizedR, price, new Date(), fills)
+        }
+        closed++
+        closedIds.push(trade.id)
+      }
+
+      await recomputeDepositAndStats()
+      res.json({ closed, failed, ids: closedIds })
+    } catch (e: any) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
   router.post('/trades/:id/close-market', async (req, res) => {
     try {
       const id = parseInt(req.params.id, 10)

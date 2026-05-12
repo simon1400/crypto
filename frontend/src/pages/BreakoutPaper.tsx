@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   getBreakoutPaperConfig, updateBreakoutPaperConfig, resetBreakoutPaper,
   getBreakoutPaperTrades, getBreakoutPaperStats,
-  getBreakoutPaperLivePrices, wipeAllBreakoutPaper,
+  getBreakoutPaperLivePrices, wipeAllBreakoutPaper, closeAllBreakoutPaperTradesMarket,
   getBreakoutConfig, updateBreakoutConfig, getBreakoutSetups,
   getBreakoutSignals,
   type BreakoutPaperConfig as PaperConfig,
@@ -381,6 +381,22 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
     await loadAll()
   }
 
+  const handleCloseAllMarket = async () => {
+    const activeCount = openTradesAll.length
+    if (activeCount === 0) {
+      alert('Нет открытых сделок для закрытия.')
+      return
+    }
+    if (!confirm(`Закрыть по рынку ВСЕ ${activeCount} активные сделки варианта ${variant}? Применится taker fee + slip.`)) return
+    try {
+      const r = await closeAllBreakoutPaperTradesMarket(variant)
+      alert(`Закрыто: ${r.closed}${r.failed > 0 ? ` · не удалось: ${r.failed}` : ''}`)
+      await loadAll()
+    } catch (e: any) {
+      alert(`Ошибка: ${e.message}`)
+    }
+  }
+
   const handleWipeAll = async () => {
     const note = variant === 'B'
       ? 'УДАЛИТЬ все B-сделки и сбросить B-депо? Сигналы и A-сделки не трогаются.'
@@ -484,6 +500,11 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           <button onClick={() => setShowSettings(s => !s)}
             className="px-4 py-2 bg-card border border-input rounded font-medium hover:bg-input">
             ⚙ Настройки
+          </button>
+          <button onClick={handleCloseAllMarket}
+            disabled={openTradesAll.length === 0}
+            className="px-4 py-2 bg-card border border-accent/40 text-accent rounded font-medium hover:bg-accent/10 disabled:opacity-40 disabled:cursor-not-allowed">
+            ⊗ Закрыть все по рынку
           </button>
           <button onClick={handleWipeAll}
             className="px-4 py-2 bg-card border border-short/40 text-short rounded font-medium hover:bg-short/10">
