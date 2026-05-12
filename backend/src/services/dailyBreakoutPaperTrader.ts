@@ -920,8 +920,10 @@ export async function runTrackForSymbol(symbol: string, tick: OHLCV): Promise<vo
   }
 }
 
-async function applyDepositDelta(cfg: PaperConfig, delta: number, variant: BreakoutVariant): Promise<void> {
-  if (delta === 0) return
+export async function applyDepositDelta(cfg: PaperConfig, delta: number, variant: BreakoutVariant): Promise<void> {
+  // delta=0 still recomputes totalPnLUsd/totalTrades from the trade table —
+  // useful when an entry fee was decremented directly (e.g. variant C limit fill)
+  // and we need totalPnLUsd to stay in sync with currentDepositUsd.
   const cm = configModel(variant) as any
   const tm = tradeModel(variant) as any
 
@@ -1090,14 +1092,6 @@ export async function forceOpenSignal(signalId: number, variant: BreakoutVariant
   // Charge entry taker fee + record entry slip
   const entryFeeUsd = sizing.positionUnits * slippedEntry * (cfg.feeTakerPct / 100)
   const entrySlipUsd = sizing.positionUnits * Math.abs(slippedEntry - entryPrice)
-  // Deduct entry fee from deposit by adjusting via applyDepositDelta caller chain
-  // — easiest path is to record it on the trade so applyDepositDelta in subsequent
-  // ticks recomputes from net of all closes. But for force-open we want immediate
-  // depo reflection. Apply directly here:
-  await cm.update({
-    where: { id: 1 },
-    data: { currentDepositUsd: { decrement: entryFeeUsd } },
-  })
 
   const trade = await tm.create({
     data: {
@@ -1127,6 +1121,11 @@ export async function forceOpenSignal(signalId: number, variant: BreakoutVariant
       expiresAt: sig.expiresAt,
     },
   })
+
+  // Now that the trade row carries feesPaidUsd=entryFeeUsd, applyDepositDelta
+  // will decrement currentDeposit and recompute totalPnLUsd from the table in
+  // a single consistent step.
+  await applyDepositDelta(cfg, -entryFeeUsd, variant)
 
   const dsNote = finalMargin !== sizing.marginUsd
     ? ` [forced downsize $${sizing.marginUsd.toFixed(2)}→$${finalMargin.toFixed(2)}]`

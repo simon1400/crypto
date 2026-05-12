@@ -46,6 +46,7 @@ import {
 } from './breakoutVariant'
 import {
   getRealisticRates, syncSignalStatus, isVariantBusyOnSymbol, runTrackForSymbol,
+  applyDepositDelta,
 } from './dailyBreakoutPaperTrader'
 import { detectRange, endOfDayUTC, BreakoutEngineConfig } from '../scalper/dailyBreakoutEngine'
 import { loadHistorical } from '../scalper/historicalLoader'
@@ -119,17 +120,10 @@ async function placeLimitsForRanges(cfg: PaperConfigC): Promise<{ placed: number
       // Skip если уже есть запись на эту монету за сегодня в любом статусе.
       if (await isVariantBusyOnSymbol(symbol, utcDate, VARIANT)) continue
 
-      // Concurrent cap: каждая «пара» = 2 строки (BUY+SELL), но логически 1 слот.
-      // Эффективный cap по строкам = maxConcurrentPositions * 2.
-      const activeOrPending = await tm.count({
-        where: {
-          OR: [
-            { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
-            { limitOrderState: 'PENDING_LIMIT' },
-          ],
-        },
-      })
-      if (activeOrPending >= cfg.maxConcurrentPositions * 2) continue
+      // Placement без cap-проверки — лимиток можно ставить сколько угодно
+      // (каждая монета даёт пару BUY+SELL). Cap контролируется при fill в
+      // fillLimitInner: первые N filled занимают слоты, остальные при попытке
+      // fill будут отменены как 'concurrent cap reached'.
 
       const candles = await loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
       const range = detectRange(candles, utcDate, engineCfg)
@@ -293,6 +287,26 @@ async function fillLimitInner(
   const fillPrice: number = trade.limitOrderPrice
   const isLong = trade.side === 'BUY'
 
+  // Concurrent cap check at fill time. Placement-time cap (placeLimitsForRanges)
+  // counts PENDING_LIMIT + active as 2x slots, but each PENDING fills indepen-
+  // dently — without this guard several near-simultaneous fills can push past
+  // maxConcurrentPositions. Hard-cancel any limit that would exceed the cap.
+  const activeCount = await tm.count({
+    where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+  })
+  if (activeCount >= cfg.maxConcurrentPositions) {
+    await tm.update({
+      where: { id: tradeId },
+      data: {
+        limitOrderState: 'CANCELLED_OTHER_SIDE',
+        status: 'CANCELLED',
+        closedAt: fillTime,
+      },
+    })
+    console.warn(`${tag} cancelled limit #${tradeId} ${trade.symbol} — concurrent cap reached (${activeCount}/${cfg.maxConcurrentPositions})`)
+    return { filled: false, reason: 'concurrent cap reached' }
+  }
+
   // Sizing on актуальный deposit (может отличаться от placement-time).
   const sizing = computeSizing({
     symbol: trade.symbol,
@@ -377,11 +391,12 @@ async function fillLimitInner(
     },
   })
 
-  // Обновляем deposit (списываем maker fee).
-  await cm.update({
-    where: { id: 1 },
-    data: { currentDepositUsd: { decrement: entryFeeUsd } },
-  })
+  // Списываем maker entry fee через applyDepositDelta — он одновременно
+  // декрементит currentDepositUsd и пересчитывает totalPnLUsd по таблице
+  // (где feesPaidUsd уже включает наш entry fee). Прямой decrement без этого
+  // вызова рассинхронизирует две метрики на сумму entry fees ещё-открытых сделок.
+  const cfgForDelta = await cm.findUnique({ where: { id: 1 } })
+  if (cfgForDelta) await applyDepositDelta(cfgForDelta as any, -entryFeeUsd, VARIANT)
 
   // Cancel pair: один limit зафиллен → противоположный отменяем (если был).
   // Ставим updateMany с проверкой что пара ещё в PENDING_LIMIT (не успела зафиллиться сама).
