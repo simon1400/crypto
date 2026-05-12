@@ -11,9 +11,6 @@ export interface SettingsResponse {
   telegramBotToken: string | null
   telegramChatId: string | null
   telegramEnabled: boolean
-  virtualBalance: number
-  virtualBalanceStart: number
-  virtualStartedAt: string
   takerFeeRate: number
   makerFeeRate: number
 }
@@ -40,33 +37,6 @@ export async function saveSettings(data: Partial<SettingsResponse> & { apiKey?: 
 export async function getBalance(): Promise<{ balance: number | null; error?: string }> {
   const res = await fetch(`${BASE}/api/settings/balance`, { headers: getHeaders() })
   if (!res.ok) return { balance: null, error: 'Failed to fetch balance' }
-  return res.json()
-}
-
-export interface VirtualBalanceInfo {
-  balance: number
-  start: number
-  startedAt: string
-  pnl: number
-  roiPct: number
-}
-
-export async function getVirtualBalance(): Promise<VirtualBalanceInfo> {
-  const res = await fetch(`${BASE}/api/settings/virtual-balance`, { headers: getHeaders() })
-  if (!res.ok) throw new Error('Failed to fetch virtual balance')
-  return res.json()
-}
-
-export async function setVirtualBalance(balance: number, resetStart = true): Promise<VirtualBalanceInfo> {
-  const res = await fetch(`${BASE}/api/settings/virtual-balance`, {
-    method: 'PUT',
-    headers: getHeaders(),
-    body: JSON.stringify({ balance, resetStart }),
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Request failed' }))
-    throw new Error(err.error || `HTTP ${res.status}`)
-  }
   return res.json()
 }
 

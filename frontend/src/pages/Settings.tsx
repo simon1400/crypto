@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { getSettings, saveSettings, SettingsResponse, VirtualBalanceInfo } from '../api/client'
+import { getSettings, saveSettings, SettingsResponse } from '../api/client'
 import ConnectionSection from '../components/settings/ConnectionSection'
 import SimulationSection from '../components/settings/SimulationSection'
 import TelegramSection from '../components/settings/TelegramSection'
@@ -16,12 +16,8 @@ export default function Settings() {
   const [telegramBotToken, setTelegramBotToken] = useState('')
   const [telegramChatId, setTelegramChatId] = useState('')
   const [telegramEnabled, setTelegramEnabled] = useState(false)
-  const [virtualBalance, setVirtualBalanceVal] = useState<number>(0)
-  const [virtualBalanceStart, setVirtualBalanceStart] = useState<number>(0)
-  const [virtualStartedAt, setVirtualStartedAt] = useState<string>('')
   const [takerFeeRate, setTakerFeeRate] = useState<number>(0.00055)
   const [makerFeeRate, setMakerFeeRate] = useState<number>(0.0002)
-  const [virtualBalanceInput, setVirtualBalanceInput] = useState<string>('')
 
   useEffect(() => {
     getSettings()
@@ -30,10 +26,6 @@ export default function Settings() {
         setUseTestnet(data.useTestnet)
         setTelegramEnabled(data.telegramEnabled ?? false)
         setTelegramChatId(data.telegramChatId ?? '')
-        setVirtualBalanceVal(data.virtualBalance ?? 0)
-        setVirtualBalanceStart(data.virtualBalanceStart ?? 0)
-        setVirtualStartedAt(data.virtualStartedAt ?? '')
-        setVirtualBalanceInput(String(data.virtualBalance ?? ''))
         setTakerFeeRate(data.takerFeeRate ?? 0.00055)
         setMakerFeeRate(data.makerFeeRate ?? 0.0002)
         if (data.hasKeys && data.balance) {
@@ -47,12 +39,6 @@ export default function Settings() {
   function showToast(message: string, type: 'success' | 'error') {
     setToast({ message, type })
     setTimeout(() => setToast(null), 3000)
-  }
-
-  function handleBalanceUpdate(info: VirtualBalanceInfo) {
-    setVirtualBalanceVal(info.balance)
-    setVirtualBalanceStart(info.start)
-    setVirtualStartedAt(info.startedAt)
   }
 
   async function handleSave() {
@@ -123,17 +109,10 @@ export default function Settings() {
           balance={balance}
         />
         <SimulationSection
-          virtualBalance={virtualBalance}
-          virtualBalanceStart={virtualBalanceStart}
-          virtualStartedAt={virtualStartedAt}
           takerFeeRate={takerFeeRate}
           setTakerFeeRate={setTakerFeeRate}
           makerFeeRate={makerFeeRate}
           setMakerFeeRate={setMakerFeeRate}
-          virtualBalanceInput={virtualBalanceInput}
-          setVirtualBalanceInput={setVirtualBalanceInput}
-          showToast={showToast}
-          onBalanceUpdate={handleBalanceUpdate}
         />
         <TelegramSection
           telegramBotToken={telegramBotToken}

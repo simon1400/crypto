@@ -8,7 +8,7 @@ interface Props {
 
 export default function Navbar({ onLogout }: Props) {
   const { pathname } = useLocation()
-  const { budget } = useBalance()
+  const { balances } = useBalance()
   const [menuOpen, setMenuOpen] = useState(false)
 
   useEffect(() => {
@@ -32,25 +32,37 @@ export default function Navbar({ onLogout }: Props) {
           <Link to="/settings" className={linkClass('/settings')}>Настройки</Link>
         </div>
 
-        {/* Right side: balance, logout, burger */}
-        <div className="flex items-center gap-2 sm:gap-3 ml-auto">
-          {budget != null && (
+        {/* Right side: per-variant balances, logout, burger */}
+        <div className="flex items-center gap-2 sm:gap-3 ml-auto flex-1 min-w-0">
+          {balances && balances.length > 0 && (
             <div
-              className="font-mono text-xs sm:text-sm flex flex-col items-end leading-tight"
-              title={
-                `Виртуальный депозит: ${budget.balance.toFixed(2)} USDT\n` +
-                `Старт: ${budget.start.toFixed(2)} USDT\n` +
-                `P&L: ${budget.pnl >= 0 ? '+' : ''}${budget.pnl.toFixed(2)} USDT (${budget.roiPct >= 0 ? '+' : ''}${budget.roiPct.toFixed(2)}%)`
-              }
+              className="flex flex-1 items-center gap-1 sm:gap-2 font-mono min-w-0"
+              style={{ containerType: 'inline-size' }}
             >
-              <div className="flex items-baseline gap-2">
-                <span className="text-accent">{budget.balance.toFixed(2)} USDT</span>
-                {budget.start > 0 && (
-                  <span className={`text-[10px] ${budget.pnl >= 0 ? 'text-long' : 'text-short'}`}>
-                    {budget.roiPct >= 0 ? '+' : ''}{budget.roiPct.toFixed(2)}%
-                  </span>
-                )}
-              </div>
+              {balances.map(b => (
+                <div
+                  key={b.variant}
+                  className="flex flex-1 items-baseline justify-center gap-1 sm:gap-1.5 px-1.5 sm:px-2 py-1 rounded-md bg-card/60 border border-card min-w-0 whitespace-nowrap"
+                  style={{ fontSize: 'clamp(10px, 4cqi, 14px)' }}
+                  title={
+                    `Вариант ${b.variant}\n` +
+                    `Текущий: ${b.balance.toFixed(2)} USDT\n` +
+                    `Старт: ${b.start.toFixed(2)} USDT\n` +
+                    `P&L: ${b.pnl >= 0 ? '+' : ''}${b.pnl.toFixed(2)} USDT (${b.roiPct >= 0 ? '+' : ''}${b.roiPct.toFixed(2)}%)`
+                  }
+                >
+                  <span className="text-text-secondary">{b.variant}</span>
+                  <span className="text-accent">{b.balance.toFixed(0)}</span>
+                  {b.start > 0 && (
+                    <span
+                      className={b.pnl >= 0 ? 'text-long' : 'text-short'}
+                      style={{ fontSize: '0.85em' }}
+                    >
+                      {b.roiPct >= 0 ? '+' : ''}{b.roiPct.toFixed(1)}%
+                    </span>
+                  )}
+                </div>
+              ))}
             </div>
           )}
           {onLogout && (
@@ -85,8 +97,7 @@ export default function Navbar({ onLogout }: Props) {
       {menuOpen && (
         <div className="lg:hidden absolute top-14 left-0 right-0 bg-primary border-b border-card z-50 shadow-lg shadow-black/30">
           <div className="flex flex-col p-3 gap-1">
-            <Link to="/signals" className={linkClass('/signals')}>Сигналы</Link>
-            <Link to="/levels" className={linkClass('/levels')}>Breakout</Link>
+            <Link to="/breakout" className={linkClass('/breakout')}>Breakout</Link>
             <Link to="/calculator" className={linkClass('/calculator')}>Калькулятор</Link>
             <Link to="/settings" className={linkClass('/settings')}>Настройки</Link>
             {onLogout && (

@@ -12,7 +12,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
   return (
     <div className="min-h-screen flex flex-col">
       <Navbar onLogout={onLogout} />
-      <main className="max-w-7xl mx-auto px-4 py-6 w-full">
+      <main className="max-w-7xl mx-auto px-4 pt-2 pb-6 sm:py-6 w-full">
         <Routes>
           <Route path="/" element={<Navigate to="/breakout" replace />} />
           <Route path="/breakout" element={<BreakoutPage />} />

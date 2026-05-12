@@ -31,8 +31,9 @@ export default function BreakoutPage() {
 
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-2 mb-4 border-b border-input pb-3">
-        <div className="flex items-center gap-1.5 flex-wrap">
+      {/* Mobile: sticky tabs */}
+      <div className="sm:hidden sticky top-0 z-30 -mx-4 bg-primary border-b border-input py-2">
+        <div className="flex items-stretch gap-0">
           <TabButton active={variant === 'A'} onClick={() => setVariant('A')}>
             A <span className="opacity-70">· 10·10%</span>
           </TabButton>
@@ -43,7 +44,25 @@ export default function BreakoutPage() {
             C <span className="opacity-70">· limit edge</span>
           </TabButton>
         </div>
-        <span className="text-xs text-text-secondary basis-full sm:basis-auto sm:ml-2">
+      </div>
+      <p className="sm:hidden text-xs text-text-secondary mt-3 mb-4">
+        Три копии параллельно на одних сигналах. A/B — market, C — limit на rangeEdge (maker, без slip).
+      </p>
+
+      {/* Desktop: inline tabs + caption */}
+      <div className="hidden sm:flex flex-wrap items-center gap-2 mb-4 border-b border-input pb-3">
+        <div className="flex items-center gap-1.5">
+          <TabButton active={variant === 'A'} onClick={() => setVariant('A')}>
+            A <span className="opacity-70">· 10·10%</span>
+          </TabButton>
+          <TabButton active={variant === 'B'} onClick={() => setVariant('B')}>
+            B <span className="opacity-70">· 20·5%</span>
+          </TabButton>
+          <TabButton active={variant === 'C'} onClick={() => setVariant('C')}>
+            C <span className="opacity-70">· limit edge</span>
+          </TabButton>
+        </div>
+        <span className="text-xs text-text-secondary ml-2">
           Три копии параллельно на одних сигналах. A/B — market, C — limit на rangeEdge (maker, без slip).
         </span>
       </div>
@@ -59,10 +78,10 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   return (
     <button
       onClick={onClick}
-      className={`px-3 sm:px-4 py-2 rounded-t font-medium text-xs sm:text-sm whitespace-nowrap transition-colors ${
+      className={`flex-1 sm:flex-none px-3 sm:px-4 py-2.5 sm:py-2 sm:rounded-t font-medium text-xs sm:text-sm whitespace-nowrap transition-colors ${
         active
           ? 'bg-accent text-bg-primary'
-          : 'bg-card border border-input text-text-secondary hover:text-text-primary hover:bg-input'
+          : 'bg-card text-text-secondary hover:text-text-primary hover:bg-input sm:border sm:border-input'
       }`}
     >
       {children}

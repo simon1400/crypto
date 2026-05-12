@@ -1,7 +1,8 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
-import { getVirtualBalance, VirtualBalanceInfo } from '../api/client'
+import { getBreakoutPaperConfig, BreakoutVariant } from '../api/breakoutPaper'
 
-export interface BudgetSummary {
+export interface VariantBalance {
+  variant: BreakoutVariant
   balance: number
   start: number
   pnl: number
@@ -9,21 +10,37 @@ export interface BudgetSummary {
 }
 
 interface BalanceContextValue {
-  budget: BudgetSummary | null
+  balances: VariantBalance[] | null
   refresh: () => void
 }
 
-const BalanceContext = createContext<BalanceContextValue>({ budget: null, refresh: () => {} })
+const BalanceContext = createContext<BalanceContextValue>({ balances: null, refresh: () => {} })
+
+const VARIANTS: BreakoutVariant[] = ['A', 'B', 'C']
 
 export function BalanceProvider({ children }: { children: ReactNode }) {
-  const [budget, setBudget] = useState<BudgetSummary | null>(null)
+  const [balances, setBalances] = useState<VariantBalance[] | null>(null)
 
   const refresh = () => {
-    getVirtualBalance()
-      .then((info: VirtualBalanceInfo) =>
-        setBudget({ balance: info.balance, start: info.start, pnl: info.pnl, roiPct: info.roiPct }),
-      )
-      .catch(err => console.error('[BalanceProvider] Failed to fetch virtual balance:', err))
+    Promise.all(
+      VARIANTS.map(v =>
+        getBreakoutPaperConfig(v)
+          .then(cfg => {
+            const start = cfg.startingDepositUsd
+            const balance = cfg.currentDepositUsd
+            const pnl = balance - start
+            const roiPct = start > 0 ? (pnl / start) * 100 : 0
+            return { variant: v, balance, start, pnl, roiPct } as VariantBalance
+          })
+          .catch(err => {
+            console.error(`[BalanceProvider] Failed to fetch variant ${v}:`, err)
+            return null
+          }),
+      ),
+    ).then(results => {
+      const ok = results.filter((r): r is VariantBalance => r != null)
+      setBalances(ok.length > 0 ? ok : null)
+    })
   }
 
   useEffect(() => {
@@ -33,7 +50,7 @@ export function BalanceProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return (
-    <BalanceContext.Provider value={{ budget, refresh }}>
+    <BalanceContext.Provider value={{ balances, refresh }}>
       {children}
     </BalanceContext.Provider>
   )

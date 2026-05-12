@@ -4,7 +4,6 @@ import { prisma } from '../db/prisma'
 import { encrypt, maskKey } from '../services/encryption'
 import { createBybitClient, validateBybitKeys } from '../services/bybit'
 import { sendTestNotification } from '../services/notifier'
-import { getVirtualBalanceInfo, setVirtualBalance } from '../services/virtualBalance'
 import { asyncHandler } from './_helpers'
 
 const router = Router()
@@ -18,9 +17,6 @@ function buildConfigResponse(config: BotConfig, extras?: { balance?: string; key
     telegramBotToken: config.telegramBotToken ? '****' + config.telegramBotToken.slice(-4) : null,
     telegramChatId: config.telegramChatId,
     telegramEnabled: config.telegramEnabled,
-    virtualBalance: config.virtualBalance,
-    virtualBalanceStart: config.virtualBalanceStart,
-    virtualStartedAt: config.virtualStartedAt,
     takerFeeRate: config.takerFeeRate,
     makerFeeRate: config.makerFeeRate,
   }
@@ -102,22 +98,6 @@ router.post('/test-notification', asyncHandler(async (req, res) => {
 
   const success = await sendTestNotification(botToken, chatId)
   res.json({ success, ...(success ? {} : { error: 'Failed to send test message' }) })
-}, 'Settings'))
-
-// GET /api/settings/virtual-balance
-router.get('/virtual-balance', asyncHandler(async (_req, res) => {
-  res.json(await getVirtualBalanceInfo())
-}, 'Settings'))
-
-// PUT /api/settings/virtual-balance
-router.put('/virtual-balance', asyncHandler(async (req, res) => {
-  const { balance, resetStart } = req.body as { balance: number; resetStart?: boolean }
-  if (typeof balance !== 'number' || balance < 0 || balance > 10_000_000) {
-    res.status(400).json({ error: 'balance must be a number between 0 and 10,000,000' })
-    return
-  }
-  const info = await setVirtualBalance(balance, resetStart !== false)
-  res.json(info)
 }, 'Settings'))
 
 // GET /api/settings/mt5-balance

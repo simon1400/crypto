@@ -3,7 +3,7 @@ import {
   getBreakoutPaperConfig, updateBreakoutPaperConfig, resetBreakoutPaper,
   getBreakoutPaperTrades, getBreakoutPaperStats,
   getBreakoutPaperLivePrices, wipeAllBreakoutPaper,
-  getBreakoutConfig, updateBreakoutConfig, scanBreakoutNow, getBreakoutSetups,
+  getBreakoutConfig, updateBreakoutConfig, getBreakoutSetups,
   getBreakoutSignals,
   type BreakoutPaperConfig as PaperConfig,
   type BreakoutTrade as PaperTrade,
@@ -138,6 +138,71 @@ function LiveTimer({ openedAt }: { openedAt: string }) {
   return <>{formatElapsed(openedAt)}</>
 }
 
+function TradeProgressBar({ trade, live, tps }: { trade: PaperTrade; live: PaperTradeLive | undefined; tps: number[] }) {
+  const t = trade
+  const isOpen = ['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(t.status)
+  if (!isOpen || !live?.currentPrice || tps.length === 0) {
+    return <div className="text-center text-text-secondary text-[10px]">—</div>
+  }
+  const tpIdx = t.status === 'TP2_HIT' ? 2 : t.status === 'TP1_HIT' ? 1 : 0
+  const nextTp = tps[tpIdx] ?? tps[tps.length - 1]
+  const tpLabel = `TP${tpIdx + 1}`
+  const sl = t.currentStop
+  const entry = t.entryPrice
+  const price = live.currentPrice
+  const isLong = t.side === 'BUY'
+  const prevTp = tpIdx > 0 ? tps[tpIdx - 1] : null
+  const anchor = prevTp ?? entry
+  const slLocksProfit = isLong ? sl >= entry : sl <= entry
+  const slLabel = slLocksProfit ? (sl === entry ? 'BE' : 'lock') : 'SL'
+  const distToTp = Math.abs(nextTp - anchor)
+  const distToSl = Math.abs(sl - anchor)
+  if (distToTp <= 0 && distToSl <= 0) {
+    return <div className="text-center text-text-secondary text-[10px]">—</div>
+  }
+  const favorableMove = isLong ? (price - anchor) : (anchor - price)
+  const towardSL = favorableMove < 0 && distToSl > 0
+  const halfRatio = favorableMove >= 0
+    ? (distToTp > 0 ? Math.min(1, favorableMove / distToTp) : 0)
+    : (distToSl > 0 ? Math.min(1, -favorableMove / distToSl) : 0)
+  const markerPct = towardSL ? 50 - halfRatio * 50 : 50 + halfRatio * 50
+  const labelPct = Math.round(halfRatio * 100)
+  const dangerZone = towardSL && !slLocksProfit && labelPct >= 75
+  const fillColor = towardSL
+    ? (slLocksProfit ? '#848e9c' : '#f6465d')
+    : '#0ecb81'
+  const labelColorCls = towardSL
+    ? (slLocksProfit ? 'text-text-secondary' : 'text-short')
+    : 'text-long'
+  const anchorLabel = prevTp ? `TP${tpIdx}` : 'entry'
+  return (
+    <div className="min-w-[120px]">
+      <div className="relative h-1.5 bg-input rounded overflow-hidden">
+        <div className="absolute top-0 bottom-0 w-px bg-text-secondary/60" style={{ left: '50%' }} />
+        <div
+          className="absolute top-0 h-full"
+          style={{
+            left: towardSL ? `${markerPct}%` : '50%',
+            width: `${Math.abs(markerPct - 50)}%`,
+            background: fillColor,
+            opacity: 0.85,
+          }}
+        />
+      </div>
+      <div className="flex justify-between text-[9px] text-text-secondary mt-0.5 leading-none">
+        <span className={slLocksProfit ? 'text-text-secondary' : 'text-short/80'}>{slLabel}</span>
+        <span className="text-text-secondary/80">{anchorLabel}</span>
+        <span className="text-long/80">{tpLabel}</span>
+      </div>
+      <div className={`text-center text-[10px] mt-0.5 font-mono ${labelColorCls}`}>
+        {labelPct === 0
+          ? (slLocksProfit ? 'в безриске' : `на ${anchorLabel}`)
+          : `${labelPct}% ${towardSL ? `к ${slLabel}${dangerZone ? ' ⚠' : ''}` : `к ${tpLabel}`}`}
+      </div>
+    </div>
+  )
+}
+
 function fmtUsd(n: number): string {
   return `${n >= 0 ? '+' : ''}$${Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2)}`
 }
@@ -199,7 +264,6 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
   // Default reset amount tracks the variant's starting deposit (A=$500, B=$320)
   // and reflects whatever the operator has saved in BreakoutPaperConfig.
   const [resetAmount, setResetAmount] = useState(variant === 'A' ? 500 : 320)
-  const [scanRunning, setScanRunning] = useState(false)
   const [livePrices, setLivePrices] = useState<Record<number, PaperTradeLive>>({})
   const [selectedTrade, setSelectedTrade] = useState<PaperTrade | null>(null)
   const [chartTrade, setChartTrade] = useState<PaperTrade | null>(null)
@@ -246,7 +310,18 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       // Initialize reset amount from server config on first load so the operator
       // sees the canonical starting deposit (variant-specific) in the input.
       setResetAmount(prev => (prev === (variant === 'A' ? 500 : 320) ? c.startingDepositUsd : prev))
-      setScannerCfg(sc)
+      // Scanner has no UI toggle anymore — auto-enable if it's somehow off so
+      // signals keep flowing. Only variant A may flip the shared flag.
+      if (variant === 'A' && sc && !sc.enabled) {
+        try {
+          const fixed = await updateBreakoutConfig({ enabled: true })
+          setScannerCfg(fixed)
+        } catch {
+          setScannerCfg(sc)
+        }
+      } else {
+        setScannerCfg(sc)
+      }
       setSetups(su.setups)
       setTrades(t.data)
       setTradesTotal(t.total)
@@ -297,22 +372,6 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
     if (!config) return
     const updated = await updateBreakoutPaperConfig({ enabled: !config.enabled }, variant)
     setConfig(updated)
-  }
-
-  // Variant A controls the shared Scanner. Variant B doesn't (the Scanner is
-  // a single instance feeding both copies). The toggle is hidden in B's view.
-  const handleToggleScannerEnabled = async () => {
-    if (!scannerCfg) return
-    const updated = await updateBreakoutConfig({ enabled: !scannerCfg.enabled })
-    setScannerCfg(updated)
-  }
-
-  const handleScanNow = async () => {
-    setScanRunning(true)
-    try {
-      await scanBreakoutNow()
-      await loadAll()
-    } finally { setScanRunning(false) }
   }
 
   const handleReset = async () => {
@@ -418,22 +477,10 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           </button>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <button onClick={handleScanNow} disabled={scanRunning}
-            className="px-4 py-2 bg-accent text-bg-primary rounded font-medium hover:opacity-90 disabled:opacity-50">
-            {scanRunning ? 'Сканирую...' : 'Скан сейчас'}
-          </button>
           <button onClick={handleTogglePaperEnabled}
             className={`px-4 py-2 rounded font-medium ${config.enabled ? 'bg-long/15 text-long border border-long/30' : 'bg-card border border-input text-text-secondary'}`}>
             {config.enabled ? '● Демо вкл.' : '○ Демо выкл.'}
           </button>
-          {/* Scanner is a single instance shared across both copies; only A
-              exposes the toggle to avoid two pages competing for the same flag. */}
-          {variant === 'A' && (
-            <button onClick={handleToggleScannerEnabled}
-              className={`px-4 py-2 rounded font-medium ${scannerCfg?.enabled ? 'bg-long/15 text-long border border-long/30' : 'bg-card border border-input text-text-secondary'}`}>
-              {scannerCfg?.enabled ? '● Сканер вкл.' : '○ Сканер выкл.'}
-            </button>
-          )}
           <button onClick={() => setShowSettings(s => !s)}
             className="px-4 py-2 bg-card border border-input rounded font-medium hover:bg-input">
             ⚙ Настройки
@@ -1084,9 +1131,158 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         )
       })()}
 
-      {/* Trades table */}
+      {/* Mobile trade cards (< 640px) */}
       {statusFilter !== 'SIGNALS' && statusFilter !== 'PENDING' && (
-      <div className="bg-card border border-input rounded overflow-hidden mb-6">
+      <div className="sm:hidden space-y-2 mb-6">
+        {loading && (
+          <div className="bg-card border border-input rounded p-6 text-center text-text-secondary text-sm">Загрузка...</div>
+        )}
+        {!loading && trades.length === 0 && (
+          <div className="bg-card border border-input rounded p-6 text-center text-text-secondary text-sm">
+            {config.enabled
+              ? 'Сделок ещё нет. Демо-счёт работает — виртуальные сделки появятся при пробое 3h-диапазона.'
+              : 'Демо-счёт выключен. Включи кнопкой ● Выкл сверху.'}
+          </div>
+        )}
+        {!loading && sortedTrades.map(t => {
+          const live = livePrices[t.id]
+          const isOpen = ['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(t.status)
+          const closedFrac = (t.closes ?? []).reduce((a, c) => a + c.percent, 0) / 100
+          const remainingPositionUsd = t.positionSizeUsd * Math.max(0, 1 - closedFrac)
+          const tps = (t.tpLadder ?? []).slice(0, 3)
+          const sideColorCls = t.side === 'BUY' ? 'text-long' : 'text-short'
+          const isFinished = ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT'].includes(t.status)
+          const pnl = isOpen && live
+            ? (live.remainingUnrealizedPnl ?? live.unrealizedPnl)
+            : t.netPnlUsd
+          const pnlPct = isOpen && live
+            ? (live.remainingUnrealizedPnlPct ?? live.unrealizedPnlPct)
+            : (t.depositAtEntryUsd > 0 ? (t.netPnlUsd / t.depositAtEntryUsd) * 100 : 0)
+          const lev = t.leverage && t.leverage > 0
+            ? t.leverage
+            : (t.depositAtEntryUsd > 0 && t.positionSizeUsd > 0
+              ? Math.min(100, Math.max(1, t.positionSizeUsd / t.depositAtEntryUsd))
+              : 1)
+          const marginFull = t.marginUsd ?? (t.positionSizeUsd / lev)
+          const marginRemaining = remainingPositionUsd / lev
+          const displayMargin = isFinished ? marginFull : marginRemaining
+          return (
+            <div
+              key={t.id}
+              className="bg-card border border-input rounded p-3 active:bg-input/40 transition-colors cursor-pointer"
+              onClick={() => setSelectedTrade(t)}
+            >
+              {/* Row 1: ticker + chart icon · status */}
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2 font-mono">
+                  <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent">D</span>
+                  {t.status === 'PENDING' && (
+                    <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/10 text-accent/80">⏳</span>
+                  )}
+                  <span className={`${sideColorCls} font-semibold text-base`}>{t.symbol.replace('USDT', '')}</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setChartTrade(t) }}
+                    className="text-text-secondary hover:text-accent transition-colors"
+                    title="График позиции"
+                  >
+                    <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+                  </button>
+                </div>
+                <PaperStatusBadge status={t.status} pnl={t.netPnlUsd} closes={t.closes} />
+              </div>
+
+              {/* Row 2: time */}
+              <div className="flex items-center justify-between text-[11px] text-text-secondary font-mono mb-2">
+                <span>
+                  {isFinished && t.closedAt
+                    ? <>закр: {formatDate(t.closedAt)}</>
+                    : formatDate(t.openedAt)}
+                </span>
+                <span className="text-accent">
+                  {isOpen ? <LiveTimer openedAt={t.openedAt} /> : formatElapsed(t.openedAt, t.closedAt)}
+                </span>
+              </div>
+
+              {/* Row 3: entry → current price */}
+              <div className="flex items-baseline justify-between gap-2 mb-2 font-mono text-sm">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-text-primary">${fmtPrice(t.entryPrice)}</span>
+                </div>
+                {isOpen && live?.currentPrice != null && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="relative flex h-2 w-2" title="Live цена">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-long opacity-75" />
+                      <span className="relative inline-flex h-2 w-2 rounded-full bg-long" />
+                    </span>
+                    <span className={pnlColor(live.unrealizedPnl)}>${fmtPrice(live.currentPrice)}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Row 4: progress bar (only if open) */}
+              {isOpen && statusFilter !== 'CLOSED' && (
+                <div className="mb-2">
+                  <TradeProgressBar trade={t} live={live} tps={tps} />
+                </div>
+              )}
+
+              {/* Row 5: margin/leverage on left, P&L on right */}
+              <div className="flex items-baseline justify-between border-t border-input pt-2 font-mono">
+                <div className="flex items-baseline gap-1.5 text-[11px]">
+                  <span className="text-text-primary">${fmt2(displayMargin)}</span>
+                  {lev > 1 && (
+                    <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent">
+                      ×{lev.toFixed(1)}
+                    </span>
+                  )}
+                  {closedFrac > 0 && closedFrac < 1 && (
+                    <span className="text-text-secondary text-[10px]">· закр {Math.round(closedFrac * 100)}%</span>
+                  )}
+                </div>
+                {(isOpen || isFinished) ? (
+                  <div className={`text-sm font-semibold ${pnlColor(pnl)}`}>
+                    {fmt2Signed(pnl)}$
+                    {pnl !== 0 && (
+                      <span className="text-[10px] opacity-70 ml-1">({fmt2Signed(pnlPct)}%)</span>
+                    )}
+                  </div>
+                ) : (
+                  <span className="text-text-secondary text-sm">—</span>
+                )}
+              </div>
+            </div>
+          )
+        })}
+        {/* Pagination on mobile — same logic as table */}
+        {statusFilter === 'CLOSED' && tradesTotal > CLOSED_PAGE_SIZE && (() => {
+          const totalPages = Math.ceil(tradesTotal / CLOSED_PAGE_SIZE)
+          const from = (closedPage - 1) * CLOSED_PAGE_SIZE + 1
+          const to = Math.min(closedPage * CLOSED_PAGE_SIZE, tradesTotal)
+          return (
+            <div className="flex items-center justify-between px-3 py-2 bg-card border border-input rounded text-xs text-text-secondary">
+              <div>{from}–{to} из {tradesTotal}</div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setClosedPage(p => Math.max(1, p - 1))}
+                  disabled={closedPage === 1 || loading}
+                  className="px-2 py-1 rounded bg-input hover:bg-input/70 disabled:opacity-40 disabled:cursor-not-allowed"
+                >‹</button>
+                <span className="font-mono">{closedPage} / {totalPages}</span>
+                <button
+                  onClick={() => setClosedPage(p => Math.min(totalPages, p + 1))}
+                  disabled={closedPage >= totalPages || loading}
+                  className="px-2 py-1 rounded bg-input hover:bg-input/70 disabled:opacity-40 disabled:cursor-not-allowed"
+                >›</button>
+              </div>
+            </div>
+          )
+        })()}
+      </div>
+      )}
+
+      {/* Trades table (>= 640px) */}
+      {statusFilter !== 'SIGNALS' && statusFilter !== 'PENDING' && (
+      <div className="hidden sm:block bg-card border border-input rounded overflow-hidden mb-6">
         <div className="overflow-x-auto">
           <table className="w-full text-xs min-w-[900px]">
             <thead className="bg-input text-text-secondary">
@@ -1218,74 +1414,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                     </td>
                     {statusFilter !== 'CLOSED' && (
                       <td className="px-3 py-2 align-middle">
-                        {(() => {
-                          if (!isOpen || !live?.currentPrice || tps.length === 0) {
-                            return <div className="text-center text-text-secondary text-[10px]">—</div>
-                          }
-                          const tpIdx = t.status === 'TP2_HIT' ? 2 : t.status === 'TP1_HIT' ? 1 : 0
-                          const nextTp = tps[tpIdx] ?? tps[tps.length - 1]
-                          const tpLabel = `TP${tpIdx + 1}`
-                          const sl = t.currentStop
-                          const entry = t.entryPrice
-                          const price = live.currentPrice
-                          const isLong = t.side === 'BUY'
-                          // Anchor = «нулевая точка» прогресса (середина бара).
-                          // До TP1 anchor = entry; после TP1 anchor сдвигается на ранее
-                          // достигнутый TP (TP1_HIT → anchor=TP1, TP2_HIT → anchor=TP2).
-                          // Это совпадает с поведением трейлинг-SL и даёт честную картину:
-                          // «справа зелёный — путь от TP1 к TP2», «слева серый — откат от
-                          // TP1 к SL@BE».
-                          const prevTp = tpIdx > 0 ? tps[tpIdx - 1] : null
-                          const anchor = prevTp ?? entry
-                          const slLocksProfit = isLong ? sl >= entry : sl <= entry
-                          const slLabel = slLocksProfit ? (sl === entry ? 'BE' : 'lock') : 'SL'
-                          const distToTp = Math.abs(nextTp - anchor)
-                          const distToSl = Math.abs(sl - anchor)
-                          if (distToTp <= 0 && distToSl <= 0) {
-                            return <div className="text-center text-text-secondary text-[10px]">—</div>
-                          }
-                          const favorableMove = isLong ? (price - anchor) : (anchor - price)
-                          const towardSL = favorableMove < 0 && distToSl > 0
-                          const halfRatio = favorableMove >= 0
-                            ? (distToTp > 0 ? Math.min(1, favorableMove / distToTp) : 0)
-                            : (distToSl > 0 ? Math.min(1, -favorableMove / distToSl) : 0)
-                          const markerPct = towardSL ? 50 - halfRatio * 50 : 50 + halfRatio * 50
-                          const labelPct = Math.round(halfRatio * 100)
-                          const dangerZone = towardSL && !slLocksProfit && labelPct >= 75
-                          const fillColor = towardSL
-                            ? (slLocksProfit ? '#848e9c' : '#f6465d')
-                            : '#0ecb81'
-                          const labelColorCls = towardSL
-                            ? (slLocksProfit ? 'text-text-secondary' : 'text-short')
-                            : 'text-long'
-                          const anchorLabel = prevTp ? `TP${tpIdx}` : 'entry'
-                          return (
-                            <div className="min-w-[120px]">
-                              <div className="relative h-1.5 bg-input rounded overflow-hidden">
-                                <div className="absolute top-0 bottom-0 w-px bg-text-secondary/60" style={{ left: '50%' }} />
-                                <div
-                                  className="absolute top-0 h-full"
-                                  style={{
-                                    left: towardSL ? `${markerPct}%` : '50%',
-                                    width: `${Math.abs(markerPct - 50)}%`,
-                                    background: fillColor,
-                                    opacity: 0.85,
-                                  }}
-                                />
-                              </div>
-                              <div className="flex justify-between text-[9px] text-text-secondary mt-0.5 leading-none">
-                                <span className={slLocksProfit ? 'text-text-secondary' : 'text-short/80'}>{slLabel}</span>
-                                <span className="text-text-secondary/80">{anchorLabel}</span>
-                                <span className="text-long/80">{tpLabel}</span>
-                              </div>
-                              <div className={`text-center text-[10px] mt-0.5 font-mono ${labelColorCls}`}>
-                                {labelPct === 0
-                                  ? (slLocksProfit ? 'в безриске' : `на ${anchorLabel}`)
-                                  : `${labelPct}% ${towardSL ? `к ${slLabel}${dangerZone ? ' ⚠' : ''}` : `к ${tpLabel}`}`}
-                              </div>
-                            </div>
-                          )
-                        })()}
+                        <TradeProgressBar trade={t} live={live} tps={tps} />
                       </td>
                     )}
                     {statusFilter !== 'CLOSED' && (
@@ -1419,20 +1548,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                 <span>Мин: <span className="text-text-primary">${trough.toFixed(2)}</span></span>
               </div>
             </div>
-            <div className="bg-card border border-input rounded p-3 mb-3">
-              <EquityChart
-                data={curve.map(p => ({ date: p.date, equity: p.equity }))}
-                startEquity={startEquity}
-                height={260}
-              />
-              <div className="text-[10px] text-text-secondary mt-2 flex items-center gap-3">
-                <span className="inline-flex items-center gap-1">
-                  <span className="inline-block w-3 h-px bg-text-secondary" style={{ borderTop: '1px dashed #848e9c' }} />
-                  стартовый депозит
-                </span>
-              </div>
-            </div>
-            <div className="bg-card border border-input rounded overflow-hidden">
+            <div className="bg-card border border-input rounded overflow-hidden mb-3">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm font-mono">
                   <thead className="bg-input/50 text-text-secondary text-xs">
@@ -1464,6 +1580,19 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                     })}
                   </tbody>
                 </table>
+              </div>
+            </div>
+            <div className="bg-card border border-input rounded p-3">
+              <EquityChart
+                data={curve.map(p => ({ date: p.date, equity: p.equity }))}
+                startEquity={startEquity}
+                height={260}
+              />
+              <div className="text-[10px] text-text-secondary mt-2 flex items-center gap-3">
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block w-3 h-px bg-text-secondary" style={{ borderTop: '1px dashed #848e9c' }} />
+                  стартовый депозит
+                </span>
               </div>
             </div>
           </div>
