@@ -479,14 +479,19 @@ export async function processWsTradeForLimits(symbol: string, price: number, ts:
 }
 
 /**
- * EOD job — отменяем все PENDING_LIMIT за вчерашний UTC день.
+ * EOD job — отменяем все PENDING_LIMIT, размещённые не сегодня UTC.
  * Не сработавший за день limit = пропущенный пробой, range уже не актуален.
+ *
+ * Cutoff = начало текущего UTC-дня. Был "now − 24h" — это пропускало одиночные
+ * лимиты возраста 12-24 часа (например размещённые в 03:37 UTC, EOD в 23:55
+ * того же дня = возраст 20ч), и они доживали до пробоя на следующий день уже
+ * против устаревшего range.
  */
 export async function cancelStaleLimitsEod(): Promise<{ cancelled: number }> {
   const tag = logTag(VARIANT)
   const tm = tradeModel(VARIANT) as any
-  // Cutoff = 24 часа назад
-  const cutoff = new Date(Date.now() - 24 * 60 * 60_000)
+  const todayUtc = new Date().toISOString().slice(0, 10)
+  const cutoff = new Date(`${todayUtc}T00:00:00.000Z`)
 
   const stale = await tm.findMany({
     where: {

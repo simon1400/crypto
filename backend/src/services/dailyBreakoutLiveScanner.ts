@@ -190,9 +190,15 @@ async function runOnce(): Promise<void> {
   const btcAdx = await getBtcAdx1h()
   if (btcAdx != null && btcAdx <= BTC_ADX_THRESHOLD) {
     console.log(`[BreakoutScanner] tick skipped — BTC ADX ${btcAdx.toFixed(1)} ≤ ${BTC_ADX_THRESHOLD} (sideways regime)`)
+    // Preserve eodSentForDate marker — overwriting the whole JSON would reset
+    // the EOD idempotency guard and let the 23:55 summary re-send.
+    const prev = ((await prisma.breakoutConfig.findUnique({ where: { id: 1 } }))?.lastScanResult as any) || {}
     await prisma.breakoutConfig.update({
       where: { id: 1 },
-      data: { lastScanAt: new Date(), lastScanResult: { _btcAdx: Math.round(btcAdx * 10) / 10, _skipped: 1 } as any },
+      data: {
+        lastScanAt: new Date(),
+        lastScanResult: { _btcAdx: Math.round(btcAdx * 10) / 10, _skipped: 1, eodSentForDate: prev.eodSentForDate } as any,
+      },
     })
     return
   }
@@ -205,9 +211,14 @@ async function runOnce(): Promise<void> {
     total += n
   }
 
+  // Preserve eodSentForDate marker on full-result write — see note above.
+  const prev = ((await prisma.breakoutConfig.findUnique({ where: { id: 1 } }))?.lastScanResult as any) || {}
   await prisma.breakoutConfig.update({
     where: { id: 1 },
-    data: { lastScanAt: new Date(), lastScanResult: result },
+    data: {
+      lastScanAt: new Date(),
+      lastScanResult: { ...result, eodSentForDate: prev.eodSentForDate } as any,
+    },
   })
   if (total > 0) {
     console.log(`[BreakoutScanner] tick fired ${total} signals across ${enabledSymbols.length} symbols`)
