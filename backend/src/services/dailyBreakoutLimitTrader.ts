@@ -115,10 +115,33 @@ async function placeLimitsForRanges(cfg: PaperConfigC): Promise<{ placed: number
   const utcDate = new Date().toISOString().slice(0, 10)
   let placed = 0
 
+  const todayStartUtc = new Date(`${utcDate}T00:00:00.000Z`)
+
   for (const symbol of enabledSymbols) {
     try {
       // Skip если уже есть запись на эту монету за сегодня в любом статусе.
       if (await isVariantBusyOnSymbol(symbol, utcDate, VARIANT)) continue
+
+      // Защита от orphan PENDING_LIMIT с прошлых дней: если EOD-cleanup не
+      // отработал (process restart в окне 23:55-00:00 UTC, или одиночная
+      // limit-сторона с pairOrderId=null, которая никогда не попадает в cascade),
+      // отменяем такие лимитки перед размещением новой пары. Без этого в Pending
+      // могла висеть вчерашняя лимитка одновременно с сегодняшней открытой сделкой.
+      const orphanCancelled = await tm.updateMany({
+        where: {
+          symbol,
+          limitOrderState: 'PENDING_LIMIT',
+          limitPlacedAt: { lt: todayStartUtc },
+        },
+        data: {
+          limitOrderState: 'CANCELLED_EOD',
+          status: 'EXPIRED',
+          closedAt: new Date(),
+        },
+      })
+      if (orphanCancelled.count > 0) {
+        console.log(`${tag} ${symbol} cancelled ${orphanCancelled.count} orphan PENDING_LIMIT from prior days`)
+      }
 
       // Placement без cap-проверки — лимиток можно ставить сколько угодно
       // (каждая монета даёт пару BUY+SELL). Cap контролируется при fill в

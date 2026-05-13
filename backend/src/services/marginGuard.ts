@@ -164,7 +164,7 @@ export function evaluateOpenWithGuard(
   if (newMarginRequired <= free) {
     return {
       canOpen: true,
-      reason: 'fits within free margin',
+      reason: 'хватает свободной маржи',
       toClose: [],
       freedAfterClose: 0,
       marginRequired: newMarginRequired,
@@ -206,7 +206,7 @@ export function evaluateOpenWithGuard(
       if (requiredLev <= maxLev) {
         return {
           canOpen: true,
-          reason: `downsized margin $${free.toFixed(2)} (target was $${newMarginRequired.toFixed(2)}), lev ${requiredLev.toFixed(1)}x`,
+          reason: `маржа уменьшена до $${free.toFixed(2)} (целевая $${newMarginRequired.toFixed(2)}), плечо ${requiredLev.toFixed(1)}x`,
           toClose: [],
           freedAfterClose: 0,
           marginRequired: newMarginRequired,
@@ -219,7 +219,7 @@ export function evaluateOpenWithGuard(
     }
     return {
       canOpen: false,
-      reason: `insufficient margin (need $${deficit.toFixed(2)} more, only $${freed.toFixed(2)} freeable)`,
+      reason: `недостаточно маржи (нужно ещё $${deficit.toFixed(2)}, можно высвободить $${freed.toFixed(2)})`,
       toClose: [],   // do NOT close partial — that would realise gains without opening
       freedAfterClose: 0,
       marginRequired: newMarginRequired,
@@ -230,7 +230,7 @@ export function evaluateOpenWithGuard(
 
   return {
     canOpen: true,
-    reason: `free $${freed.toFixed(2)} by closing ${toClose.length} winning trade(s)`,
+    reason: `высвобождено $${freed.toFixed(2)} закрытием ${toClose.length} прибыльных позиций`,
     toClose,
     freedAfterClose: freed,
     marginRequired: newMarginRequired,

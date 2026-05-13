@@ -64,10 +64,20 @@ model BreakoutSignal {
   expiresAt        DateTime?
   closedAt         DateTime?
   createdAt        DateTime  @default(now())
-  // Paper-trader outcome
+  // Paper-trader outcome (variant A — historical default, no suffix for back-compat)
   paperStatus      String?
   paperReason      String?
   paperUpdatedAt   DateTime?
+  // Variant B paper-trader outcome (parallel sizing experiment)
+  paperStatusB     String?
+  paperReasonB     String?
+  paperUpdatedAtB  DateTime?
+  // Variant C paper-trader outcome (limit-on-rangeEdge — uses signalId=0 for
+  // pre-emptive limits, but if scanner later creates a matching signal we mark
+  // the same OPENED/SKIPPED status here for visibility in the Signals tab).
+  paperStatusC     String?
+  paperReasonC     String?
+  paperUpdatedAtC  DateTime?
 
   @@index([status, symbol])
   @@index([createdAt])

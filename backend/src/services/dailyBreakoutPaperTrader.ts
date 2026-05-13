@@ -331,15 +331,17 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
   let depositDelta = 0
   const openedTrades: OpenedTradeInfo[] = []
 
-  // Variant A writes paperStatus into the shared BreakoutSignal table; variant B
-  // does not (would clash with A on the same row). Both variants log to console.
+  // Each variant has its own paperStatus/paperReason fields on the shared
+  // BreakoutSignal row (no suffix = A, B = paperStatusB, C = paperStatusC) so
+  // skip reasons are visible per-variant in the Signals tab.
   async function markPaperStatus(signalId: number, status: 'OPENED' | 'SKIPPED', reason: string | null) {
-    if (variant !== 'A') return
+    const data = variant === 'A'
+      ? { paperStatus: status, paperReason: reason, paperUpdatedAt: new Date() }
+      : variant === 'B'
+      ? { paperStatusB: status, paperReasonB: reason, paperUpdatedAtB: new Date() }
+      : { paperStatusC: status, paperReasonC: reason, paperUpdatedAtC: new Date() }
     try {
-      await prisma.breakoutSignal.update({
-        where: { id: signalId },
-        data: { paperStatus: status, paperReason: reason, paperUpdatedAt: new Date() },
-      })
+      await prisma.breakoutSignal.update({ where: { id: signalId }, data })
     } catch { /* schema may pre-date column on first cycle after deploy */ }
   }
 
@@ -367,8 +369,8 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
     // prevents the duplicate-signal bug when the shared signal is recreated
     // after stale-deletion.
     if (await isVariantBusyOnSymbol(sig.symbol, sig.rangeDate, variant)) {
-      const r = `${sig.symbol} already taken today (or carry-over still active) in variant ${variant}`
-      console.log(`${tag} skip sig ${sig.id} — ${r}`)
+      const r = `уже взят сегодня (или активный carry-over с прошлого дня)`
+      console.log(`${tag} skip sig ${sig.id} ${sig.symbol} — ${r}`)
       await markPaperStatus(sig.id, 'SKIPPED', r)
       continue
     }
@@ -377,7 +379,7 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
       where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
     })
     if (openTrades.length >= cfg.maxConcurrentPositions) {
-      const r = `maxConcurrent=${cfg.maxConcurrentPositions} reached`
+      const r = `лимит одновременных позиций (${cfg.maxConcurrentPositions}) достигнут`
       console.log(`${tag} skip sig ${sig.id} — ${r}`)
       await markPaperStatus(sig.id, 'SKIPPED', r)
       continue
@@ -394,7 +396,12 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
     const STALE_MIN = 30
     const ageMs = Date.now() - new Date(sig.createdAt).getTime()
     if (ageMs > STALE_MIN * 60_000) {
-      await deleteSharedSignal(sig.id, `stale (${Math.round(ageMs / 60_000)}min old)`, sig.symbol)
+      const ageMin = Math.round(ageMs / 60_000)
+      const r = `просрочен (${ageMin} мин в ожидании слота)`
+      // markPaperStatus first — for A the row will be gone after delete; for B the
+      // delete is a no-op so the mark sticks.
+      await markPaperStatus(sig.id, 'SKIPPED', r)
+      await deleteSharedSignal(sig.id, r, sig.symbol)
       if (variant === 'B') continue  // B can't delete — just skip and move on
       continue
     }
@@ -418,14 +425,18 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
         : livePrice > sig.rangeLow
       if (retraced) {
         const edge = sig.side === 'BUY' ? sig.rangeHigh : sig.rangeLow
-        await deleteSharedSignal(sig.id, `retraced into range (live ${livePrice.toFixed(4)} vs edge ${edge.toFixed(4)})`, sig.symbol)
+        const r = `цена вернулась в диапазон (live ${livePrice.toFixed(4)} vs край ${edge.toFixed(4)})`
+        await markPaperStatus(sig.id, 'SKIPPED', r)
+        await deleteSharedSignal(sig.id, r, sig.symbol)
         continue
       }
 
       const tp1 = (sig.tpLadder as number[])[0]
       const overshot = sig.side === 'BUY' ? livePrice >= tp1 : livePrice <= tp1
       if (overshot) {
-        await deleteSharedSignal(sig.id, `live overshot TP1 (live ${livePrice.toFixed(6)} vs TP1 ${tp1.toFixed(6)})`, sig.symbol)
+        const r = `цена ушла за TP1 (live ${livePrice.toFixed(6)} vs TP1 ${tp1.toFixed(6)})`
+        await markPaperStatus(sig.id, 'SKIPPED', r)
+        await deleteSharedSignal(sig.id, r, sig.symbol)
         continue
       }
 
@@ -459,7 +470,7 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
       sl: sig.stopLoss,
     })
     if (!sizing || sizing.positionUnits <= 0) {
-      await markPaperStatus(sig.id, 'SKIPPED', 'sizing failed (zero position)')
+      await markPaperStatus(sig.id, 'SKIPPED', 'не удалось рассчитать размер позиции (0 units)')
       continue
     }
 
@@ -474,7 +485,7 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
       )
 
       if (!guard.canOpen) {
-        const r = `${guard.reason} (need $${guard.marginRequired.toFixed(2)}, free $${guard.marginAvailableBefore.toFixed(2)})`
+        const r = `${guard.reason} (нужно $${guard.marginRequired.toFixed(2)}, свободно $${guard.marginAvailableBefore.toFixed(2)})`
         console.log(`${tag} skip sig ${sig.id} ${sig.symbol} — ${r}`)
         await markPaperStatus(sig.id, 'SKIPPED', r)
         continue
@@ -482,7 +493,7 @@ async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVariant): P
 
       if (guard.toClose.length > 0) {
         if (!cfg.marginGuardAutoClose) {
-          const r = `would need to close ${guard.toClose.length} winning trade(s), but auto-close disabled`
+          const r = `требуется закрыть ${guard.toClose.length} прибыльных позиций, но авто-закрытие выключено`
           console.log(`${tag} skip sig ${sig.id} ${sig.symbol} — ${r}`)
           await markPaperStatus(sig.id, 'SKIPPED', r)
           continue
@@ -757,8 +768,23 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
   } else {
     nextCheckAt = new Date(lastCandle.time)
   }
-  await tm.update({
-    where: { id: trade.id },
+  // Atomic compare-and-set guard against WS-tick vs slow-tick race:
+  // both can read the same `trade` row (status=OPEN, closes=[]) and independently
+  // record TP1, sending two Telegram messages for one fill. We update only if the
+  // row still matches the state we read at the top of this fn (status + the
+  // previously-recorded number of closes). If a concurrent tick already wrote
+  // the same transition, count=0 and we skip notifications / depositDelta.
+  const updated = await tm.updateMany({
+    where: {
+      id: trade.id,
+      status: trade.status,
+      // Prisma can't filter by JSON-array length directly; use realizedR which
+      // strictly monotonically increases on every fill event (TP1/TP2/TP3 add
+      // positive R, SL adds remaining-frac R). Matching the value we read is a
+      // sufficient guard — if another tick already applied any fill, realizedR
+      // moved and our update lands count=0.
+      realizedR: trade.realizedR ?? 0,
+    },
     data: {
       status, currentStop, realizedR, realizedPnlUsd,
       feesPaidUsd: totalFeesUsd, slipPaidUsd: totalSlipUsd, netPnlUsd,
@@ -769,6 +795,11 @@ async function trackOnePaper(trade: any, candles: OHLCV[], cfg: PaperConfig, var
         ? { closedAt: new Date() } : {}),
     },
   })
+  if (updated.count === 0) {
+    // Lost the race — another tick already applied this transition. Skip
+    // notifications and depositDelta to avoid duplicate Telegram + double-count.
+    return { pnlDelta: 0, statusChanged: false, terminalClosed: false }
+  }
 
   // Mirror status / closes / lastPrice to the originating BreakoutSignal.
   // Variant A only — variant B does not mutate the shared signals table.
@@ -927,9 +958,13 @@ export async function applyDepositDelta(cfg: PaperConfig, delta: number, variant
   const cm = configModel(variant) as any
   const tm = tradeModel(variant) as any
 
-  const newDeposit = cfg.currentDepositUsd + delta
-  const newPeak = Math.max(cfg.peakDepositUsd, newDeposit)
-  const newDD = newPeak > 0 ? Math.max(cfg.maxDrawdownPct, ((newPeak - newDeposit) / newPeak) * 100) : 0
+  // currentDepositUsd derived from startingDepositUsd + sum of trade-table P&L.
+  // Old version did `cfg.currentDepositUsd + delta`, which drifts if delta is
+  // ever applied twice (e.g. WS-tick + slow-tick race). totalPnLUsd was already
+  // recomputed from the table below, so currentDeposit being incremental left
+  // the two fields free to diverge — exactly what happened with DOGE B (race
+  // applied +$2.38 twice, totalPnLUsd recomputed correctly, currentDeposit didn't).
+  void delta
 
   const trades = await tm.findMany({
     where: {
@@ -949,6 +984,10 @@ export async function applyDepositDelta(cfg: PaperConfig, delta: number, variant
     const realizedNet = closedStatuses.has(t.status) ? t.netPnlUsd : (t.realizedPnlUsd - t.feesPaidUsd)
     return a + realizedNet
   }, 0)
+
+  const newDeposit = cfg.startingDepositUsd + totalPnLUsd
+  const newPeak = Math.max(cfg.peakDepositUsd, newDeposit)
+  const newDD = newPeak > 0 ? Math.max(cfg.maxDrawdownPct, ((newPeak - newDeposit) / newPeak) * 100) : 0
 
   await cm.update({
     where: { id: 1 },
@@ -1058,7 +1097,7 @@ export async function forceOpenSignal(signalId: number, variant: BreakoutVariant
     sl: sig.stopLoss,
   })
   if (!sizing || sizing.positionUnits <= 0) {
-    return { ok: false, reason: 'sizing failed (zero position)' }
+    return { ok: false, reason: 'не удалось рассчитать размер позиции (0 units)' }
   }
 
   const openTrades = await tm.findMany({

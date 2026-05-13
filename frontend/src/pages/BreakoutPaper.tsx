@@ -49,6 +49,8 @@ function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): Posit
 type StatusFilter = 'OPEN' | 'CLOSED' | 'SIGNALS' | 'PENDING'
 
 const PAPER_STATUS_BADGE: Record<string, { bg: string; text: string; label: string }> = {
+  NEW:       { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Новый' },
+  ACTIVE:    { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Активен' },
   OPEN:      { bg: 'bg-accent/15',     text: 'text-accent',     label: 'Открыта' },
   TP1_HIT:   { bg: 'bg-long/10',       text: 'text-long',       label: 'TP1 ✓' },
   TP2_HIT:   { bg: 'bg-long/15',       text: 'text-long',       label: 'TP2 ✓' },
@@ -56,8 +58,8 @@ const PAPER_STATUS_BADGE: Record<string, { bg: string; text: string; label: stri
   CLOSED:    { bg: 'bg-long/10',       text: 'text-long',       label: 'Закрыта' },
   SL_HIT:    { bg: 'bg-short/15',      text: 'text-short',      label: 'SL' },
   EXPIRED:   { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Истёк' },
-  PENDING:   { bg: 'bg-accent/10',     text: 'text-accent/80',  label: '⏳ Limit pending' },
-  CANCELLED: { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Limit отменён' },
+  PENDING:   { bg: 'bg-accent/10',     text: 'text-accent/80',  label: '⏳ Лимит ждёт' },
+  CANCELLED: { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Лимит отменён' },
 }
 
 // Сжатый текст исхода: смотрит на массив closes и собирает «TP1 → TP2 → SL@TP1»,
@@ -977,20 +979,23 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                   const paperColor = s.paperStatus === 'OPENED' ? 'text-long'
                     : s.paperStatus === 'SKIPPED' ? 'text-short' : 'text-text-secondary'
                   const paperLabel = s.paperStatus === 'OPENED' ? '✓ Открыт'
-                    : s.paperStatus === 'SKIPPED' ? '✕ Skip' : '—'
+                    : s.paperStatus === 'SKIPPED' ? '✕ Пропущен' : '—'
                   const hist = stats?.bySymbol?.[s.symbol]
                   const histWr = hist && hist.trades > 0 ? Math.round((hist.wins / hist.trades) * 100) : null
                   const histPnlCls = !hist ? 'text-text-secondary'
                     : hist.pnl > 0 ? 'text-long'
                     : hist.pnl < 0 ? 'text-short' : 'text-text-secondary'
-                  // Status column: variant A uses the shared signal status (canonical).
-                  // Variant B uses its own trade's status when present (the shared status
-                  // reflects A's view, which is misleading on the B tab). If B has no
-                  // trade for this signal, show a neutral "—" instead of A's status.
-                  const showSelfTradeStatus = variant === 'B' && s._tradeStatus
-                  const statusForBadge = showSelfTradeStatus ? s._tradeStatus! : s.status
+                  // Status column — унифицировано для всех вариантов:
+                  //   - если у текущего варианта есть свой трейд по этому сигналу, показываем
+                  //     статус ЕГО трейда (NEW/ACTIVE/TP1_HIT/SL_HIT/CLOSED/EXPIRED + P&L);
+                  //   - если трейда нет (SKIPPED), используем shared lifecycle-статус сигнала
+                  //     (NEW/ACTIVE/EXPIRED — нейтральные жизненные стадии), но маскируем
+                  //     outcome-статусы (TP*/SL/CLOSED) — это исход чужого варианта, не нашего.
+                  const showSelfTradeStatus = !!s._tradeStatus
+                  const A_SPECIFIC = new Set(['TP1_HIT', 'TP2_HIT', 'TP3_HIT', 'SL_HIT', 'CLOSED'])
+                  const sharedFallback = A_SPECIFIC.has(s.status) ? 'NEW' : s.status
+                  const statusForBadge = showSelfTradeStatus ? s._tradeStatus! : sharedFallback
                   const statusPnl = showSelfTradeStatus ? (s._tradeRealizedR ?? 0) : s.realizedR
-                  const showNoTradePlaceholder = variant === 'B' && !s._tradeStatus
                   return (
                     <tr
                       key={s.id}
@@ -998,7 +1003,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                       onClick={() => setSelectedSignal(s)}
                     >
                       <td className="px-3 py-2 text-text-secondary whitespace-nowrap">{formatDate(s.createdAt)}</td>
-                      <td className="px-3 py-2 text-text-secondary font-mono">{s.rangeDate}</td>
+                      <td className="px-3 py-2 text-text-secondary font-mono whitespace-nowrap">{s.rangeDate}</td>
                       <td className={`px-3 py-2 font-mono font-medium ${sideColorCls}`}>{s.symbol.replace('USDT', '')}</td>
                       <td className={`px-3 py-2 font-mono text-[11px] whitespace-nowrap ${histPnlCls}`}>
                         {hist
@@ -1010,11 +1015,9 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                       <td className="px-3 py-2 text-right font-mono text-short">${fmtPrice(s.initialStop)}</td>
                       <td className="px-3 py-2 text-right font-mono">{volRatio.toFixed(2)}×</td>
                       <td className="px-3 py-2 text-center">
-                        {showNoTradePlaceholder
-                          ? <span className="text-text-secondary text-[11px]">не открыто</span>
-                          : <PaperStatusBadge status={statusForBadge} pnl={statusPnl} closes={s.closes} />}
+                        <PaperStatusBadge status={statusForBadge} pnl={statusPnl} closes={s.closes} />
                       </td>
-                      <td className={`px-3 py-2 text-center font-mono ${paperColor}`}>{paperLabel}</td>
+                      <td className={`px-3 py-2 text-center font-mono whitespace-nowrap ${paperColor}`}>{paperLabel}</td>
                       <td className="px-3 py-2 text-text-secondary text-[11px] max-w-[280px] truncate" title={s.paperReason ?? ''}>
                         {s.paperReason ?? '—'}
                       </td>
@@ -1124,10 +1127,20 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                           </span>
                         </td>
                         <td className="px-3 py-2 text-right font-mono">
-                          {p.buy ? <span className="text-long">${fmtPrice(p.buy.entryPrice)}</span> : <span className="text-text-secondary">—</span>}
+                          {p.buy ? (
+                            <div className="flex flex-col items-end leading-tight">
+                              <span className="text-long">${fmtPrice(p.buy.entryPrice)}</span>
+                              <span className="text-[10px] text-text-secondary">#{p.buy.id}</span>
+                            </div>
+                          ) : <span className="text-text-secondary">—</span>}
                         </td>
                         <td className="px-3 py-2 text-right font-mono">
-                          {p.sell ? <span className="text-short">${fmtPrice(p.sell.entryPrice)}</span> : <span className="text-text-secondary">—</span>}
+                          {p.sell ? (
+                            <div className="flex flex-col items-end leading-tight">
+                              <span className="text-short">${fmtPrice(p.sell.entryPrice)}</span>
+                              <span className="text-[10px] text-text-secondary">#{p.sell.id}</span>
+                            </div>
+                          ) : <span className="text-text-secondary">—</span>}
                         </td>
                         <td className="px-3 py-2 text-right font-mono text-text-secondary">
                           {rangePct != null ? `${rangePct.toFixed(2)}%` : '—'}

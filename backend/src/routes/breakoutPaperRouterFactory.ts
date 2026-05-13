@@ -252,7 +252,9 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
         where: { status: { in: ['CLOSED', 'SL_HIT', 'EXPIRED'] } },
         select: { netPnlUsd: true, openedAt: true, closedAt: true, symbol: true },
       })
-      const winRate = closed.length > 0 ? closed.filter((t: any) => t.netPnlUsd > 0).length / closed.length : 0
+      const wins = closed.filter((t: any) => t.netPnlUsd > 0).length
+      const losses = closed.filter((t: any) => t.netPnlUsd < 0).length
+      const winRate = wins + losses > 0 ? wins / (wins + losses) : 0
 
       // Берём ВСЕ полностью или частично закрытые сделки и распределяем netPnl
       // (уже включает realistic taker/maker fees + slip, так как считался в
@@ -851,31 +853,23 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
       const tradeBySigId = new Map<number, any>()
       for (const t of trades) tradeBySigId.set(t.signalId, t)
 
-      // Overlay variant's view onto each signal: paperStatus from B's trade if
-      // present (OPENED), or null if no B trade exists for that signal.
-      const data = signals.map(s => {
+      // Overlay this variant's paper outcome onto each signal. For A we use the
+      // canonical paperStatus/paperReason columns; for B/C we read the variant-
+      // suffixed columns (paperStatusB / paperStatusC) and expose them under the
+      // generic field names the UI already reads. Includes SKIPPED rows where no
+      // trade was opened, so the Signals tab can show the skip reason.
+      const data = signals.map((s: any) => {
         const t = tradeBySigId.get(s.id)
+        const extra = t
+          ? { _tradeStatus: t.status, _tradeRealizedR: t.realizedR, _tradeNetPnlUsd: t.netPnlUsd }
+          : {}
         if (variant === 'A') {
-          // A: signal's own paperStatus is canonical (already mirrored).
-          return s
+          return { ...s, ...extra }
         }
-        // B: synthesize paperStatus / paperReason from B's trade row.
-        if (t) {
-          const lev = t.leverage ?? 0
-          const mar = t.marginUsd ?? 0
-          return {
-            ...s,
-            paperStatus: 'OPENED',
-            paperReason: `lev ${lev.toFixed(1)}x · margin $${mar.toFixed(2)}`,
-            paperUpdatedAt: t.openedAt,
-            // expose the variant's trade-level status (OPEN/TP1_HIT/.../CLOSED)
-            // so UI can show running outcome
-            _tradeStatus: t.status,
-            _tradeRealizedR: t.realizedR,
-            _tradeNetPnlUsd: t.netPnlUsd,
-          }
-        }
-        return { ...s, paperStatus: null, paperReason: null, paperUpdatedAt: null }
+        const ps = variant === 'B' ? s.paperStatusB : s.paperStatusC
+        const pr = variant === 'B' ? s.paperReasonB : s.paperReasonC
+        const pu = variant === 'B' ? s.paperUpdatedAtB : s.paperUpdatedAtC
+        return { ...s, paperStatus: ps, paperReason: pr, paperUpdatedAt: pu, ...extra }
       })
       res.json({ data, total })
     } catch (e: any) {
@@ -889,20 +883,17 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
       const sig = await prisma.breakoutSignal.findUnique({ where: { id } })
       if (!sig) return res.status(404).json({ error: 'Not found' })
       const t = await tm.findFirst({ where: { signalId: id } })
-      if (variant === 'A' || !t) {
-        return res.json(sig)
+      const extra = t
+        ? { _tradeStatus: t.status, _tradeRealizedR: t.realizedR, _tradeNetPnlUsd: t.netPnlUsd }
+        : {}
+      if (variant === 'A') {
+        return res.json({ ...sig, ...extra })
       }
-      const lev = t.leverage ?? 0
-      const mar = t.marginUsd ?? 0
-      res.json({
-        ...sig,
-        paperStatus: 'OPENED',
-        paperReason: `lev ${lev.toFixed(1)}x · margin $${mar.toFixed(2)}`,
-        paperUpdatedAt: t.openedAt,
-        _tradeStatus: t.status,
-        _tradeRealizedR: t.realizedR,
-        _tradeNetPnlUsd: t.netPnlUsd,
-      })
+      const s = sig as any
+      const ps = variant === 'B' ? s.paperStatusB : s.paperStatusC
+      const pr = variant === 'B' ? s.paperReasonB : s.paperReasonC
+      const pu = variant === 'B' ? s.paperUpdatedAtB : s.paperUpdatedAtC
+      res.json({ ...sig, paperStatus: ps, paperReason: pr, paperUpdatedAt: pu, ...extra })
     } catch (e: any) {
       res.status(500).json({ error: e.message })
     }
