@@ -2,3 +2,4 @@
 export * from './base'
 export * from './settings'
 export * from './klines'
+export * from './binary'

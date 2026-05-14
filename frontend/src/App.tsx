@@ -4,6 +4,7 @@ import Navbar from './components/Navbar'
 import Settings from './pages/Settings'
 import Calculator from './pages/Calculator'
 import BreakoutPage from './pages/BreakoutPage'
+import BinaryHelper from './pages/BinaryHelper'
 import Login from './pages/Login'
 import { setAuthToken } from './api/client'
 import { BalanceProvider } from './contexts/BalanceContext'
@@ -16,6 +17,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
         <Routes>
           <Route path="/" element={<Navigate to="/breakout" replace />} />
           <Route path="/breakout" element={<BreakoutPage />} />
+          <Route path="/binary" element={<BinaryHelper />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/calculator" element={<Calculator />} />
         </Routes>

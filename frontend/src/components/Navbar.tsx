@@ -28,6 +28,7 @@ export default function Navbar({ onLogout }: Props) {
         {/* Desktop nav links — aligned left */}
         <div className="hidden lg:flex items-center gap-1">
           <Link to="/breakout" className={linkClass('/breakout')}>Breakout</Link>
+          <Link to="/binary" className={linkClass('/binary')}>Binary</Link>
           <Link to="/calculator" className={linkClass('/calculator')}>Калькулятор</Link>
           <Link to="/settings" className={linkClass('/settings')}>Настройки</Link>
         </div>

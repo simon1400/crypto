@@ -156,6 +156,7 @@ export async function loadPolygonHistorical(
   const windowMs = 50000 * intervalMs
   let cursor = fetchFrom
   let consecutiveEmpty = 0
+  let fatalError: Error | null = null
 
   while (cursor <= lastClosedTime) {
     const windowEnd = Math.min(cursor + windowMs, lastClosedTime)
@@ -165,7 +166,11 @@ export async function loadPolygonHistorical(
       bars = r.bars
     } catch (e: any) {
       console.warn(`[Loader/poly] fetch failed at ${new Date(cursor).toISOString()}: ${e.message}`)
-      throw e
+      // Free tier hits 403 when requesting the most recent ~15min window (realtime quotes are paid).
+      // Save whatever we've already collected and stop; downstream code can still use historical
+      // candles. Only abort with throw if we got nothing at all.
+      fatalError = e
+      break
     }
     if (bars.length === 0) {
       consecutiveEmpty++
@@ -192,9 +197,17 @@ export async function loadPolygonHistorical(
 
   const all = [...cached, ...fresh]
   const dedup = dedupAndSort(all)
-  const out: CacheFile = { source: 'polygon', symbol, interval, candles: dedup, fetchedAt: Date.now() }
-  fs.writeFileSync(file, JSON.stringify(out))
-  console.log(`[Loader/poly] ${symbol} ${interval}: total ${dedup.length} candles (${fresh.length} new)`)
+
+  // Always persist whatever we have — even if last window failed.
+  if (dedup.length > 0) {
+    const out: CacheFile = { source: 'polygon', symbol, interval, candles: dedup, fetchedAt: Date.now() }
+    fs.writeFileSync(file, JSON.stringify(out))
+    console.log(`[Loader/poly] ${symbol} ${interval}: saved ${dedup.length} total (${fresh.length} new)`)
+  }
+
+  // If we got zero data overall (not just the last window) — surface the error
+  if (dedup.length === 0 && fatalError) throw fatalError
+
   return dedup
 }
 
