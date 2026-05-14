@@ -42,12 +42,19 @@ function tfTimerMs(lastCandleTs: number | null, now: number): number {
 
 interface SignalBannerProps {
   active: ForexSignal[]
-  now: number
   onMark: (id: string, outcome: UserOutcome) => void
   currentLossStreak: number
 }
 
-function SignalBanner({ active, now, onMark, currentLossStreak }: SignalBannerProps) {
+function SignalBanner({ active, onMark, currentLossStreak }: SignalBannerProps) {
+  // Локальное время для таймеров — иначе дёргается на ±1с когда родитель синхронизирует
+  // `now` с serverTime через polling каждые 2с. Все timestamps в signals — UTC ms,
+  // локальный Date.now() корректен.
+  const [now, setNow] = useState<number>(Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 250)
+    return () => clearInterval(t)
+  }, [])
   if (active.length === 0) {
     return (
       <div className="bg-card rounded-xl p-6 sm:p-10 text-center border-2 border-card">
@@ -100,7 +107,7 @@ function SignalBanner({ active, now, onMark, currentLossStreak }: SignalBannerPr
               <div className="text-center">
                 <div className="text-text-secondary text-xs uppercase mb-1">Экспирация на PO</div>
                 <div className="font-bold text-3xl sm:text-4xl font-mono leading-none text-text-primary">
-                  1 мин
+                  5 мин
                 </div>
                 <div className="text-xs font-mono text-text-secondary mt-1">
                   Вход @ {fmtPrice(sig.entryPrice)}
@@ -377,7 +384,7 @@ export default function BinaryHelper() {
       if ('Notification' in window && Notification.permission === 'granted') {
         const word = sig.direction === 'CALL' ? 'BUY ▲' : 'SELL ▼'
         new Notification(`${sig.symbol}: ${word}`, {
-          body: `Войти СЕЙЧАС. Экспирация через 1 минуту. Цена ${fmtPrice(sig.entryPrice)}`,
+          body: `Войти СЕЙЧАС. Экспирация 5 минут. Цена ${fmtPrice(sig.entryPrice)}`,
           icon: '/favicon.ico',
           tag: sig.id,
         })
@@ -400,8 +407,8 @@ export default function BinaryHelper() {
         <div>
           <h1 className="text-xl sm:text-2xl font-semibold text-text-primary">Forex Binary Helper</h1>
           <p className="text-xs sm:text-sm text-text-secondary">
-            BB(20,2) touch на 1m → вход 1 минута. EUR/USD · GBP/USD · AUD/USD · USD/JPY · USD/CAD · EUR/CAD.
-            Backtest: WR 60%, EV +0.08.
+            BB(20,2) touch на 1m → вход 5 минут. EUR/USD · GBP/USD · AUD/USD · USD/JPY · USD/CAD · EUR/CAD.
+            Backtest (h=5m + 30s delay): WR 52.4%, лучший EV у USD/CAD и GBP/USD.
           </p>
         </div>
         <div className="flex flex-wrap gap-2 text-xs sm:text-sm font-mono">
@@ -459,7 +466,6 @@ export default function BinaryHelper() {
       {/* THE BANNER — главное на странице */}
       <SignalBanner
         active={active}
-        now={now}
         onMark={handleMark}
         currentLossStreak={userStats?.currentLossStreak ?? 0}
       />

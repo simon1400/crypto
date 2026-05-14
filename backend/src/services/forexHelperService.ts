@@ -37,7 +37,10 @@ const PAIRS = [
 const TF_MS = 60_000           // 1 минута
 const BB_PERIOD = 20
 const BB_MULT = 2
-const HORIZON_MS = 60_000      // 1 минута экспирации
+// Экспирация 5 минут — backtest показал что 5m horizon даёт лучшее WR (52.4%) чем 1m (50.5%)
+// после имитации реальных условий (entry delay 30s). Edge всё ещё ниже break-even (54%) для
+// payout 85%, но дольше horizon уменьшает влияние wick-срезов и краткосрочного шума.
+const HORIZON_MS = 5 * 60_000  // 5 минут экспирации
 const MAX_SERIES = 100
 const MAX_ACTIVE_SIGNALS = 50
 const MAX_HISTORY = 200
