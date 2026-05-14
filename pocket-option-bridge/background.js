@@ -5,11 +5,17 @@
 //   1. не молотим backend по одному запросу на каждый тик (их сотни в минуту)
 //   2. переживаем кратковременные сетевые ошибки без потери данных
 //   3. сглаживаем нагрузку
+//
+// MV3 service worker архитектура: worker может засыпать когда нет событий, но каждое
+// входящее tick-сообщение его пробуждает. Используем chrome.alarms (минимум 30с в unpacked)
+// как fallback heartbeat если PO замолчит, плюс ленивая проверка возраста буфера на каждом
+// входящем сообщении — если прошло >5с от прошлого flush, шлём сразу.
 
 const DEFAULT_BACKEND_URL = 'http://localhost:3020'
-const DEFAULT_API_SECRET = ''   // юзер задаёт в popup
+const DEFAULT_API_SECRET = ''
 const BATCH_INTERVAL_MS = 5_000
 const MAX_BUFFER = 5000
+const ALARM_PERIOD_MIN = 0.5    // 30 секунд — минимум для unpacked extensions в MV3
 
 let buffer = []
 let lastFlushAt = 0
@@ -21,7 +27,6 @@ let stats = {
   lastFlushAt: null,
 }
 
-// Settings persistence
 let backendUrl = DEFAULT_BACKEND_URL
 let apiSecret = DEFAULT_API_SECRET
 
@@ -41,13 +46,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     stats.totalReceived++
     buffer.push({ symbol: msg.symbol, ts: msg.ts, price: msg.price })
     if (buffer.length > MAX_BUFFER) buffer.splice(0, buffer.length - MAX_BUFFER)
+    // Если прошло достаточно времени с прошлого flush — шлём сразу. Иначе ждём alarm.
+    if (Date.now() - lastFlushAt >= BATCH_INTERVAL_MS) {
+      flush()
+    }
   } else if (msg?.type === 'getStats') {
     sendResponse({ ...stats, bufferSize: buffer.length, backendUrl })
+    return true
   }
 })
 
 async function flush() {
   if (buffer.length === 0) return
+  lastFlushAt = Date.now()
   const batch = buffer
   buffer = []
   try {
@@ -62,7 +73,6 @@ async function flush() {
     if (!res.ok) {
       stats.totalErrors++
       stats.lastError = `HTTP ${res.status}`
-      // put back at the front so we retry
       buffer = batch.concat(buffer)
       if (buffer.length > MAX_BUFFER) buffer.splice(0, buffer.length - MAX_BUFFER)
     } else {
@@ -78,8 +88,9 @@ async function flush() {
   }
 }
 
-// Periodic flush via chrome.alarms (service workers can't run setInterval reliably)
-chrome.alarms.create('po-flush', { periodInMinutes: BATCH_INTERVAL_MS / 60000 })
+// Fallback heartbeat: если PO ничего не шлёт, всё равно периодически просыпаемся
+// и пробуем выгрузить буфер. Минимальный period для MV3 unpacked = 30с.
+chrome.alarms.create('po-flush', { periodInMinutes: ALARM_PERIOD_MIN })
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'po-flush') flush()
 })

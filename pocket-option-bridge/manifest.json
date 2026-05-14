@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "description": "Перехватывает котировки OTC активов с PocketOption WS и отправляет в локальный backend Forex Binary Helper для расчёта BB-touch сигналов.",
   "permissions": [
-    "storage"
+    "storage",
+    "alarms"
   ],
   "host_permissions": [
     "*://*.pocketoption.com/*",
