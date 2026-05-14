@@ -28,6 +28,18 @@
 
   function handleMessage(state, data) {
     try {
+      // DEBUG: log first few frames per WS so we see in console whether we receive anything
+      if (state.framesSeen < 5) {
+        state.framesSeen++
+        const kind = typeof data === 'string'
+          ? `text(${data.length}b): ${data.slice(0, 80)}`
+          : data instanceof ArrayBuffer
+            ? `ArrayBuffer(${data.byteLength}b)`
+            : data instanceof Blob
+              ? `Blob(${data.size}b)`
+              : `other(${data?.constructor?.name})`
+        console.log(`[PO-Bridge] WS#${state.id} frame#${state.framesSeen}: ${kind}`)
+      }
       if (typeof data === 'string') {
         // Socket.IO text frame patterns:
         //   "42[\"event\",{...}]"        — plain event with JSON payload
@@ -88,7 +100,7 @@
     const ws = protocols !== undefined
       ? new OriginalWebSocket(url, protocols)
       : new OriginalWebSocket(url)
-    const state = { id: ++wsCounter, lastEventName: null, url: String(url) }
+    const state = { id: ++wsCounter, lastEventName: null, url: String(url), framesSeen: 0 }
     log(`WS#${state.id} created → ${state.url}`)
     ws.addEventListener('message', (ev) => handleMessage(state, ev.data))
     ws.addEventListener('open', () => log(`WS#${state.id} open`))
