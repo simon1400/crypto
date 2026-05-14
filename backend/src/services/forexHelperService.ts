@@ -130,8 +130,8 @@ function parseDatetimeUtc(s: string): number {
 }
 
 async function fetchSeries(pair: string, outputsize: number): Promise<OHLCV[]> {
-  const key = process.env.TWELVEDATA_API_KEY
-  if (!key) throw new Error('TWELVEDATA_API_KEY not set')
+  const key = process.env.TWELVE_DATA_API_KEY
+  if (!key) throw new Error('TWELVE_DATA_API_KEY not set')
   // timezone=UTC обязателен — без него TwelveData возвращает время в "Exchange Time"
   // (обычно EET, +2 или +3 от UTC), и парсер datetime → ms ушёл бы в "будущее" на 9-10 часов,
   // ломая таймеры экспирации и stale-фильтр.
@@ -329,8 +329,8 @@ async function warmup(): Promise<void> {
 
 export async function startForexHelper(): Promise<void> {
   if (started) return
-  if (!process.env.TWELVEDATA_API_KEY) {
-    console.warn('[ForexHelper] TWELVEDATA_API_KEY missing — forex helper disabled')
+  if (!process.env.TWELVE_DATA_API_KEY) {
+    console.warn('[ForexHelper] TWELVE_DATA_API_KEY missing — forex helper disabled')
     return
   }
   started = true
