@@ -9,7 +9,7 @@
   "host_permissions": [
     "*://*.pocketoption.com/*",
     "http://localhost:3020/*",
-    "https://crypto.simon-dev.com/*"
+    "https://crypto.pechunka.com/*"
   ],
   "content_scripts": [
     {

@@ -31,7 +31,7 @@ backend. Backend агрегирует tick-stream в 1m свечи, считае
 3. Нажми **Load unpacked** и выбери папку `pocket-option-bridge/`
 4. Расширение появится в списке. Нажми на его иконку в toolbar
 5. Введи:
-   - **Backend URL** — `http://localhost:3020` для локалки, `https://crypto.simon-dev.com` для прода
+   - **Backend URL** — `http://localhost:3020` для локалки, `https://crypto.pechunka.com` для прода
    - **API Secret** — твой `API_SECRET` из `backend/.env` (тот же что используется для логина в UI)
 6. Нажми **Сохранить**
 7. Открой `pocketoption.com` в новой вкладке, залогинься, открой любой OTC актив на графике
