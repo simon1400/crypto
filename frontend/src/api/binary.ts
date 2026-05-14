@@ -72,3 +72,34 @@ export async function markForexSignal(id: string, outcome: UserOutcome): Promise
   })
   if (!res.ok) throw new Error(`markForexSignal ${res.status}`)
 }
+
+// ============ OTC (PocketOption-sourced via browser extension) ============
+
+export interface OtcSignal extends ForexSignal {
+  displaySymbol: string
+}
+
+export interface OtcSnapshot {
+  serverTime: number
+  symbols: Array<ForexSymbolState & { displaySymbol: string; lastTickAt: number | null }>
+  active: OtcSignal[]
+  history: OtcSignal[]
+  bridgeAlive: boolean
+  lastTickAt: number | null
+  userStats: ForexUserStats
+}
+
+export async function getOtcState(): Promise<OtcSnapshot> {
+  const res = await fetch(`${BASE}/api/binary/otc`, { headers: getHeaders() })
+  if (!res.ok) throw new Error(`getOtcState ${res.status}`)
+  return res.json()
+}
+
+export async function markOtcSignal(id: string, outcome: UserOutcome): Promise<void> {
+  const res = await fetch(`${BASE}/api/binary/otc/mark`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ id, outcome }),
+  })
+  if (!res.ok) throw new Error(`markOtcSignal ${res.status}`)
+}

@@ -1,7 +1,10 @@
 import { useEffect, useState, useRef } from 'react'
 import {
   getForexState, markForexSignal, ForexSnapshot, ForexSymbolState, ForexSignal, UserOutcome,
+  getOtcState, markOtcSignal, OtcSnapshot,
 } from '../api/client'
+
+type Mode = 'forex' | 'otc'
 
 const TF_MS = 60_000  // 1 минута
 
@@ -44,9 +47,10 @@ interface SignalBannerProps {
   active: ForexSignal[]
   onMark: (id: string, outcome: UserOutcome) => void
   currentLossStreak: number
+  formatPair: (s: string) => string
 }
 
-function SignalBanner({ active, onMark, currentLossStreak }: SignalBannerProps) {
+function SignalBanner({ active, onMark, currentLossStreak, formatPair }: SignalBannerProps) {
   // Локальное время для таймеров — иначе дёргается на ±1с когда родитель синхронизирует
   // `now` с serverTime через polling каждые 2с. Все timestamps в signals — UTC ms,
   // локальный Date.now() корректен.
@@ -89,7 +93,7 @@ function SignalBanner({ active, onMark, currentLossStreak }: SignalBannerProps) 
             className={`rounded-xl p-4 sm:p-6 border-2 ${bgClass}`}
           >
             <div className="flex items-baseline justify-between mb-3">
-              <div className="text-text-primary text-2xl sm:text-3xl font-mono font-bold">{sig.symbol}</div>
+              <div className="text-text-primary text-2xl sm:text-3xl font-mono font-bold">{formatPair(sig.symbol)}</div>
               <div className="text-text-secondary text-xs sm:text-sm uppercase tracking-wide">
                 {tooLate ? 'Окно входа закрыто' : 'Войти СЕЙЧАС'}
               </div>
@@ -177,7 +181,7 @@ function SignalBanner({ active, onMark, currentLossStreak }: SignalBannerProps) 
 // Per-symbol mini-card
 // ============================================================================
 
-function SymbolCard({ s }: { s: ForexSymbolState }) {
+function SymbolCard({ s, formatPair }: { s: ForexSymbolState; formatPair: (s: string) => string }) {
   const sig = s.activeSignal
   const isActive = sig && sig.outcome === 'PENDING'
   const pos = relPosition(s.lastPrice, s.bbLower, s.bbUpper)
@@ -197,7 +201,7 @@ function SymbolCard({ s }: { s: ForexSymbolState }) {
   return (
     <div className={`bg-card rounded-lg border-2 ${borderClass} p-3 flex flex-col gap-2 transition-colors`}>
       <div className="flex items-baseline justify-between">
-        <div className="font-mono font-semibold text-text-primary text-base">{s.symbol}</div>
+        <div className="font-mono font-semibold text-text-primary text-base">{formatPair(s.symbol)}</div>
         <div className={`font-semibold text-sm font-mono ${signalClass}`}>{signalText}</div>
       </div>
 
@@ -262,7 +266,7 @@ function GlobalCandleTimer() {
 // History row
 // ============================================================================
 
-function HistoryRow({ h }: { h: ForexSignal }) {
+function HistoryRow({ h, formatPair }: { h: ForexSignal; formatPair: (s: string) => string }) {
   const dirIcon = h.direction === 'CALL' ? '▲' : '▼'
   const time = new Date(h.signalAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
   const u = h.userOutcome
@@ -276,7 +280,7 @@ function HistoryRow({ h }: { h: ForexSignal }) {
   return (
     <tr className="border-b border-card/40">
       <td className="py-1.5 pr-2 text-text-secondary font-mono text-xs">{time}</td>
-      <td className="py-1.5 pr-2 font-mono">{h.symbol}</td>
+      <td className="py-1.5 pr-2 font-mono">{formatPair(h.symbol)}</td>
       <td className="py-1.5 pr-2 font-mono">{dirIcon} {h.direction}</td>
       <td className="py-1.5 pr-2 font-mono text-text-secondary">{fmtPrice(h.entryPrice)}</td>
       <td className={`py-1.5 font-semibold ${resultClass}`}>{resultText}</td>
@@ -289,19 +293,40 @@ function HistoryRow({ h }: { h: ForexSignal }) {
 // ============================================================================
 
 export default function BinaryHelper() {
-  const [snap, setSnap] = useState<ForexSnapshot | null>(null)
+  // Mode: 'forex' (TwelveData межбанк) или 'otc' (PocketOption через расширение)
+  const [mode, setMode] = useState<Mode>(() => (localStorage.getItem('binaryHelper.mode') as Mode) || 'forex')
+  const [snap, setSnap] = useState<ForexSnapshot | OtcSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [now, setNow] = useState<number>(Date.now())
   const lastFreshIds = useRef<Set<string>>(new Set())
   const audioCtx = useRef<AudioContext | null>(null)
 
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 250)  // быстрее тикаем для плавного таймера
+    localStorage.setItem('binaryHelper.mode', mode)
+    // Reset state on mode switch to avoid mixing data
+    setSnap(null)
+    setError(null)
+    lastFreshIds.current = new Set()
+  }, [mode])
+
+  // Pair display label
+  // — forex mode: оригинальное имя (EUR/USD)
+  // — otc mode: используем displaySymbol из бэкенда (он сам нормализует "EURUSD_otc" → "EUR/USD OTC")
+  const formatPair = (sym: string) => {
+    if (mode === 'otc' && snap) {
+      const found = (snap.symbols as Array<any>).find((s) => s.symbol === sym)
+      if (found?.displaySymbol) return found.displaySymbol
+      const fromSig = (snap.active as Array<any>).find((s) => s.symbol === sym)
+      if (fromSig?.displaySymbol) return fromSig.displaySymbol
+    }
+    return sym
+  }
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 250)
     return () => clearInterval(t)
   }, [])
 
-  // Request browser notification permission once (user gesture not strictly required for Chrome but
-  // it's better to ask on mount — user will click the prompt then)
   useEffect(() => {
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission().catch(() => {})
@@ -312,7 +337,7 @@ export default function BinaryHelper() {
     let cancelled = false
     async function poll() {
       try {
-        const s = await getForexState()
+        const s = mode === 'forex' ? await getForexState() : await getOtcState()
         if (cancelled) return
         setNow(s.serverTime)
         const curIds = new Set(s.active.map((x) => x.id))
@@ -333,26 +358,24 @@ export default function BinaryHelper() {
     poll()
     const t = setInterval(poll, 2000)
     return () => { cancelled = true; clearInterval(t) }
-  }, [])
+  }, [mode])
 
   async function handleMark(id: string, outcome: UserOutcome) {
-    // Optimistic update: убираем сигнал из active СРАЗУ, не ждём ответ сервера.
-    // Иначе юзер видит "залипание" 200-500мс пока http+repoll отрабатывают.
     setSnap((prev) => {
       if (!prev) return prev
       return {
         ...prev,
         active: prev.active.filter((s) => s.id !== id),
         history: prev.history.map((h) => h.id === id ? { ...h, userOutcome: outcome ?? undefined } : h),
-      }
+      } as typeof prev
     })
     try {
-      await markForexSignal(id, outcome)
+      if (mode === 'forex') await markForexSignal(id, outcome)
+      else await markOtcSignal(id, outcome)
     } catch (e: any) {
-      console.error('markForexSignal failed:', e)
-      // On failure — refresh from server to recover correct state
+      console.error('mark failed:', e)
       try {
-        const s = await getForexState()
+        const s = mode === 'forex' ? await getForexState() : await getOtcState()
         setSnap(s)
       } catch { /* ignore */ }
     }
@@ -383,7 +406,7 @@ export default function BinaryHelper() {
     try {
       if ('Notification' in window && Notification.permission === 'granted') {
         const word = sig.direction === 'CALL' ? 'BUY ▲' : 'SELL ▼'
-        new Notification(`${sig.symbol}: ${word}`, {
+        new Notification(`${formatPair(sig.symbol)}: ${word}`, {
           body: `Войти СЕЙЧАС. Экспирация 5 минут. Цена ${fmtPrice(sig.entryPrice)}`,
           icon: '/favicon.ico',
           tag: sig.id,
@@ -393,22 +416,25 @@ export default function BinaryHelper() {
   }
 
   const symbols = snap?.symbols ?? []
-  const stats = snap?.stats
+  const forexStats = mode === 'forex' ? (snap as ForexSnapshot | null)?.stats : undefined
+  const otcBridgeAlive = mode === 'otc' ? (snap as OtcSnapshot | null)?.bridgeAlive : undefined
   const userStats = snap?.userStats
   const history = snap?.history ?? []
   const active = snap?.active ?? []
 
-  const isForexClosed = symbols.length > 0 && symbols.every((s) => !s.lastCandleTs || (now - s.lastCandleTs) > 10 * 60_000)
+  const isForexClosed = mode === 'forex' && symbols.length > 0 && symbols.every((s) => !s.lastCandleTs || (now - s.lastCandleTs) > 10 * 60_000)
+  const isBridgeOffline = mode === 'otc' && otcBridgeAlive === false
 
   return (
     <div className="space-y-4 sm:space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-2">
         <div>
-          <h1 className="text-xl sm:text-2xl font-semibold text-text-primary">Forex Binary Helper</h1>
+          <h1 className="text-xl sm:text-2xl font-semibold text-text-primary">Binary Helper</h1>
           <p className="text-xs sm:text-sm text-text-secondary">
-            BB(20,2) touch на 1m → вход 5 минут. EUR/USD · GBP/USD · AUD/USD · USD/JPY · USD/CAD · EUR/CAD.
-            Backtest (h=5m + 30s delay): WR 52.4%, лучший EV у USD/CAD и GBP/USD.
+            {mode === 'forex'
+              ? 'Forex межбанк (TwelveData). BB(20,2) touch на 1m → вход 5 минут.'
+              : 'OTC PocketOption (через расширение). BB(20,2) touch на 1m → вход 5 минут.'}
           </p>
         </div>
         <div className="flex flex-wrap gap-2 text-xs sm:text-sm font-mono">
@@ -439,22 +465,47 @@ export default function BinaryHelper() {
               )}
             </>
           )}
-          {stats && (
+          {forexStats && (
             <div className="bg-card/40 rounded px-2 py-1" title="Автоматическая статистика по ценам TwelveData — для справки">
               <span className="text-text-secondary">Авто WR </span>
-              <span className={stats.winRate >= 0.556 ? 'text-long/70' : 'text-short/70'}>
-                {(stats.winRate * 100).toFixed(1)}%
+              <span className={forexStats.winRate >= 0.556 ? 'text-long/70' : 'text-short/70'}>
+                {(forexStats.winRate * 100).toFixed(1)}%
               </span>
-              <span className="text-text-secondary"> ({stats.wins}/{stats.wins + stats.losses})</span>
+              <span className="text-text-secondary"> ({forexStats.wins}/{forexStats.wins + forexStats.losses})</span>
             </div>
           )}
         </div>
       </div>
 
-      {/* Market closed banner */}
+      {/* Mode tabs Forex/OTC */}
+      <div className="inline-flex bg-card rounded-lg p-1 gap-1">
+        <button
+          onClick={() => setMode('forex')}
+          className={`px-4 py-1.5 rounded text-sm font-semibold transition-colors ${
+            mode === 'forex' ? 'bg-accent text-bg' : 'text-text-secondary hover:text-text-primary'
+          }`}
+        >
+          Forex (TwelveData)
+        </button>
+        <button
+          onClick={() => setMode('otc')}
+          className={`px-4 py-1.5 rounded text-sm font-semibold transition-colors ${
+            mode === 'otc' ? 'bg-accent text-bg' : 'text-text-secondary hover:text-text-primary'
+          }`}
+        >
+          OTC (PocketOption)
+        </button>
+      </div>
+
+      {/* Market/source closed banner */}
       {isForexClosed && (
         <div className="bg-short/10 border border-short/30 text-short rounded p-3 text-sm">
           ⚠ Рынок forex закрыт (выходные или нет свежих данных). Сигналы не появятся пока рынок не откроется.
+        </div>
+      )}
+      {isBridgeOffline && (
+        <div className="bg-short/10 border border-short/30 text-short rounded p-3 text-sm">
+          ⚠ Расширение Pocket Option Bridge не присылает данные. Открой pocketoption.com в браузере с установленным расширением. Если не установлено — см. <code>pocket-option-bridge/README.md</code> в репозитории.
         </div>
       )}
 
@@ -468,6 +519,7 @@ export default function BinaryHelper() {
         active={active}
         onMark={handleMark}
         currentLossStreak={userStats?.currentLossStreak ?? 0}
+        formatPair={formatPair}
       />
 
       {/* Global candle timer — one for all 6 pairs (1m UTC boundary is shared) */}
@@ -477,10 +529,10 @@ export default function BinaryHelper() {
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
         {symbols.length === 0 && !error && (
           <div className="col-span-full text-text-secondary text-sm p-4 bg-card rounded">
-            Загрузка котировок (TwelveData)…
+            {mode === 'forex' ? 'Загрузка котировок (TwelveData)…' : 'Ожидание данных от расширения Pocket Option Bridge…'}
           </div>
         )}
-        {symbols.map((s) => <SymbolCard key={s.symbol} s={s} />)}
+        {symbols.map((s) => <SymbolCard key={s.symbol} s={s} formatPair={formatPair} />)}
       </div>
 
       {/* History */}
@@ -499,7 +551,7 @@ export default function BinaryHelper() {
                 </tr>
               </thead>
               <tbody>
-                {history.map((h) => <HistoryRow key={h.id} h={h} />)}
+                {history.map((h) => <HistoryRow key={h.id} h={h} formatPair={formatPair} />)}
               </tbody>
             </table>
           </div>

@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Pocket Option Bridge",
+  "version": "1.0.0",
+  "description": "Перехватывает котировки OTC активов с PocketOption WS и отправляет в локальный backend Forex Binary Helper для расчёта BB-touch сигналов.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.pocketoption.com/*",
+    "http://localhost:3020/*",
+    "https://crypto.simon-dev.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://*.pocketoption.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": ["*://*.pocketoption.com/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Pocket Option Bridge"
+  }
+}
