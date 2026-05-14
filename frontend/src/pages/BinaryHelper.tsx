@@ -224,10 +224,18 @@ function SymbolCard({ s }: { s: ForexSymbolState }) {
 // duplicated the same value 6 times. This shows it once.
 // ============================================================================
 
-function GlobalCandleTimer({ now }: { now: number }) {
-  // 1m candle boundary in UTC: next round-minute timestamp
-  const nextBoundary = Math.ceil(now / TF_MS) * TF_MS
-  const remain = nextBoundary - now
+function GlobalCandleTimer() {
+  // Используем СВОЁ локальное время, не shared `now` из родителя — иначе таймер дёргается
+  // когда родитель синхронизирует `now` с serverTime каждые 2с (server и local часы могут
+  // расходиться на 1-2с → таймер прыгает назад). 1m UTC boundary одинакова у клиента и сервера,
+  // поэтому локальный Date.now() корректен.
+  const [localNow, setLocalNow] = useState<number>(Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setLocalNow(Date.now()), 250)
+    return () => clearInterval(t)
+  }, [])
+  const nextBoundary = Math.ceil(localNow / TF_MS) * TF_MS
+  const remain = nextBoundary - localNow
   const progress = 1 - remain / TF_MS
   return (
     <div className="bg-card rounded-lg p-2 sm:p-3 flex items-center gap-3">
@@ -457,7 +465,7 @@ export default function BinaryHelper() {
       />
 
       {/* Global candle timer — one for all 6 pairs (1m UTC boundary is shared) */}
-      <GlobalCandleTimer now={now} />
+      <GlobalCandleTimer />
 
       {/* 6 cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">

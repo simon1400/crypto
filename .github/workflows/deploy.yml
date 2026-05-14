@@ -111,7 +111,7 @@ jobs:
             cd /opt/crypto/backend
             npm ci --omit=dev
             npx prisma migrate deploy
-            pm2 restart crypto-backend
+            pm2 restart crypto-backend --update-env
             echo "Backend restarted"
           EOF
 
