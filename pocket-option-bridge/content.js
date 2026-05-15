@@ -50,7 +50,8 @@
         state.lastEventName = m ? m[1] : null
         return
       }
-      // Binary frame
+      // Binary frame — log unconditionally so we see what's actually arriving
+      console.log(`[PO-Bridge] WS#${state.id} BIN f#${state.framesSeen} ${data?.constructor?.name}(${data?.byteLength || data?.size || '?'}b) lastEv=${state.lastEventName}`)
       if (state.lastEventName !== 'updateStream') {
         state.lastEventName = null
         return
@@ -82,10 +83,15 @@
     }
   }
 
+  let tickLogCount = 0
   function emitTick(tick) {
     if (!Array.isArray(tick) || tick.length < 3) return
     const [symbol, ts, price] = tick
     if (typeof symbol !== 'string' || typeof ts !== 'number' || typeof price !== 'number') return
+    if (tickLogCount < 5) {
+      tickLogCount++
+      console.log(`[PO-Bridge] emit tick #${tickLogCount}:`, symbol, ts, price)
+    }
     window.postMessage({
       __poBridge: true,
       type: 'tick',
