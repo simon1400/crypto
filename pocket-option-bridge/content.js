@@ -2,75 +2,43 @@
 //
 // Перехватывает WebSocket трафик PocketOption и извлекает tick events для OTC активов.
 //
-// Формат потока PO (реверс-инжиниринг 2026-05-14):
+// Формат потока PO (реверс 2026-05-14):
 //   1. Текстовый фрейм: `451-["updateStream",{"_placeholder":true,"num":0}]`
 //      — Socket.IO BINARY_EVENT header, говорит "следующий binary блоб = updateStream".
-//   2. Binary blob: UTF-8 JSON `["AUDCAD_otc", 1778800339.668, 1.01188]`
-//      — массив [symbol, timestamp_seconds, price].
+//   2. Binary blob: UTF-8 JSON. Либо одиночный тик `["AUDCAD_otc",1778800339.668,1.01188]`,
+//      либо batch `[["AUDCAD_otc",ts,price],["EURUSD",ts2,price2],...]` — мы поддерживаем
+//      оба варианта в emitParsed().
 //
 // PO открывает несколько WebSocket-ов параллельно к разным регионам (api-eu, api-msk,
-// api-us-north и т.д.) — обычно "побеждает" один (тот что быстрее ответил handshake).
-// Мы патчим САМ КОНСТРУКТОР WebSocket, чтобы свой 'message' listener добавлялся
-// сразу при создании каждого WS — независимо от того что делает страница.
+// api-us-north и т.д.) — обычно "побеждает" один. Мы патчим САМ КОНСТРУКТОР WebSocket,
+// чтобы свой 'message' listener добавлялся при создании каждого WS до того как страница
+// успеет повесить свои handlers.
 //
-// World=MAIN критично — extension в isolated world видит свой wrapper класс WebSocket,
-// а не оригинальный.
+// World=MAIN критично — extension в isolated world видит свой wrapper класс WebSocket.
 
 (function () {
   if (window.__poBridgeInstalled) return
   window.__poBridgeInstalled = true
-
-  const log = (...args) => console.log('[PO-Bridge]', ...args)
-  log('content script loaded, hooking WebSocket constructor...')
 
   const OriginalWebSocket = window.WebSocket
   let wsCounter = 0
 
   function handleMessage(state, data) {
     try {
-      // DEBUG: log first 20 frames per WS + ALL updateStream events (with prefix indicator)
-      state.framesSeen = (state.framesSeen || 0) + 1
-      const isStreamMatch = typeof data === 'string' && data.includes('updateStream')
-      if (state.framesSeen <= 20 || isStreamMatch) {
-        const kind = typeof data === 'string'
-          ? `text(${data.length}b): ${data.slice(0, 100)}`
-          : data instanceof ArrayBuffer
-            ? `ArrayBuffer(${data.byteLength}b) lastEv=${state.lastEventName}`
-            : data instanceof Blob
-              ? `Blob(${data.size}b) lastEv=${state.lastEventName}`
-              : `other(${data?.constructor?.name})`
-        console.log(`[PO-Bridge] WS#${state.id} f#${state.framesSeen}: ${kind}`)
-      }
       if (typeof data === 'string') {
-        // Socket.IO text frame patterns:
-        //   "42[\"event\",{...}]"        — plain event with JSON payload
-        //   "451-[\"event\",{...}]"      — binary event header (one binary attachment follows)
-        //   "0", "40", "3", etc.         — engine.io control frames
+        // 451-["event",...] = Socket.IO BINARY_EVENT header → следующий binary блоб
+        // относится к этому event. Прочие текстовые frames (42[...], 0, 40, 3, ping/pong)
+        // обнуляют lastEventName.
         const m = data.match(/^45\d+-\["([^"]+)"/)
         state.lastEventName = m ? m[1] : null
         return
       }
-      // Binary frame — log unconditionally so we see what's actually arriving
-      console.log(`[PO-Bridge] WS#${state.id} BIN f#${state.framesSeen} ${data?.constructor?.name}(${data?.byteLength || data?.size || '?'}b) lastEv=${state.lastEventName}`)
+      // Binary frame
       if (state.lastEventName !== 'updateStream') {
         state.lastEventName = null
         return
       }
       state.lastEventName = null
-
-      // DEBUG: dump raw content of first 3 updateStream binary frames per WS
-      state.streamBinSeen = (state.streamBinSeen || 0) + 1
-      if (state.streamBinSeen <= 3) {
-        if (data instanceof ArrayBuffer) {
-          const bytes = new Uint8Array(data)
-          const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
-          const hex = Array.from(bytes.slice(0, 60)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-          console.log(`[PO-Bridge] WS#${state.id} stream#${state.streamBinSeen} TEXT: ${text}`)
-          console.log(`[PO-Bridge] WS#${state.id} stream#${state.streamBinSeen} HEX:  ${hex}`)
-        } else if (data instanceof Blob) {
-          console.log(`[PO-Bridge] WS#${state.id} stream#${state.streamBinSeen} is Blob, awaiting arrayBuffer()`)
-        }
-      }
 
       const decode = (buf) => {
         try {
@@ -97,13 +65,8 @@
     }
   }
 
-  let tickLogCount = 0
-
-  // PO sends either [symbol, ts, price] OR [[symbol, ts, price], [symbol2, ts2, price2], ...]
-  // (batched ticks). We unwrap the outer array if present and emit each inner tick separately.
   function emitParsed(payload) {
     if (!Array.isArray(payload)) return
-    // Detect single vs batch: if first element is itself array → batch
     if (Array.isArray(payload[0])) {
       for (const t of payload) emitTick(t)
     } else {
@@ -115,10 +78,6 @@
     if (!Array.isArray(tick) || tick.length < 3) return
     const [symbol, ts, price] = tick
     if (typeof symbol !== 'string' || typeof ts !== 'number' || typeof price !== 'number') return
-    if (tickLogCount < 5) {
-      tickLogCount++
-      console.log(`[PO-Bridge] emit tick #${tickLogCount}:`, symbol, ts, price)
-    }
     window.postMessage({
       __poBridge: true,
       type: 'tick',
@@ -134,22 +93,14 @@
     const ws = protocols !== undefined
       ? new OriginalWebSocket(url, protocols)
       : new OriginalWebSocket(url)
-    const state = { id: ++wsCounter, lastEventName: null, url: String(url), framesSeen: 0 }
-    log(`WS#${state.id} created → ${state.url}`)
+    const state = { id: ++wsCounter, lastEventName: null, url: String(url) }
     ws.addEventListener('message', (ev) => handleMessage(state, ev.data))
-    ws.addEventListener('open', () => log(`WS#${state.id} open`))
-    ws.addEventListener('close', () => log(`WS#${state.id} closed`))
     return ws
   }
-  // Preserve static fields & prototype chain so `instanceof WebSocket` still works for page code.
   window.WebSocket.prototype = OriginalWebSocket.prototype
   Object.defineProperty(window.WebSocket, 'CONNECTING', { value: OriginalWebSocket.CONNECTING })
   Object.defineProperty(window.WebSocket, 'OPEN', { value: OriginalWebSocket.OPEN })
   Object.defineProperty(window.WebSocket, 'CLOSING', { value: OriginalWebSocket.CLOSING })
   Object.defineProperty(window.WebSocket, 'CLOSED', { value: OriginalWebSocket.CLOSED })
-
-  // Marker for diagnostics: page can check `WebSocket.__poBridgePatched === true`
   window.WebSocket.__poBridgePatched = true
-
-  log('WebSocket constructor patched. Awaiting connections.')
 })()

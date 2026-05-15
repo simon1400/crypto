@@ -13,5 +13,3 @@ window.addEventListener('message', (ev) => {
     // Extension context invalidated (e.g. extension reloaded) — page will reload eventually
   }
 })
-
-console.log('[PO-Bridge/isolated] ready, forwarding ticks to background')
