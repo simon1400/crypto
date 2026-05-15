@@ -54,6 +54,9 @@
       const onDecoded = (parsed, sourceEvt) => {
         if (!parsed) return
         if (sourceEvt === 'updateStream') {
+          // The WS that delivered this tick is the live one — remember it so
+          // we can emit changeSymbol back on the same socket.
+          activeWs = state.ws
           emitParsed(parsed)
         } else {
           emitHistory(parsed, sourceEvt)
@@ -110,6 +113,30 @@
       ts,
       price,
     }, '*')
+    // First time we see ticks for this asset on this WS — replay the user-click
+    // emit shape so PO sends loadHistoryPeriodFast. If we joined the WS after PO
+    // already cached the asset, the original history payload was missed and we
+    // need a fresh one to seed BB(20).
+    requestHistoryIfNeeded(symbol)
+  }
+
+  // Track which (ws, asset) pairs we've already requested history for, so we
+  // don't spam — exactly one extra changeSymbol per asset per WS lifetime.
+  const requestedHistory = new Set()
+  let activeWs = null
+
+  function requestHistoryIfNeeded(asset) {
+    if (!activeWs || activeWs.readyState !== 1 /* OPEN */) return
+    const key = `${activeWs.__poId}:${asset}`
+    if (requestedHistory.has(key)) return
+    requestedHistory.add(key)
+    try {
+      const frame = `42["changeSymbol",${JSON.stringify({ asset, period: 60 })}]`
+      activeWs.send(frame)
+      console.log(`[PO-Bridge] requested history for ${asset} on ws#${activeWs.__poId}`)
+    } catch (e) {
+      // WS may have closed mid-call — ignore
+    }
   }
 
   // Outbound frame logger — capture what PO emits when user switches asset, so
@@ -138,7 +165,9 @@
     const ws = protocols !== undefined
       ? new OriginalWebSocket(url, protocols)
       : new OriginalWebSocket(url)
-    const state = { id: ++wsCounter, lastEventName: null, url: String(url), sendDumps: 0 }
+    const id = ++wsCounter
+    ws.__poId = id
+    const state = { id, lastEventName: null, url: String(url), sendDumps: 0, ws }
     ws.addEventListener('message', (ev) => handleMessage(state, ev.data))
     patchSend(ws, state)
     return ws
