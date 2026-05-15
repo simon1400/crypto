@@ -28,17 +28,18 @@
 
   function handleMessage(state, data) {
     try {
-      // DEBUG: log first few frames per WS so we see in console whether we receive anything
-      if (state.framesSeen < 5) {
-        state.framesSeen++
+      // DEBUG: log first 20 frames per WS + ALL updateStream events (with prefix indicator)
+      state.framesSeen = (state.framesSeen || 0) + 1
+      const isStreamMatch = typeof data === 'string' && data.includes('updateStream')
+      if (state.framesSeen <= 20 || isStreamMatch) {
         const kind = typeof data === 'string'
-          ? `text(${data.length}b): ${data.slice(0, 80)}`
+          ? `text(${data.length}b): ${data.slice(0, 100)}`
           : data instanceof ArrayBuffer
-            ? `ArrayBuffer(${data.byteLength}b)`
+            ? `ArrayBuffer(${data.byteLength}b) lastEv=${state.lastEventName}`
             : data instanceof Blob
-              ? `Blob(${data.size}b)`
+              ? `Blob(${data.size}b) lastEv=${state.lastEventName}`
               : `other(${data?.constructor?.name})`
-        console.log(`[PO-Bridge] WS#${state.id} frame#${state.framesSeen}: ${kind}`)
+        console.log(`[PO-Bridge] WS#${state.id} f#${state.framesSeen}: ${kind}`)
       }
       if (typeof data === 'string') {
         // Socket.IO text frame patterns:
