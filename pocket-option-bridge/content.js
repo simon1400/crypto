@@ -58,6 +58,20 @@
       }
       state.lastEventName = null
 
+      // DEBUG: dump raw content of first 3 updateStream binary frames per WS
+      state.streamBinSeen = (state.streamBinSeen || 0) + 1
+      if (state.streamBinSeen <= 3) {
+        if (data instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(data)
+          const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+          const hex = Array.from(bytes.slice(0, 60)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+          console.log(`[PO-Bridge] WS#${state.id} stream#${state.streamBinSeen} TEXT: ${text}`)
+          console.log(`[PO-Bridge] WS#${state.id} stream#${state.streamBinSeen} HEX:  ${hex}`)
+        } else if (data instanceof Blob) {
+          console.log(`[PO-Bridge] WS#${state.id} stream#${state.streamBinSeen} is Blob, awaiting arrayBuffer()`)
+        }
+      }
+
       const decode = (buf) => {
         try {
           const text = new TextDecoder('utf-8').decode(buf)
