@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { asyncHandler } from './_helpers'
 import { getForexSnapshot, markSignalOutcome, UserOutcome } from '../services/forexHelperService'
-import { getOtcSnapshot, ingestTicks, markOtcSignalOutcome, IncomingTick } from '../services/otcHelperService'
+import { getOtcSnapshot, ingestTicks, ingestHistory, markOtcSignalOutcome, IncomingTick } from '../services/otcHelperService'
 
 const router = Router()
 
@@ -42,6 +42,16 @@ router.post('/otc-ingest', asyncHandler(async (req, res) => {
   const result = ingestTicks(ticks)
   res.json({ ok: true, ...result })
 }, 'OtcIngest'))
+
+router.post('/otc-history-ingest', asyncHandler(async (req, res) => {
+  const { source, payload } = req.body as { source?: string; payload?: any }
+  if (!payload) {
+    res.status(400).json({ error: 'payload required' })
+    return
+  }
+  const result = ingestHistory(source ?? 'unknown', payload)
+  res.json({ ok: true, ...result })
+}, 'OtcHistoryIngest'))
 
 router.post('/otc/mark', asyncHandler(async (req, res) => {
   const { id, outcome } = req.body as { id?: string; outcome?: UserOutcome }

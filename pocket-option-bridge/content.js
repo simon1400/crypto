@@ -33,36 +33,61 @@
         state.lastEventName = m ? m[1] : null
         return
       }
-      // Binary frame
-      if (state.lastEventName !== 'updateStream') {
-        state.lastEventName = null
-        return
-      }
+      // Binary frame — we care about two events:
+      //   updateStream            — live tick (single or batch [symbol, ts, price])
+      //   loadHistoryPeriodFast   — historical OHLC candles bulk (warmup)
+      //   updateHistoryNewFast    — same but recent block
+      const evt = state.lastEventName
       state.lastEventName = null
+      const isStream = evt === 'updateStream'
+      const isHistory = evt === 'loadHistoryPeriodFast' || evt === 'updateHistoryNewFast'
+      if (!isStream && !isHistory) return
 
       const decode = (buf) => {
         try {
           const text = new TextDecoder('utf-8').decode(buf)
-          if (!text.startsWith('[')) return null
+          if (!text.startsWith('[') && !text.startsWith('{')) return null
           return JSON.parse(text)
         } catch { return null }
       }
 
+      const onDecoded = (parsed, sourceEvt) => {
+        if (!parsed) return
+        if (sourceEvt === 'updateStream') {
+          emitParsed(parsed)
+        } else {
+          emitHistory(parsed, sourceEvt)
+        }
+      }
+
       if (data instanceof ArrayBuffer) {
-        const parsed = decode(new Uint8Array(data))
-        if (parsed) emitParsed(parsed)
+        onDecoded(decode(new Uint8Array(data)), evt)
       } else if (data instanceof Blob) {
-        data.arrayBuffer().then((ab) => {
-          const parsed = decode(new Uint8Array(ab))
-          if (parsed) emitParsed(parsed)
-        }).catch(() => {})
+        data.arrayBuffer().then((ab) => onDecoded(decode(new Uint8Array(ab)), evt)).catch(() => {})
       } else if (ArrayBuffer.isView(data)) {
-        const parsed = decode(data)
-        if (parsed) emitParsed(parsed)
+        onDecoded(decode(data), evt)
       }
     } catch (e) {
       // Silent — don't break page
     }
+  }
+
+  // DEBUG: dump first 2 history payloads (per session) so we see the JSON shape
+  let historyDumps = 0
+  function emitHistory(payload, sourceEvt) {
+    if (historyDumps < 2) {
+      historyDumps++
+      try {
+        const sample = JSON.stringify(payload).slice(0, 800)
+        console.log(`[PO-Bridge] history sample #${historyDumps} (${sourceEvt}):`, sample)
+      } catch { /* */ }
+    }
+    window.postMessage({
+      __poBridge: true,
+      type: 'history',
+      source: sourceEvt,
+      payload,
+    }, '*')
   }
 
   function emitParsed(payload) {

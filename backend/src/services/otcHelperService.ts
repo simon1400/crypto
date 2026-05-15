@@ -145,6 +145,43 @@ export interface IncomingTick {
   price: number
 }
 
+// История от PO — формат пока не реверсирован, payload произвольный.
+// При первом вызове логируем JSON-структуру в console чтобы понять формат.
+const HISTORY_DUMP_LIMIT = 3
+let historyDumpsLogged = 0
+
+export interface IngestHistoryResult {
+  accepted: number
+  skipped: number
+  candlesByPair?: Record<string, number>
+}
+
+export function ingestHistory(source: string, payload: any): IngestHistoryResult {
+  // Dump first few payloads to console so we can see the shape and write a parser.
+  if (historyDumpsLogged < HISTORY_DUMP_LIMIT) {
+    historyDumpsLogged++
+    try {
+      const sample = JSON.stringify(payload).slice(0, 1200)
+      console.log(`[OtcHelper] history payload #${historyDumpsLogged} (source=${source}):`, sample)
+    } catch { /* */ }
+  }
+
+  // Best-effort parser: PO историю обычно отдаёт в одном из этих форматов
+  //   1. { asset: "AUDCAD_otc", history: [[ts, price], [ts, price], ...] }   (ticks)
+  //   2. { asset: "X", candles: [[time, open, close, high, low], ...] }      (OHLC)
+  //   3. [{ asset, candles/history }, ...]                                    (batch per asset)
+  //   4. [[asset, ts, price], ...]                                            (flat batch ticks)
+  // Мы пытаемся каждый — но падать в любом случае не должны.
+
+  const accepted = 0
+  const skipped = 0
+  // TODO: implement actual parsing once we see the real format in logs.
+  // For now we just accept the payload silently — extension still streams live ticks,
+  // so the system isn't broken, just the warmup acceleration is no-op until format is known.
+
+  return { accepted, skipped }
+}
+
 export function ingestTicks(ticks: IncomingTick[]): { accepted: number; skipped: number } {
   let accepted = 0
   let skipped = 0

@@ -46,15 +46,37 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     stats.totalReceived++
     buffer.push({ symbol: msg.symbol, ts: msg.ts, price: msg.price })
     if (buffer.length > MAX_BUFFER) buffer.splice(0, buffer.length - MAX_BUFFER)
-    // Если прошло достаточно времени с прошлого flush — шлём сразу. Иначе ждём alarm.
     if (Date.now() - lastFlushAt >= BATCH_INTERVAL_MS) {
       flush()
     }
+  } else if (msg?.type === 'history' && msg.payload) {
+    // Forward warmup candle history to backend immediately (separate endpoint)
+    sendHistory(msg.payload, msg.source).catch(() => {})
   } else if (msg?.type === 'getStats') {
     sendResponse({ ...stats, bufferSize: buffer.length, backendUrl })
     return true
   }
 })
+
+async function sendHistory(payload, source) {
+  try {
+    const res = await fetch(`${backendUrl}/api/binary/otc-history-ingest`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Api-Secret': apiSecret,
+      },
+      body: JSON.stringify({ source, payload }),
+    })
+    if (!res.ok) {
+      stats.lastError = `history HTTP ${res.status}`
+    } else {
+      stats.lastError = null
+    }
+  } catch (e) {
+    stats.lastError = e.message || String(e)
+  }
+}
 
 async function flush() {
   if (buffer.length === 0) return
