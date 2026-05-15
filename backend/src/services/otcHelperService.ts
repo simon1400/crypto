@@ -157,29 +157,82 @@ export interface IngestHistoryResult {
 }
 
 export function ingestHistory(source: string, payload: any): IngestHistoryResult {
-  // Dump first few payloads to console so we can see the shape and write a parser.
+  // Dump first few payloads to console (kept for sanity during early rollout)
   if (historyDumpsLogged < HISTORY_DUMP_LIMIT) {
     historyDumpsLogged++
     try {
-      const sample = JSON.stringify(payload).slice(0, 1200)
+      const sample = JSON.stringify(payload).slice(0, 600)
       console.log(`[OtcHelper] history payload #${historyDumpsLogged} (source=${source}):`, sample)
     } catch { /* */ }
   }
 
-  // Best-effort parser: PO историю обычно отдаёт в одном из этих форматов
-  //   1. { asset: "AUDCAD_otc", history: [[ts, price], [ts, price], ...] }   (ticks)
-  //   2. { asset: "X", candles: [[time, open, close, high, low], ...] }      (OHLC)
-  //   3. [{ asset, candles/history }, ...]                                    (batch per asset)
-  //   4. [[asset, ts, price], ...]                                            (flat batch ticks)
-  // Мы пытаемся каждый — но падать в любом случае не должны.
+  // Verified formats (reversed 2026-05-14):
+  //
+  //   loadHistoryPeriodFast (the gold mine — pre-built 1m OHLC bars):
+  //     { asset: "CADCHF_otc", index: ..., data: [
+  //         { symbol_id, time: 1778829480, open, close, high, low, volume }, ...
+  //       ] }
+  //     time = seconds UTC, aligned to minute boundary.
+  //
+  //   updateHistoryNewFast (recent ticks; less useful — we'd need to bucket them):
+  //     { asset: "CADCHF_otc", period: 60, history: [[ts_seconds, price], ...] }
+  //
+  // We only handle loadHistoryPeriodFast — it gives us ready candles, which is exactly
+  // what we need to seed BB(20) immediately. updateHistoryNewFast is ignored (live tick
+  // stream will fill the recent ~minute anyway).
 
-  const accepted = 0
-  const skipped = 0
-  // TODO: implement actual parsing once we see the real format in logs.
-  // For now we just accept the payload silently — extension still streams live ticks,
-  // so the system isn't broken, just the warmup acceleration is no-op until format is known.
+  if (!payload || typeof payload !== 'object') return { accepted: 0, skipped: 0 }
+  const asset = payload.asset
+  if (typeof asset !== 'string') return { accepted: 0, skipped: 0 }
 
-  return { accepted, skipped }
+  const data = payload.data
+  if (!Array.isArray(data)) {
+    // Not the OHLC variant — silently skip (tick variant arrives via updateStream anyway)
+    return { accepted: 0, skipped: 0 }
+  }
+
+  // Seed candle series for this asset. We replace the existing series if it's smaller
+  // (i.e. extension just opened the asset — fresh warmup overrides any partial data).
+  const existing = series[asset] ?? []
+  if (existing.length >= BB_PERIOD) {
+    // Already warmed up live — don't overwrite
+    return { accepted: 0, skipped: data.length }
+  }
+
+  const seeded: OHLCV[] = []
+  for (const bar of data) {
+    if (!bar || typeof bar !== 'object') continue
+    const time = typeof bar.time === 'number' ? bar.time * 1000 : NaN
+    const open = Number(bar.open)
+    const high = Number(bar.high)
+    const low = Number(bar.low)
+    const close = Number(bar.close)
+    const volume = Number(bar.volume ?? 0)
+    if (!isFinite(time) || !isFinite(open) || !isFinite(close) || !isFinite(high) || !isFinite(low)) continue
+    seeded.push({ time, open, high, low, close, volume })
+  }
+  if (seeded.length === 0) return { accepted: 0, skipped: data.length }
+
+  seeded.sort((a, b) => a.time - b.time)
+  // Keep only the most recent MAX_SERIES (we don't need more)
+  const trimmed = seeded.slice(-MAX_SERIES)
+  series[asset] = trimmed
+
+  // Initialize state and BB on the seeded series
+  const s = ensureState(asset)
+  const last = trimmed[trimmed.length - 1]
+  s.lastPrice = last.close
+  s.lastCandleClose = last.close
+  s.lastCandleTs = last.time
+  const bb = computeBB(trimmed.map((c) => c.close))
+  if (bb) {
+    s.bbUpper = bb.upper
+    s.bbLower = bb.lower
+    s.bbMiddle = bb.middle
+  }
+  console.log(`[OtcHelper] warmup ${asset}: seeded ${trimmed.length} candles, BB ready=${bb != null}`)
+
+  return { accepted: trimmed.length, skipped: data.length - trimmed.length, candlesByPair: { [asset]: trimmed.length } }
 }
 
 export function ingestTicks(ticks: IncomingTick[]): { accepted: number; skipped: number } {
