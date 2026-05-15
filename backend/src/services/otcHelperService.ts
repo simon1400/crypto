@@ -148,16 +148,15 @@ export interface IncomingTick {
 export function ingestTicks(ticks: IncomingTick[]): { accepted: number; skipped: number } {
   let accepted = 0
   let skipped = 0
+  // PO posts timestamps in *exchange* timezone (often UTC+2 / +3 depending on server), not UTC.
+  // Our `Date.now()` is wall-clock UTC. We don't try to reconcile — instead we use Date.now() as
+  // the canonical bar boundary and treat PO's ts as a monotonic ordering hint only. Each tick is
+  // recorded against the server's current minute, not the broker's. This makes the math simple
+  // and immune to broker-side TZ quirks.
+  const now = Date.now()
   for (const t of ticks) {
     if (!t.symbol || !isFinite(t.price) || !isFinite(t.ts)) { skipped++; continue }
-    // Принимаем ВСЕ символы что присылает расширение. PO может отдавать как "AUDCAD_otc"
-    // (live OTC), так и "EURUSD" (демо-режим, без OTC-суффикса) — обе вариации валидны
-    // как источник данных для BB-touch стратегии.
-    const tsMs = t.ts * 1000
-    // Skip stale ticks (>5 min in past) and future ticks (>1 min ahead — clock skew)
-    const ageMs = Date.now() - tsMs
-    if (ageMs > 5 * 60_000 || ageMs < -60_000) { skipped++; continue }
-    handleTick(t.symbol, tsMs, t.price)
+    handleTick(t.symbol, now, t.price)
     accepted++
   }
   return { accepted, skipped }
