@@ -168,57 +168,90 @@ export function ingestHistory(source: string, payload: any): IngestHistoryResult
 
   // Verified formats (reversed 2026-05-14):
   //
-  //   loadHistoryPeriodFast (the gold mine — pre-built 1m OHLC bars):
+  //   loadHistoryPeriodFast (pre-built 1m OHLC bars — preferred):
   //     { asset: "CADCHF_otc", index: ..., data: [
   //         { symbol_id, time: 1778829480, open, close, high, low, volume }, ...
   //       ] }
-  //     time = seconds UTC, aligned to minute boundary.
+  //     PO only emits this when the user actively switches asset, and only if our
+  //     WebSocket patch was already in place. Easy to miss.
   //
-  //   updateHistoryNewFast (recent ticks; less useful — we'd need to bucket them):
+  //   updateHistoryNewFast (raw recent ticks — fallback):
   //     { asset: "CADCHF_otc", period: 60, history: [[ts_seconds, price], ...] }
-  //
-  // We only handle loadHistoryPeriodFast — it gives us ready candles, which is exactly
-  // what we need to seed BB(20) immediately. updateHistoryNewFast is ignored (live tick
-  // stream will fill the recent ~minute anyway).
+  //     Comes constantly while the asset is open. We bucket these ticks into 1m
+  //     OHLC bars ourselves and use them to warm BB(20) when no OHLC payload
+  //     arrived (revised 2026-05-15 — was being ignored before).
 
   if (!payload || typeof payload !== 'object') return { accepted: 0, skipped: 0 }
   const asset = payload.asset
   if (typeof asset !== 'string') return { accepted: 0, skipped: 0 }
 
   const data = payload.data
-  if (!Array.isArray(data)) {
-    // Not the OHLC variant — silently skip (tick variant arrives via updateStream anyway)
+  const tickHistory = payload.history
+  if (!Array.isArray(data) && !Array.isArray(tickHistory)) {
     return { accepted: 0, skipped: 0 }
   }
 
-  // Seed candle series for this asset. We replace the existing series if it's smaller
-  // (i.e. extension just opened the asset — fresh warmup overrides any partial data).
+  // If we already have enough bars from live ticks, don't bother seeding.
   const existing = series[asset] ?? []
   if (existing.length >= BB_PERIOD) {
-    // Already warmed up live — don't overwrite
-    return { accepted: 0, skipped: data.length }
+    return { accepted: 0, skipped: (data?.length ?? tickHistory?.length ?? 0) }
   }
 
-  const seeded: OHLCV[] = []
-  for (const bar of data) {
-    if (!bar || typeof bar !== 'object') continue
-    const time = typeof bar.time === 'number' ? bar.time * 1000 : NaN
-    const open = Number(bar.open)
-    const high = Number(bar.high)
-    const low = Number(bar.low)
-    const close = Number(bar.close)
-    const volume = Number(bar.volume ?? 0)
-    if (!isFinite(time) || !isFinite(open) || !isFinite(close) || !isFinite(high) || !isFinite(low)) continue
-    seeded.push({ time, open, high, low, close, volume })
-  }
-  if (seeded.length === 0) return { accepted: 0, skipped: data.length }
+  let seeded: OHLCV[] = []
+  let rawCount = 0
 
-  seeded.sort((a, b) => a.time - b.time)
-  // Keep only the most recent MAX_SERIES (we don't need more)
-  const trimmed = seeded.slice(-MAX_SERIES)
+  if (Array.isArray(data)) {
+    rawCount = data.length
+    for (const bar of data) {
+      if (!bar || typeof bar !== 'object') continue
+      const time = typeof bar.time === 'number' ? bar.time * 1000 : NaN
+      const open = Number(bar.open)
+      const high = Number(bar.high)
+      const low = Number(bar.low)
+      const close = Number(bar.close)
+      const volume = Number(bar.volume ?? 0)
+      if (!isFinite(time) || !isFinite(open) || !isFinite(close) || !isFinite(high) || !isFinite(low)) continue
+      seeded.push({ time, open, high, low, close, volume })
+    }
+  } else if (Array.isArray(tickHistory)) {
+    // Bucket raw [ts_seconds, price] ticks into 1m OHLC bars.
+    rawCount = tickHistory.length
+    const buckets = new Map<number, { open: number; high: number; low: number; close: number }>()
+    for (const tick of tickHistory) {
+      if (!Array.isArray(tick) || tick.length < 2) continue
+      const ts = Number(tick[0])
+      const price = Number(tick[1])
+      if (!isFinite(ts) || !isFinite(price)) continue
+      const barOpen = Math.floor((ts * 1000) / TF_MS) * TF_MS
+      const b = buckets.get(barOpen)
+      if (!b) {
+        buckets.set(barOpen, { open: price, high: price, low: price, close: price })
+      } else {
+        if (price > b.high) b.high = price
+        if (price < b.low) b.low = price
+        b.close = price
+      }
+    }
+    // Drop the currently-forming minute — the live tick stream owns it. This avoids
+    // a partial bar racing with `forming[asset]` and creating a duplicate slot.
+    const currentBarOpen = Math.floor(Date.now() / TF_MS) * TF_MS
+    for (const [time, b] of buckets) {
+      if (time >= currentBarOpen) continue
+      seeded.push({ time, open: b.open, high: b.high, low: b.low, close: b.close, volume: 0 })
+    }
+  }
+
+  if (seeded.length === 0) return { accepted: 0, skipped: rawCount }
+
+  // Merge with existing bars (live ticks may have already produced some). Dedup
+  // by bar.time — newer payload wins (closer to ground truth).
+  const merged = new Map<number, OHLCV>()
+  for (const b of existing) merged.set(b.time, b)
+  for (const b of seeded) merged.set(b.time, b)
+  const sorted = Array.from(merged.values()).sort((a, b) => a.time - b.time)
+  const trimmed = sorted.slice(-MAX_SERIES)
   series[asset] = trimmed
 
-  // Initialize state and BB on the seeded series
   const s = ensureState(asset)
   const last = trimmed[trimmed.length - 1]
   s.lastPrice = last.close
@@ -230,9 +263,9 @@ export function ingestHistory(source: string, payload: any): IngestHistoryResult
     s.bbLower = bb.lower
     s.bbMiddle = bb.middle
   }
-  console.log(`[OtcHelper] warmup ${asset}: seeded ${trimmed.length} candles, BB ready=${bb != null}`)
+  console.log(`[OtcHelper] warmup ${asset} via ${Array.isArray(data) ? 'OHLC' : 'ticks'}: seeded ${trimmed.length} candles, BB ready=${bb != null}`)
 
-  return { accepted: trimmed.length, skipped: data.length - trimmed.length, candlesByPair: { [asset]: trimmed.length } }
+  return { accepted: trimmed.length, skipped: rawCount - trimmed.length, candlesByPair: { [asset]: trimmed.length } }
 }
 
 export function ingestTicks(ticks: IncomingTick[]): { accepted: number; skipped: number } {
