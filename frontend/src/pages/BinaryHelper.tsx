@@ -415,7 +415,20 @@ export default function BinaryHelper() {
     } catch { /* ignore */ }
   }
 
-  const symbols = snap?.symbols ?? []
+  const allSymbols = snap?.symbols ?? []
+  // OTC: показываем только актив, открытый сейчас в PocketOption — определяем по
+  // самому свежему lastTickAt (≤10с от serverTime). Остальные монеты у юзера в
+  // watchlist'е генерят шумные карточки без BB, потому что тики идут только по
+  // выбранному в PO активу.
+  const symbols = (() => {
+    if (mode !== 'otc') return allSymbols
+    const serverNow = snap?.serverTime ?? Date.now()
+    const otcSyms = allSymbols as Array<ForexSymbolState & { lastTickAt: number | null }>
+    const live = otcSyms.filter((s) => s.lastTickAt != null && serverNow - s.lastTickAt <= 10_000)
+    if (live.length === 0) return []
+    live.sort((a, b) => (b.lastTickAt ?? 0) - (a.lastTickAt ?? 0))
+    return [live[0]]
+  })()
   const forexStats = mode === 'forex' ? (snap as ForexSnapshot | null)?.stats : undefined
   const otcBridgeAlive = mode === 'otc' ? (snap as OtcSnapshot | null)?.bridgeAlive : undefined
   const userStats = snap?.userStats
