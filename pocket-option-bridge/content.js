@@ -139,16 +139,28 @@
     }
   }
 
-  // Outbound frame logger — capture what PO emits when user switches asset, so
-  // we can reverse the loadHistoryPeriodFast request shape and replay it on
-  // demand. Logs first ~40 outbound frames per WS (skipping pings 2/3).
+  // Outbound frame logger + auth rewrite.
+  //
+  // PO recently started sending `isFastHistory:true,isOptimized:true` in auth.
+  // In that mode their server emits `updateHistoryNewFast` (raw ticks for the
+  // last ~15s) instead of `loadHistoryPeriodFast` (a full OHLC payload). Tick
+  // history is too small to warm BB(20). Rewrite auth to disable those flags
+  // so PO falls back to the old protocol that included pre-built candles.
   const sendDumpLimit = 40
   function patchSend(ws, state) {
     const origSend = ws.send.bind(ws)
     ws.send = function (data) {
       try {
+        if (typeof data === 'string' && data.startsWith('42["auth",')) {
+          const rewritten = data
+            .replace(/"isFastHistory"\s*:\s*true/g, '"isFastHistory":false')
+            .replace(/"isOptimized"\s*:\s*true/g, '"isOptimized":false')
+          if (rewritten !== data) {
+            console.log(`[PO-Bridge] ws#${state.id} auth rewritten (disable fast/optimized)`)
+            data = rewritten
+          }
+        }
         if (state.sendDumps < sendDumpLimit && typeof data === 'string') {
-          // Skip Socket.IO pings/pongs (just digits) to reduce noise.
           if (data !== '2' && data !== '3' && data.length > 0) {
             state.sendDumps++
             console.log(`[PO-Bridge] ws#${state.id} → ${data.slice(0, 400)}`)
