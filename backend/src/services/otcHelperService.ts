@@ -89,19 +89,20 @@ const history: OtcSignal[] = []
 // ------------------------------------------------------------
 
 function normalizeSymbol(raw: string): string {
-  // "BNB-USD_otc" → "BNB/USD OTC"
-  // "AUDUSD_otc"  → "AUD/USD OTC"
-  // "AEDCNY_otc"  → "AED/CNY OTC"  (no hyphen — guess 3/3 split)
+  // Examples:
+  //   "BNB-USD_otc" → "BNB/USD OTC"
+  //   "AUDUSD_otc"  → "AUD/USD OTC"
+  //   "EURUSD"      → "EUR/USD" (demo mode, no _otc suffix)
+  const hasOtc = /_otc$/i.test(raw)
   let s = raw.replace(/_otc$/i, '')
   if (s.includes('-')) {
     s = s.replace('-', '/')
   } else if (s.length === 6) {
     s = s.slice(0, 3) + '/' + s.slice(3)
   } else if (s.length === 7) {
-    // e.g. EURGBP1?  rare, just split at 3
     s = s.slice(0, 3) + '/' + s.slice(3)
   }
-  return s + ' OTC'
+  return hasOtc ? s + ' OTC' : s
 }
 
 function ensureState(symbol: string): OtcSymbolState {
@@ -149,7 +150,9 @@ export function ingestTicks(ticks: IncomingTick[]): { accepted: number; skipped:
   let skipped = 0
   for (const t of ticks) {
     if (!t.symbol || !isFinite(t.price) || !isFinite(t.ts)) { skipped++; continue }
-    if (!/_otc$/i.test(t.symbol)) { skipped++; continue }  // only OTC for now
+    // Принимаем ВСЕ символы что присылает расширение. PO может отдавать как "AUDCAD_otc"
+    // (live OTC), так и "EURUSD" (демо-режим, без OTC-суффикса) — обе вариации валидны
+    // как источник данных для BB-touch стратегии.
     const tsMs = t.ts * 1000
     // Skip stale ticks (>5 min in past) and future ticks (>1 min ahead — clock skew)
     const ageMs = Date.now() - tsMs

@@ -81,16 +81,16 @@
       }
 
       if (data instanceof ArrayBuffer) {
-        const tick = decode(new Uint8Array(data))
-        if (tick) emitTick(tick)
+        const parsed = decode(new Uint8Array(data))
+        if (parsed) emitParsed(parsed)
       } else if (data instanceof Blob) {
         data.arrayBuffer().then((ab) => {
-          const tick = decode(new Uint8Array(ab))
-          if (tick) emitTick(tick)
+          const parsed = decode(new Uint8Array(ab))
+          if (parsed) emitParsed(parsed)
         }).catch(() => {})
       } else if (ArrayBuffer.isView(data)) {
-        const tick = decode(data)
-        if (tick) emitTick(tick)
+        const parsed = decode(data)
+        if (parsed) emitParsed(parsed)
       }
     } catch (e) {
       // Silent — don't break page
@@ -98,6 +98,19 @@
   }
 
   let tickLogCount = 0
+
+  // PO sends either [symbol, ts, price] OR [[symbol, ts, price], [symbol2, ts2, price2], ...]
+  // (batched ticks). We unwrap the outer array if present and emit each inner tick separately.
+  function emitParsed(payload) {
+    if (!Array.isArray(payload)) return
+    // Detect single vs batch: if first element is itself array → batch
+    if (Array.isArray(payload[0])) {
+      for (const t of payload) emitTick(t)
+    } else {
+      emitTick(payload)
+    }
+  }
+
   function emitTick(tick) {
     if (!Array.isArray(tick) || tick.length < 3) return
     const [symbol, ts, price] = tick
