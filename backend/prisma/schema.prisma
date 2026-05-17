@@ -118,8 +118,12 @@ model BreakoutPaperConfig {
   targetMarginPct        Float     @default(10)
   marginGuardEnabled     Boolean   @default(true)
   marginGuardAutoClose   Boolean   @default(false)
-  // Circuit breakers
-  dailyLossLimitPct      Float     @default(5)
+  // Circuit breakers (daily). Trip if EITHER threshold is exceeded.
+  // dailyLossLimitPct — sum of netPnlUsd for trades closed today UTC, as % of
+  //   the day's starting deposit (currentDepositUsd at 00:00 UTC). Trip when <= -10%.
+  // dailyLossLimitR — sum of realizedR for trades closed today UTC. Trip when <= -8R.
+  dailyLossLimitPct      Float     @default(10)
+  dailyLossLimitR        Float     @default(8)
   weeklyLossLimitPct     Float     @default(15)
   maxConcurrentPositions Int       @default(10)
   maxPositionsPerSymbol  Int       @default(1)
@@ -203,8 +207,9 @@ model BreakoutPaperConfigB {
   targetMarginPct        Float     @default(5)
   marginGuardEnabled     Boolean   @default(true)
   marginGuardAutoClose   Boolean   @default(false)
-  // Circuit breakers
-  dailyLossLimitPct      Float     @default(5)
+  // Circuit breakers (daily) — see BreakoutPaperConfig for semantics.
+  dailyLossLimitPct      Float     @default(10)
+  dailyLossLimitR        Float     @default(8)
   weeklyLossLimitPct     Float     @default(15)
   maxConcurrentPositions Int       @default(20)
   maxPositionsPerSymbol  Int       @default(1)
@@ -285,7 +290,8 @@ model BreakoutPaperConfigC {
   targetMarginPct        Float     @default(5)
   marginGuardEnabled     Boolean   @default(true)
   marginGuardAutoClose   Boolean   @default(false)
-  dailyLossLimitPct      Float     @default(5)
+  dailyLossLimitPct      Float     @default(10)
+  dailyLossLimitR        Float     @default(8)
   weeklyLossLimitPct     Float     @default(15)
   maxConcurrentPositions Int       @default(20)
   maxPositionsPerSymbol  Int       @default(1)

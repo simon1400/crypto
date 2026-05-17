@@ -46,7 +46,7 @@ import {
 } from './breakoutVariant'
 import {
   getRealisticRates, syncSignalStatus, isVariantBusyOnSymbol, runTrackForSymbol,
-  applyDepositDelta,
+  applyDepositDelta, isCircuitBreakerTripped,
 } from './dailyBreakoutPaperTrader'
 import { detectRange, endOfDayUTC, BreakoutEngineConfig } from '../scalper/dailyBreakoutEngine'
 import { loadHistorical } from '../scalper/historicalLoader'
@@ -69,6 +69,11 @@ interface PaperConfigC {
   targetMarginPct: number
   marginGuardEnabled: boolean
   marginGuardAutoClose: boolean
+  // Daily circuit breaker — block new placements when today's UTC closed trades
+  // breach either threshold. Open positions still trail. See dailyBreakoutPaperTrader.
+  dailyLossLimitPct: number
+  dailyLossLimitR: number
+  weeklyLossLimitPct: number
   maxConcurrentPositions: number
   peakDepositUsd: number
   maxDrawdownPct: number
@@ -99,6 +104,15 @@ async function getOrCreateConfigC(): Promise<PaperConfigC | null> {
 async function placeLimitsForRanges(cfg: PaperConfigC): Promise<{ placed: number }> {
   const tag = logTag(VARIANT)
   const tm = tradeModel(VARIANT) as any
+
+  // Daily circuit breaker — block new C placements (limit pairs) when today's UTC
+  // closed trades breach either threshold. Existing PENDING limits still get filled
+  // by WS tracker if price reaches them; we only stop creating NEW pairs.
+  const cb = await isCircuitBreakerTripped(cfg as any, VARIANT)
+  if (cb.tripped) {
+    console.warn(`${tag} ${cb.reason} — блокирую новые лимиты до следующего UTC дня`)
+    return { placed: 0 }
+  }
 
   const dbCfg = await prisma.breakoutConfig.findUnique({ where: { id: 1 } })
   if (!dbCfg) return { placed: 0 }
@@ -466,12 +480,78 @@ async function fillLimitInner(
 }
 
 /**
- * Slow tick: проверяем все PENDING_LIMIT — за прошедшие 5m свечи мог быть
- * туч цены через limit. WS instant fill уже обработал большинство, но
- * safety-net через REST candles на случай WS дисконнекта.
+ * REALISTIC FILL MODEL для variant C (внедрено 2026-05-17, заменяет touch-fill).
+ *
+ * Старая модель (touch fill) была optimistic: fill регистрировался как только
+ * trade-price касался limitPrice. На реальной бирже:
+ *   - в queue могут стоять чужие limits (HFT, market-makers) на том же уровне;
+ *   - "wick-and-back" движения (тень свечи коснулась уровня и тут же откатилась)
+ *     не дают fill — в orderbook просто нет ликвидности встретить наш limit;
+ *   - "post-only reject" — если цена прошла уровень до публикации лимита.
+ *
+ * Realistic-модель требует обоих условий для fill:
+ *
+ *   1. CROSS + MIN PENETRATION: цена должна пройти СКВОЗЬ limitPrice минимум на
+ *      MIN_PENETRATION_PCT% (default 0.05% = 5 bps). Для BUY @ rangeHigh это
+ *      означает candle.low <= limitPrice * (1 - 0.0005). Чисто проход через
+ *      уровень = реальный пробой с моментум, а не тень против тренда.
+ *
+ *   2. VOLUME GATE: объём свечи, на которой произошло пересечение, должен быть
+ *      >= avg(prev 24 candles) * MIN_VOL_MULT (default 1.5×). Низкообъёмные
+ *      проколы обычно не дают fill в реальном orderbook (тонкая ликвидность,
+ *      partial fills, реджекты).
+ *
+ * Если ОБА условия пройдены на закрытой 5m-свече — limit филлится по limitPrice
+ * (это и есть rangeEdge, как в backtest). Maker fee, slip = 0 (так как мы
+ * стояли в стакане до пробоя — это правда для cross-fill сценария).
+ *
+ * Если хотя бы одно условие не выполнено — limit ОСТАЁТСЯ PENDING, продолжает
+ * ждать. Если за день условия так и не выполнятся — EOD cancel в 23:55 UTC.
+ */
+const MIN_PENETRATION_PCT = 0.05    // 5 bps = 0.05%
+const MIN_VOL_MULT = 1.5              // current candle vol >= 1.5× avg
+
+/**
+ * Проверяем закрытую свечу: даёт ли она realistic fill для данного limit?
+ *
+ * Возвращает true если ОБА условия выполнены:
+ *   - CROSS: для BUY low <= limit * (1 - MIN_PENETRATION); для SELL high >= limit * (1 + MIN_PENETRATION)
+ *   - VOLUME: candle.volume >= avgVolume * MIN_VOL_MULT
+ */
+function checkRealisticFill(
+  side: 'BUY' | 'SELL',
+  limitPrice: number,
+  candle: OHLCV,
+  avgVolume: number,
+): { fillable: boolean; reason?: string } {
+  const penFrac = MIN_PENETRATION_PCT / 100
+  const crossThreshold = side === 'BUY'
+    ? limitPrice * (1 - penFrac)
+    : limitPrice * (1 + penFrac)
+  const crossed = side === 'BUY'
+    ? candle.low <= crossThreshold
+    : candle.high >= crossThreshold
+  if (!crossed) {
+    return { fillable: false, reason: 'no min penetration (wick-only or no cross)' }
+  }
+  if (avgVolume > 0 && candle.volume < avgVolume * MIN_VOL_MULT) {
+    return { fillable: false, reason: `volume ${candle.volume.toFixed(0)} < ${MIN_VOL_MULT}× avg ${avgVolume.toFixed(0)}` }
+  }
+  return { fillable: true }
+}
+
+/**
+ * Closed-candle replay: для каждого PENDING_LIMIT проверяем все закрытые свечи
+ * с момента placement до сейчас на realistic fill conditions. Первая прошедшая
+ * cross+volume свеча → fill.
+ *
+ * Это единственная точка fill для variant C (заменяет старую touch-fill в WS).
+ * Закрытая свеча — потому что нужны volume и close price, оба известны только
+ * после close (no-lookahead).
  */
 async function checkPendingLimitsAgainstCandles(symbol: string, candles: OHLCV[]): Promise<void> {
   if (candles.length === 0) return
+  const tag = logTag(VARIANT)
   const tm = tradeModel(VARIANT) as any
   const pending = await tm.findMany({
     where: { symbol, limitOrderState: 'PENDING_LIMIT' },
@@ -480,40 +560,60 @@ async function checkPendingLimitsAgainstCandles(symbol: string, candles: OHLCV[]
 
   for (const p of pending) {
     const limitPrice = p.limitOrderPrice as number
-    const isLong = p.side === 'BUY'
-    // Берём только свечи после placement
+    const side = p.side as 'BUY' | 'SELL'
     const sinceMs = new Date(p.limitPlacedAt).getTime()
-    const newCandles = candles.filter(c => c.time > sinceMs)
-    let touchTime: number | null = null
-    for (const c of newCandles) {
-      const touched = isLong ? c.high >= limitPrice : c.low <= limitPrice
-      if (touched) { touchTime = c.time; break }
+    // Свечи после placement, отсортированы по времени (loader даёт по возрастанию).
+    const afterPlacement = candles.filter(c => c.time > sinceMs).sort((a, b) => a.time - b.time)
+    if (afterPlacement.length === 0) continue
+
+    let filledAt: number | null = null
+    let lastFailReason = ''
+    // Идём в хронологическом порядке — первая cross+volume свеча даёт fill.
+    for (let i = 0; i < afterPlacement.length; i++) {
+      const c = afterPlacement[i]
+      // avg volume по 24 предыдущим свечам в общем массиве (включая до placement).
+      const cIdxInAll = candles.findIndex(x => x.time === c.time)
+      const avgStart = Math.max(0, cIdxInAll - 24)
+      const avgWindow = candles.slice(avgStart, cIdxInAll)
+      const avgVolume = avgWindow.length > 0
+        ? avgWindow.reduce((s, x) => s + x.volume, 0) / avgWindow.length
+        : 0
+      const check = checkRealisticFill(side, limitPrice, c, avgVolume)
+      if (check.fillable) {
+        filledAt = c.time
+        break
+      }
+      lastFailReason = check.reason ?? ''
     }
-    if (touchTime != null) {
-      await fillLimit(p.id, new Date(touchTime))
+
+    if (filledAt != null) {
+      await fillLimit(p.id, new Date(filledAt))
+    } else if (lastFailReason) {
+      // Лог только при первом достаточно частом cross-touch (чтобы не спамить).
+      // Самый частый сценарий: цена коснулась но wick-and-back → no fill.
+      const someTouched = afterPlacement.some(c =>
+        side === 'BUY' ? c.low <= limitPrice : c.high >= limitPrice,
+      )
+      if (someTouched) {
+        console.log(`${tag} ${symbol} limit #${p.id} ${side} @ ${limitPrice} — touched but no realistic fill (${lastFailReason})`)
+      }
     }
   }
 }
 
 /**
- * WS instant fill — вызывается из breakoutWsTracker.ts на каждый WS trade event.
- * Намного быстрее slow tick (миллисекунды vs до 5 минут).
+ * WS trade event: больше не филлим мгновенно (это была optimistic touch-fill).
+ * Realistic fill требует закрытой свечи с cross+volume gate, что недоступно
+ * в момент trade event. Поэтому WS callback теперь NO-OP для C —
+ * fill происходит на slow tick через checkPendingLimitsAgainstCandles на
+ * закрытых 5m свечах.
+ *
+ * Функция оставлена как hook (вызывается из breakoutWsTracker) и просто
+ * возвращает управление — это сохраняет совместимость без удаления вызова.
  */
-export async function processWsTradeForLimits(symbol: string, price: number, ts: number): Promise<void> {
-  const tm = tradeModel(VARIANT) as any
-  const pending = await tm.findMany({
-    where: { symbol, limitOrderState: 'PENDING_LIMIT' },
-  })
-  if (pending.length === 0) return
-
-  for (const p of pending) {
-    const limitPrice = p.limitOrderPrice as number
-    const isLong = p.side === 'BUY'
-    const touched = isLong ? price >= limitPrice : price <= limitPrice
-    if (touched) {
-      await fillLimit(p.id, new Date(ts))
-    }
-  }
+export async function processWsTradeForLimits(_symbol: string, _price: number, _ts: number): Promise<void> {
+  // Intentionally empty: realistic fill model has moved to closed-candle replay.
+  // See checkPendingLimitsAgainstCandles + safetyNetCheckLimitsC.
 }
 
 /**
@@ -555,7 +655,9 @@ export async function cancelStaleLimitsEod(): Promise<{ cancelled: number }> {
  * Один цикл variant C:
  *   1. placeLimitsForRanges — pre-emptive: для каждой монеты с готовым 3h-range
  *      и без активной сделки сегодня — создаёт пару PENDING_LIMIT
- *   2. WS instant fill отлавливает срабатывание (через processWsTradeForLimits)
+ *   2. checkPendingLimits — реплей закрытых 5m-свечей с момента placement,
+ *      fill ТОЛЬКО если cross+min-penetration+volume gate (realistic model).
+ *      Заменяет старую WS touch-fill (она была optimistic).
  *   3. trackOnePaper для FILLED сделок — через общий paperTrader cycle (variant C)
  *   4. EOD cancel stale limits — через sendBreakoutEodSummary в 23:55 UTC
  */
@@ -563,6 +665,9 @@ export async function runBreakoutLimitCycleC(): Promise<{ placed: number }> {
   const cfg = await getOrCreateConfigC()
   if (!cfg || !cfg.enabled) return { placed: 0 }
   const r = await placeLimitsForRanges(cfg)
+  // Realistic fill check на каждом тике — реплеим закрытые 5m свечи через
+  // loadHistorical для всех символов с активными PENDING_LIMIT.
+  await safetyNetCheckLimitsC(async (symbol) => loadHistorical(symbol, '5m', 1, 'bybit', 'linear'))
   return r
 }
 

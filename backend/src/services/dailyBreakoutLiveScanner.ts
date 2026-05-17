@@ -38,32 +38,39 @@ import { getBtcAdx1h, BTC_ADX_THRESHOLD } from './btcRegime'
 // Already-open trades on removed symbols continue to be tracked by the paper
 // trader until their TP/SL/expiry — this list only governs which symbols the
 // scanner generates NEW signals for.
+// 2026-05-17 refresh: removed MUSDT, IPUSDT, SHIB1000USDT (live R/tr -0.4..-0.6
+// across all three variants A/B/C — confirmed dragging the portfolio). Added
+// ADAUSDT, UBUSDT, VANAUSDT from a fresh walk-forward backtest with stability
+// filter (TEST N >= 21, TRAIN R/tr > 0, TEST R/tr >= +0.20).
+// NOTE: backtest uses idealised rangeEdge entry; live market-entry (A/B) typically
+// underperforms backtest by 30-50% on R/tr. Replacements were chosen for both
+// strong TEST and stable TRAIN (not overfit single-period spikes).
 export const DEFAULT_BREAKOUT_SETUPS: string[] = [
-  // Survivors from previous prod set (passed TEST R/tr >= +0.20 on fresh data)
-  'ETHUSDT',         // TEST +0.48 N=26
+  // Survivors from previous prod set (re-verified 2026-05-17 walk-forward)
+  'ETHUSDT',         // TEST +0.63 N=22
   'AAVEUSDT',        // TEST +0.55 N=24
-  'ENAUSDT',         // TEST +1.02 N=10
-  'SEIUSDT',         // TEST +0.44 N=25
-  'MUSDT',           // TEST +1.78 N=36
-  'LDOUSDT',         // TEST +1.24 N=15
-  'DYDXUSDT',        // TEST +0.73 N=71
-  'ZECUSDT',         // TEST +0.49 N=50
-  'STXUSDT',         // TEST +0.39 N=24
-  'IPUSDT',          // TEST +0.36 N=15
-  'ORDIUSDT',        // TEST +0.57 N=24
-  'ARUSDT',          // TEST +0.24 N=12
-  'DOGEUSDT',        // TEST +0.26 N=17
-  'TRUMPUSDT',       // TEST +0.29 N=39
-  'KASUSDT',         // TEST +0.38 N=39
-  'SHIB1000USDT',    // TEST +0.29 N=37
+  'ENAUSDT',         // TEST +1.73 N=12
+  'SEIUSDT',         // TEST +0.95 N=18
+  'LDOUSDT',         // TEST +1.47 N=13
+  'DYDXUSDT',        // TEST +0.56 N=65
+  'ZECUSDT',         // TEST +0.52 N=45
+  'STXUSDT',         // TEST +0.68 N=19
+  'ORDIUSDT',        // TEST +0.75 N=17
+  'ARUSDT',          // TEST +0.35 N=15
+  'DOGEUSDT',        // TEST +0.48 N=13
+  'TRUMPUSDT',       // TEST +0.22 N=35
+  'KASUSDT',         // TEST +0.20 N=56 (borderline)
   'FARTCOINUSDT',    // TEST +0.25 N=31
   'AEROUSDT',        // TEST +0.33 N=48
-  'POLUSDT',         // TEST +0.21 N=85
+  'POLUSDT',         // TEST +0.23 N=84
   'VVVUSDT',         // TEST +0.23 N=71
-  // New ACCEPT 2026-05-09
-  'USELESSUSDT',     // TEST +0.23 N=19
-  'SIRENUSDT',       // TEST +0.23 N=45
-  '1000BONKUSDT',    // TEST +0.21 N=25
+  'USELESSUSDT',     // TEST +0.31 N=12
+  'SIRENUSDT',       // TEST +0.22 N=47
+  '1000BONKUSDT',    // TEST +0.46 N=18
+  // Replacements 2026-05-17 — stability filter (TRAIN > 0, TEST N >= 21, TEST R/tr >= +0.25)
+  'ADAUSDT',         // TEST +0.25 N=21 (TRAIN +0.21 — most stable TRAIN≈TEST)
+  'UBUSDT',          // TEST +0.34 N=67 (largest TEST sample of new ACCEPTs)
+  'VANAUSDT',        // TEST +0.31 N=49
 ]
 
 /** Загружает последние 36+24+1 = ~60 5m свечей чтобы хватило range + volume window + last bar */
