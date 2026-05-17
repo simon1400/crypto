@@ -1338,10 +1338,15 @@ async function notifySingleVariantOpens(opened: OpenedTradeInfo[], variant: Brea
 }
 
 /**
- * Build EOD summaries for both variants for a given UTC date and send two
- * Telegram messages: one for trades EOD-closed (status=EXPIRED, also includes
- * any CLOSED/SL_HIT that happened during the same day), and one for "surviving"
- * trades that hit TP1+ and stay open past midnight.
+ * Build EOD summary for a variant for a given UTC date — one row per trade,
+ * aggregating all close-events of that trade that happened during this UTC day.
+ *
+ * Note: the "surviving past midnight" message was removed 2026-05-17 — since
+ * EOD-FLAT policy (revert of EOD-NO-TP1) closes ANY still-open trade at 23:55
+ * UTC by market, there are no carry-over trades. The second Telegram message
+ * was always empty AND occasionally double-counted (a trade in status=TP1_HIT
+ * at the moment EOD summary ran would appear both in "closed today" rows and
+ * in "surviving" rows). Now we send a single CLOSED summary only.
  *
  * Idempotency: marker `eodSentForDate` is stored in BreakoutConfig.lastScanResult
  * — sendBreakoutEodSummary is a no-op if it has already run for that date.
@@ -1349,7 +1354,7 @@ async function notifySingleVariantOpens(opened: OpenedTradeInfo[], variant: Brea
 async function buildVariantEodSummary(
   variant: BreakoutVariant,
   utcDate: string,
-): Promise<{ closed: import('./notifier').EodVariantSummary; surviving: import('./notifier').EodVariantSummary }> {
+): Promise<{ closed: import('./notifier').EodVariantSummary }> {
   const tm = tradeModel(variant) as any
   const cm = configModel(variant) as any
 
@@ -1403,26 +1408,8 @@ async function buildVariantEodSummary(
   closedRows.sort((a, b) => a.symbol.localeCompare(b.symbol))
   const closedTotal = closedRows.reduce((s, r) => s + r.pnlUsd, 0)
 
-  // SURVIVING = trades that hit TP1+ today and continue past midnight.
-  // pnlUsd = realised net so far from partial closes (the remainder is still open).
-  const survivingToday = await tm.findMany({
-    where: {
-      status: { in: ['TP1_HIT', 'TP2_HIT'] },
-      openedAt: { gte: new Date(dayStart), lte: new Date(dayEnd) },
-    },
-    orderBy: { openedAt: 'asc' },
-  })
-  const survivingRows: import('./notifier').EodTradeRow[] = survivingToday.map((t: any) => ({
-    symbol: t.symbol,
-    side: t.side as 'BUY' | 'SELL',
-    pnlUsd: (t.realizedPnlUsd ?? 0) - (t.feesPaidUsd ?? 0),
-    pnlR: t.realizedR ?? 0,
-  }))
-  const survivingTotal = survivingRows.reduce((s, r) => s + r.pnlUsd, 0)
-
   return {
     closed: { variant, trades: closedRows, totalPnlUsd: closedTotal, depositUsd: deposit },
-    surviving: { variant, trades: survivingRows, totalPnlUsd: survivingTotal, depositUsd: deposit },
   }
 }
 
@@ -1457,14 +1444,9 @@ export async function sendBreakoutEodSummary(utcDate: string): Promise<void> {
     console.error(`[BreakoutEOD] CLOSED notify failed: ${e.message}`)
   }
 
-  try {
-    await sendNotification('BREAKOUT_EOD_SURVIVING', {
-      utcDate,
-      summaries: [a.surviving, b.surviving, c.surviving],
-    })
-  } catch (e: any) {
-    console.error(`[BreakoutEOD] SURVIVING notify failed: ${e.message}`)
-  }
+  // SURVIVING summary removed 2026-05-17 — EOD-FLAT policy means no carry-over
+  // trades exist past 23:55 UTC, and the legacy message was double-counting
+  // trades that were still in status=TP1_HIT at the moment summary ran.
 
   // Mark this date so we don't re-send on restart / cron restart within minutes.
   try {
@@ -1477,7 +1459,7 @@ export async function sendBreakoutEodSummary(utcDate: string): Promise<void> {
     console.warn(`[BreakoutEOD] failed to persist marker: ${e.message}`)
   }
 
-  console.log(`[BreakoutEOD] summary sent for ${utcDate}: A closed=${a.closed.trades.length} surviving=${a.surviving.trades.length}; B closed=${b.closed.trades.length} surviving=${b.surviving.trades.length}`)
+  console.log(`[BreakoutEOD] summary sent for ${utcDate}: A closed=${a.closed.trades.length}, B closed=${b.closed.trades.length}, C closed=${c.closed.trades.length}`)
 }
 
 // Single timer per variant. Тики опрашивают БД на новые BreakoutSignal-ы и проигрывают

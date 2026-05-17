@@ -1,8 +1,7 @@
 /**
  * One-off preview script: builds the EOD daily summary for a target UTC date
- * using REAL trade data from the DB and fires the BREAKOUT_EOD_CLOSED +
- * BREAKOUT_EOD_SURVIVING notifications via the real notifier — same code path
- * the production cron will use.
+ * using REAL trade data from the DB and fires the BREAKOUT_EOD_CLOSED
+ * notification via the real notifier — same code path the production cron uses.
  *
  * Read-only: does NOT touch trades, signals, configs, or the eod marker.
  *
@@ -16,7 +15,7 @@ import { sendNotification, EodVariantSummary, EodTradeRow } from '../services/no
 async function buildVariantSummary(
   variant: 'A' | 'B',
   utcDate: string,
-): Promise<{ closed: EodVariantSummary; surviving: EodVariantSummary }> {
+): Promise<{ closed: EodVariantSummary }> {
   const tm = variant === 'A' ? prisma.breakoutPaperTrade : prisma.breakoutPaperTradeB
   const cm = variant === 'A' ? prisma.breakoutPaperConfig : prisma.breakoutPaperConfigB
 
@@ -67,24 +66,8 @@ async function buildVariantSummary(
   closedRows.sort((a, b) => a.symbol.localeCompare(b.symbol))
   const closedTotal = closedRows.reduce((s, r) => s + r.pnlUsd, 0)
 
-  const survivingToday = await (tm as any).findMany({
-    where: {
-      status: { in: ['TP1_HIT', 'TP2_HIT'] },
-      openedAt: { gte: dayStart, lte: dayEnd },
-    },
-    orderBy: { openedAt: 'asc' },
-  })
-  const survivingRows: EodTradeRow[] = survivingToday.map((t: any) => ({
-    symbol: t.symbol,
-    side: t.side,
-    pnlUsd: (t.realizedPnlUsd ?? 0) - (t.feesPaidUsd ?? 0),
-    pnlR: t.realizedR ?? 0,
-  }))
-  const survivingTotal = survivingRows.reduce((s, r) => s + r.pnlUsd, 0)
-
   return {
     closed: { variant, trades: closedRows, totalPnlUsd: closedTotal, depositUsd: deposit },
-    surviving: { variant, trades: survivingRows, totalPnlUsd: survivingTotal, depositUsd: deposit },
   }
 }
 
@@ -98,19 +81,14 @@ async function main() {
   const a = await buildVariantSummary('A', utcDate)
   const b = await buildVariantSummary('B', utcDate)
 
-  console.log(`[Preview] A closed=${a.closed.trades.length} surviving=${a.surviving.trades.length}`)
-  console.log(`[Preview] B closed=${b.closed.trades.length} surviving=${b.surviving.trades.length}`)
+  console.log(`[Preview] A closed=${a.closed.trades.length}, B closed=${b.closed.trades.length}`)
 
   await sendNotification('BREAKOUT_EOD_CLOSED', {
     utcDate,
     summaries: [a.closed, b.closed],
   })
-  await sendNotification('BREAKOUT_EOD_SURVIVING', {
-    utcDate,
-    summaries: [a.surviving, b.surviving],
-  })
 
-  console.log('[Preview] Sent 2 messages via real notifier. DB untouched (no marker written).')
+  console.log('[Preview] Sent EOD CLOSED message via real notifier. DB untouched (no marker written).')
 
   await prisma.$disconnect()
 }
