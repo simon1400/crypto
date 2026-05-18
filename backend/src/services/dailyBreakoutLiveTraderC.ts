@@ -1042,21 +1042,46 @@ async function placeLimitsForRanges(
       const slDistPct = (range.rangeSize / Math.min(range.rangeHigh, range.rangeLow)) * 100
       if (slDistPct < 0.4) continue
 
-      // Live price from Binance markPrice (exchange-aligned). Used only to
-      // decide which side of the pair can be placed without immediate cross
-      // (a BUY limit above mark would post-only reject; SELL below mark same).
-      let livePrice: number | null = null
-      try {
-        livePrice = await client.getMarkPrice(symbol)
-      } catch { /* ok — place both sides if live price unknown */ }
-
-      const canPlaceBuy = livePrice == null || livePrice <= range.rangeHigh
-      const canPlaceSell = livePrice == null || livePrice >= range.rangeLow
-      if (!canPlaceBuy && !canPlaceSell) continue
-
       const f = filters.get(symbol)
       if (!f) {
         console.warn(`${LOG} ${symbol} — not on Binance Futures, skipping`)
+        continue
+      }
+
+      // Live price from Binance markPrice (exchange-aligned). We need it to
+      // decide whether each side of the pair would post non-marketable.
+      //
+      // Breakout entries are placed AT rangeEdge with cross direction:
+      //   BUY @ rangeHigh: waits for an upward break. Must post BELOW current
+      //     price (price < rangeHigh) or it's marketable and Binance fills it
+      //     instantly at the current ask — exactly what burned us 18.05 evening
+      //     (entries got filled far away from rangeEdge → SL hit on the same
+      //     tick).
+      //   SELL @ rangeLow: waits for a downward break. Must post ABOVE current
+      //     price (price > rangeLow) for the same reason.
+      // If livePrice is unknown we refuse to place — better miss a day than
+      // open a position we can't price-check.
+      let livePrice: number | null = null
+      try {
+        livePrice = await client.getMarkPrice(symbol)
+      } catch {
+        console.warn(`${LOG} ${symbol} — markPrice fetch failed, skipping placement (need it for marketable check)`)
+        continue
+      }
+      if (livePrice == null || !isFinite(livePrice) || livePrice <= 0) continue
+
+      // Small buffer: if price is within 1 tick (or 0.05% — whichever larger)
+      // of the level, skip too. Even if technically non-marketable, the next
+      // micro-move would cross it before our LIMIT registers in the book and
+      // we'd end up with a marketable taker fill. Mirrors the spirit of
+      // paper C's "wait until price actually crosses the level" model.
+      const safetyAbs = Math.max(f.tickSize, livePrice * 0.0005)
+      const canPlaceBuy = livePrice < range.rangeHigh - safetyAbs
+      const canPlaceSell = livePrice > range.rangeLow + safetyAbs
+
+      if (!canPlaceBuy && !canPlaceSell) {
+        // Either price already broke out (no point chasing) or sits squarely
+        // inside the range tight to one edge — paper C wouldn't open either.
         continue
       }
 
@@ -1272,7 +1297,11 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
       symbol: a.symbol,
       side: a.side,
       type: 'LIMIT',
-      timeInForce: 'GTC',
+      // GTX = post-only. Binance refuses to publish the order if it would
+      // immediately match (returns -5022). Backstop for the marketable-check
+      // in placeLimitsForRanges — if that check ever misses an edge case,
+      // GTX guarantees we never accidentally pay taker on entry.
+      timeInForce: 'GTX',
       quantity: qty,
       price: Number(priceRounded.toFixed(a.f.pricePrecision)),
       newClientOrderId: cid,
