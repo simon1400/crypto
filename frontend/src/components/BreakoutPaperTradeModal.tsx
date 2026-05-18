@@ -5,7 +5,7 @@ import {
   type BreakoutVariant,
   editBreakoutPaperTrade as editPaperTrade, deleteBreakoutPaperTrade as deletePaperTrade,
   closeBreakoutPaperTradeMarket as closePaperTradeMarket, closeBreakoutPaperTradeManual as closePaperTradeManual,
-  simulateBreakoutPaperFill,
+  simulateBreakoutPaperFill, isLiveVariant,
 } from '../api/breakoutPaper'
 import { formatPrice } from '../lib/formatters'
 
@@ -52,6 +52,10 @@ const isOpen = (status: string) => ['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(statu
 const STATUS_OPTIONS = ['OPEN', 'TP1_HIT', 'TP2_HIT', 'TP3_HIT', 'CLOSED', 'SL_HIT', 'EXPIRED']
 
 export default function PaperTradeModal({ trade: initialTrade, live = null, onClose, onUpdate, onDelete, variant = 'A' }: Props) {
+  // LIVE mode: disables editing of fields, deleting the row, manual-price closes and
+  // simulate-fill buttons — all of those would desync the DB from the actual exchange
+  // state. "Закрыть по рынку" stays — it goes through the proper reduceOnly MARKET path.
+  const isLive = isLiveVariant(variant)
   const [trade, setTrade] = useState<PaperTrade>(initialTrade)
   const step = priceStep(trade.entryPrice)
   const sideText = trade.side === 'BUY' ? 'LONG' : 'SHORT'
@@ -252,26 +256,32 @@ export default function PaperTradeModal({ trade: initialTrade, live = null, onCl
           <div className="flex gap-2 mb-4 flex-wrap">
             {!editing ? (
               <>
-                <button onClick={enterEdit} disabled={busy}
-                  className="px-3 py-1.5 bg-card border border-input rounded text-sm font-medium hover:bg-input">
-                  ✏ Редактировать
-                </button>
+                {!isLive && (
+                  <button onClick={enterEdit} disabled={busy}
+                    className="px-3 py-1.5 bg-card border border-input rounded text-sm font-medium hover:bg-input">
+                    ✏ Редактировать
+                  </button>
+                )}
                 {canEdit && (
                   <>
                     <button onClick={closeMarket} disabled={busy}
                       className="px-3 py-1.5 bg-short/15 border border-short/40 text-short rounded text-sm font-medium hover:bg-short/25">
                       Закрыть по рынку
                     </button>
-                    <button onClick={() => setShowCloseManual(!showCloseManual)} disabled={busy}
-                      className="px-3 py-1.5 bg-card border border-input rounded text-sm font-medium hover:bg-input">
-                      Закрыть по цене
-                    </button>
+                    {!isLive && (
+                      <button onClick={() => setShowCloseManual(!showCloseManual)} disabled={busy}
+                        className="px-3 py-1.5 bg-card border border-input rounded text-sm font-medium hover:bg-input">
+                        Закрыть по цене
+                      </button>
+                    )}
                   </>
                 )}
-                <button onClick={deleteTrade} disabled={busy}
-                  className="px-3 py-1.5 bg-short/10 border border-short/40 text-short rounded text-sm font-medium hover:bg-short/20 ml-auto">
-                  🗑 Удалить
-                </button>
+                {!isLive && (
+                  <button onClick={deleteTrade} disabled={busy}
+                    className="px-3 py-1.5 bg-short/10 border border-short/40 text-short rounded text-sm font-medium hover:bg-short/20 ml-auto">
+                    🗑 Удалить
+                  </button>
+                )}
               </>
             ) : (
               <>
@@ -316,8 +326,9 @@ export default function PaperTradeModal({ trade: initialTrade, live = null, onCl
           )}
 
           {/* Симуляция fill TP/SL — повторяет логику движка (TP=maker, SL=taker+slip,
-              авто-трейлинг). Доступно только для открытых сделок и не в режиме редактирования. */}
-          {!editing && canEdit && (
+              авто-трейлинг). Доступно только для открытых сделок и не в режиме редактирования.
+              В LIVE скрыто — fill происходит реально на бирже, симуляция бессмысленна. */}
+          {!editing && canEdit && !isLive && (
             <div className="bg-card border border-input rounded p-3 mb-4">
               <div className="flex items-center justify-between mb-2">
                 <h4 className="font-semibold text-sm">Быстрое закрытие</h4>

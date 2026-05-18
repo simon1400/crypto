@@ -13,12 +13,12 @@
 
 import { useState, useEffect } from 'react'
 import BreakoutPaper from './BreakoutPaper'
-import BreakoutLiveCPanel from './BreakoutLiveCPanel'
 import type { BreakoutVariant } from '../api/breakoutPaper'
 
-// LIVE = variant C running on real Binance. Stored as separate tab key — does NOT
-// share state with paper C.
-type TabKey = BreakoutVariant | 'C_LIVE'
+// LIVE = the variant C twin running on real Binance. Same UI shell as paper
+// variants A/B/C — BreakoutPaper component just routes to /api/breakout-live-c
+// when variant === 'LIVE' and hides destructive paper-only controls.
+type TabKey = BreakoutVariant
 
 const STORAGE_KEY = 'breakout_active_variant'
 
@@ -26,7 +26,9 @@ export default function BreakoutPage() {
   const [tab, setTab] = useState<TabKey>(() => {
     if (typeof window === 'undefined') return 'A'
     const saved = localStorage.getItem(STORAGE_KEY)
-    if (saved === 'B' || saved === 'C' || saved === 'C_LIVE') return saved
+    // Accept legacy 'C_LIVE' value from before we collapsed LIVE into BreakoutPaper.
+    if (saved === 'C_LIVE') return 'LIVE'
+    if (saved === 'B' || saved === 'C' || saved === 'LIVE') return saved
     return 'A'
   })
 
@@ -48,14 +50,14 @@ export default function BreakoutPage() {
           <TabButton active={tab === 'C'} onClick={() => setTab('C')}>
             C <span className="opacity-70">· limit</span>
           </TabButton>
-          <TabButton active={tab === 'C_LIVE'} onClick={() => setTab('C_LIVE')} accent="live">
-            C·LIVE
+          <TabButton active={tab === 'LIVE'} onClick={() => setTab('LIVE')} accent="live">
+            LIVE
           </TabButton>
         </div>
       </div>
       <p className="sm:hidden text-xs text-text-secondary mt-3 mb-4">
         Три копии параллельно на одних сигналах. A/B — market, C — limit на rangeEdge (maker, без slip).
-        C·LIVE — реальная Binance.
+        LIVE — реальная Binance.
       </p>
 
       {/* Desktop: inline tabs + caption */}
@@ -70,18 +72,16 @@ export default function BreakoutPage() {
           <TabButton active={tab === 'C'} onClick={() => setTab('C')}>
             C <span className="opacity-70">· limit edge</span>
           </TabButton>
-          <TabButton active={tab === 'C_LIVE'} onClick={() => setTab('C_LIVE')} accent="live">
-            C · LIVE
+          <TabButton active={tab === 'LIVE'} onClick={() => setTab('LIVE')} accent="live">
+            LIVE
           </TabButton>
         </div>
         <span className="text-xs text-text-secondary ml-2">
-          A/B/C — paper. C·LIVE — реальная торговля на Binance Futures.
+          A/B/C — paper. LIVE — реальная торговля на Binance Futures (копия C).
         </span>
       </div>
       {/* `key` forces a fresh component per tab so all internal state stays separate. */}
-      {tab === 'C_LIVE'
-        ? <BreakoutLiveCPanel key="C_LIVE" />
-        : <BreakoutPaper key={tab} variant={tab} />}
+      <BreakoutPaper key={tab} variant={tab} />
     </div>
   )
 }

@@ -22,7 +22,7 @@ import {
 } from '../services/exchanges/binanceFutures'
 import { refreshLiveBalance } from './_liveBalanceShared'
 import { buildSharedReadHandlers } from './breakoutPaperRouterFactory'
-import { flattenAllOpenLiveC } from '../services/dailyBreakoutLiveTraderC'
+import { flattenAllOpenLiveC, flattenOneOpenLiveC } from '../services/dailyBreakoutLiveTraderC'
 
 // Re-export so existing import paths (`from './breakoutLiveC'`) keep working.
 export { refreshLiveBalance }
@@ -353,14 +353,16 @@ router.get('/stats', sharedRead.stats)
 
 router.get('/trades', async (req, res) => {
   try {
-    const { status, symbol, limit = '100', offset = '0' } = req.query as Record<string, string>
+    const { status, symbol, limit = '100', offset = '0', orderBy } = req.query as Record<string, string>
     const where: any = {}
     if (status) where.status = { in: status.split(',') }
     if (symbol) where.symbol = symbol
+    // Mirror paper trader: orderBy=closedAt switches sort key for the "Закрытые" tab.
+    const orderField: 'openedAt' | 'closedAt' = orderBy === 'closedAt' ? 'closedAt' : 'openedAt'
     const [data, total] = await Promise.all([
       prisma.breakoutLiveTradeC.findMany({
         where,
-        orderBy: { openedAt: 'desc' },
+        orderBy: { [orderField]: 'desc' },
         skip: parseInt(offset, 10) || 0,
         take: Math.min(parseInt(limit, 10) || 100, 500),
       }),
@@ -374,6 +376,56 @@ router.get('/trades', async (req, res) => {
         binanceSlOrderId: t.binanceSlOrderId !== null ? String(t.binanceSlOrderId) : null,
       })),
       total,
+    })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// GET /trades/:id — single row, used by the BreakoutPaperTradeModal when the UI
+// runs in variant=LIVE mode.
+router.get('/trades/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const t = await prisma.breakoutLiveTradeC.findUnique({ where: { id } })
+    if (!t) return res.status(404).json({ error: 'Trade not found' })
+    res.json({
+      ...t,
+      binanceOrderId: t.binanceOrderId !== null ? String(t.binanceOrderId) : null,
+      binanceSlOrderId: t.binanceSlOrderId !== null ? String(t.binanceSlOrderId) : null,
+    })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /trades/close-all-market — close every OPEN/TP1_HIT/TP2_HIT LIVE-C position
+// via reduceOnly MARKET. Thin wrapper over flattenAllOpenLiveC so the BreakoutPaper
+// UI's "Закрыть все по рынку" button works in LIVE mode.
+router.post('/trades/close-all-market', async (_req, res) => {
+  try {
+    const r = await flattenAllOpenLiveC('manual')
+    res.json({ closed: r.closed, failed: r.failed, ids: [] })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /trades/:id/close-market — close one LIVE-C position via reduceOnly MARKET.
+// Returns the updated DB row so the UI can refresh.
+router.post('/trades/:id/close-market', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const r = await flattenOneOpenLiveC(id, 'manual')
+    if (!r.ok) return res.status(400).json({ error: r.error })
+    const t = await prisma.breakoutLiveTradeC.findUnique({ where: { id } })
+    if (!t) return res.status(404).json({ error: 'Trade not found after close' })
+    res.json({
+      ...t,
+      binanceOrderId: t.binanceOrderId !== null ? String(t.binanceOrderId) : null,
+      binanceSlOrderId: t.binanceSlOrderId !== null ? String(t.binanceSlOrderId) : null,
     })
   } catch (e: any) {
     res.status(500).json({ error: e.message })

@@ -516,6 +516,81 @@ export async function flattenAllOpenLiveC(reason: string): Promise<{ closed: num
   return flattenAllOpenC(reason)
 }
 
+// Close a single LIVE-C position via reduceOnly MARKET. Used by the per-trade
+// "close-market" route exposed for the BreakoutPaper UI when running variant=LIVE.
+// Mirrors flattenAllOpenC for one row; precise realized P&L still gets reconciled
+// later from ORDER_TRADE_UPDATE / REST refresh.
+export async function flattenOneOpenLiveC(tradeId: number, reason: string): Promise<{ ok: true; closed: boolean } | { ok: false; error: string }> {
+  if (!state) return { ok: false, error: 'Live trader is not running' }
+
+  const t = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!t) return { ok: false, error: `Trade #${tradeId} not found` }
+  if (!['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(t.status)) {
+    return { ok: false, error: `Trade #${tradeId} is not open (status=${t.status})` }
+  }
+
+  const closesArr = ((t.closes as any[]) ?? [])
+  const closedFrac = closesArr.reduce((a: number, c: any) => a + (c.percent ?? 0), 0) / 100
+  const remainingFrac = Math.max(0, 1 - closedFrac)
+  const remainingQty = t.positionUnits * remainingFrac
+
+  if (remainingQty <= 0) {
+    await prisma.breakoutLiveTradeC.update({
+      where: { id: t.id },
+      data: { status: 'CLOSED', closedAt: new Date() },
+    })
+    return { ok: true, closed: true }
+  }
+
+  const filters = await getFilters(state.client)
+  const f = filters.get(t.symbol)
+  if (!f) return { ok: false, error: `No filter for ${t.symbol}` }
+
+  const step = f.stepSize
+  let qty = Math.floor(remainingQty / step) * step
+  qty = Number(qty.toFixed(f.quantityPrecision))
+  if (qty < f.minQty) {
+    await prisma.breakoutLiveTradeC.update({
+      where: { id: t.id },
+      data: { status: 'CLOSED', closedAt: new Date() },
+    })
+    return { ok: true, closed: true }
+  }
+
+  const closeSide: 'BUY' | 'SELL' = t.side === 'BUY' ? 'SELL' : 'BUY'
+  try {
+    await state.client.placeOrder({
+      symbol: t.symbol,
+      side: closeSide,
+      type: 'MARKET',
+      quantity: qty,
+      reduceOnly: true,
+    })
+    await prisma.breakoutLiveTradeC.update({
+      where: { id: t.id },
+      data: {
+        status: 'CLOSED',
+        closedAt: new Date(),
+        closes: [
+          ...closesArr,
+          {
+            price: 0,
+            percent: Math.round(remainingFrac * 100),
+            pnlUsd: 0,
+            closedAt: new Date().toISOString(),
+            reason,
+          },
+        ] as any,
+      },
+    })
+    console.log(`${LOG} flattened #${t.id} ${t.symbol} ${t.side} qty ${qty} via MARKET (${reason})`)
+    return { ok: true, closed: true }
+  } catch (e: any) {
+    console.warn(`${LOG} flatten #${t.id} MARKET failed: ${e.message}`)
+    return { ok: false, error: e.message }
+  }
+}
+
 // ============================================================================
 // Reconciliation — sync DB ↔ exchange on startup
 // ============================================================================

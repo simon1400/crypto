@@ -5,6 +5,7 @@ import {
   getBreakoutPaperLivePrices, wipeAllBreakoutPaper, closeAllBreakoutPaperTradesMarket,
   getBreakoutConfig, updateBreakoutConfig, getBreakoutSetups,
   getBreakoutSignals,
+  isLiveVariant,
   type BreakoutPaperConfig as PaperConfig,
   type BreakoutTrade as PaperTrade,
   type BreakoutStats as PaperStats,
@@ -13,6 +14,10 @@ import {
   type BreakoutSignal,
   type BreakoutVariant,
 } from '../api/breakoutPaper'
+import {
+  getLiveStatus, killSwitch, releaseKillSwitch,
+  type BreakoutLiveStatus,
+} from '../api/breakoutLiveC'
 import BreakoutPaperTradeModal from '../components/BreakoutPaperTradeModal'
 import BreakoutSignalModal from '../components/BreakoutSignalModal'
 import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
@@ -58,8 +63,10 @@ const PAPER_STATUS_BADGE: Record<string, { bg: string; text: string; label: stri
   CLOSED:    { bg: 'bg-long/10',       text: 'text-long',       label: 'Закрыта' },
   SL_HIT:    { bg: 'bg-short/15',      text: 'text-short',      label: 'SL' },
   EXPIRED:   { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Истёк' },
-  PENDING:   { bg: 'bg-accent/10',     text: 'text-accent/80',  label: '⏳ Лимит ждёт' },
-  CANCELLED: { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Лимит отменён' },
+  PENDING:       { bg: 'bg-accent/10', text: 'text-accent/80',  label: '⏳ Лимит ждёт' },
+  PENDING_LIMIT: { bg: 'bg-accent/10', text: 'text-accent/80',  label: '⏳ Лимит ждёт' },
+  CANCELLED:     { bg: 'bg-neutral/15', text: 'text-neutral',   label: 'Лимит отменён' },
+  CANCELLED_EOD: { bg: 'bg-neutral/15', text: 'text-neutral',   label: 'Лимит отменён EOD' },
 }
 
 // Сжатый текст исхода: смотрит на массив closes и собирает «TP1 → TP2 → SL@TP1»,
@@ -243,6 +250,11 @@ export interface BreakoutPaperProps {
 }
 
 export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}) {
+  // LIVE-mode flag: variant 'LIVE' hits /api/breakout-live-c (real Binance Futures).
+  // We share the entire UI shell with paper variants A/B/C, but gate destructive
+  // controls (wipe-all, force-open, simulate-fill, edit/delete trade, signals tab)
+  // because in LIVE those would either orphan exchange state vs DB or be meaningless.
+  const isLive = isLiveVariant(variant)
   const [config, setConfig] = useState<PaperConfig | null>(null)
   const [scannerCfg, setScannerCfg] = useState<ScannerCfg | null>(null)
   const [setups, setSetups] = useState<string[]>([])
@@ -263,8 +275,10 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
-  // Default reset amount tracks the variant's starting deposit (A=$500, B=$320)
-  // and reflects whatever the operator has saved in BreakoutPaperConfig.
+  // Default reset amount tracks the variant's starting deposit (A=$500, B/C=$320)
+  // and reflects whatever the operator has saved in BreakoutPaperConfig. In LIVE
+  // the input is hidden and the value is unused — reset() ignores it on the
+  // backend (baseline comes from Binance availableBalance).
   const [resetAmount, setResetAmount] = useState(variant === 'A' ? 500 : 320)
   const [livePrices, setLivePrices] = useState<Record<number, PaperTradeLive>>({})
   const [selectedTrade, setSelectedTrade] = useState<PaperTrade | null>(null)
@@ -274,6 +288,8 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
   const [symbolHistory, setSymbolHistory] = useState<string | null>(null)
   const [showAbout, setShowAbout] = useState(false)
   const [showBySymbol, setShowBySymbol] = useState(false)
+  // LIVE-only: Binance connectivity snapshot + kill-switch state. Polled every 10s.
+  const [liveStatus, setLiveStatus] = useState<BreakoutLiveStatus | null>(null)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -284,12 +300,13 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       // Variant C: "Открытые" — только FILLED-сделки (PENDING вынесли в свой таб).
       // "Закрытые" дополнительно содержит CANCELLED (limit отменён EOD).
       // "PENDING" — висящие limit-ордера до пробоя (только для C).
+      const isLimitEdge = variant === 'C' || isLiveVariant(variant)
       const status = statusFilter === 'OPEN'
         ? ['OPEN', 'TP1_HIT', 'TP2_HIT']
         : statusFilter === 'CLOSED'
-        ? (variant === 'C' ? ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT', 'CANCELLED'] : ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT'])
+        ? (isLimitEdge ? ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT', 'CANCELLED'] : ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT'])
         : isPendingTab
-        ? ['PENDING']
+        ? (isLiveVariant(variant) ? ['PENDING_LIMIT'] : ['PENDING'])
         : undefined
       // CLOSED tab: серверная пагинация по 20. Сортировка по closedAt чтобы
       // страницы шли последовательно по дате выхода (иначе при разнице
@@ -351,6 +368,45 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
 
   useEffect(() => { loadAll() }, [loadAll])
 
+  // LIVE: poll /status every 10s for Binance connectivity + kill-switch flag.
+  useEffect(() => {
+    if (!isLive) { setLiveStatus(null); return }
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const s = await getLiveStatus()
+        if (!cancelled) setLiveStatus(s)
+      } catch { /* ignore — UI will just show stale state */ }
+    }
+    tick()
+    const id = setInterval(tick, 10_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [isLive])
+
+  const handleKillSwitch = async () => {
+    const reason = prompt('Причина kill switch (необязательно):', 'manual')
+    if (reason === null) return
+    if (!confirm('Закрыть ВСЕ позиции по рынку + отменить все ордера + выключить стратегию?')) return
+    try {
+      const r = await killSwitch(reason)
+      alert(`Kill OK: cancelled=${r.cancelledOrders ?? 0}, closed=${r.closedPositions ?? 0}${r.note ? ' (' + r.note + ')' : ''}`)
+      const s = await getLiveStatus(); setLiveStatus(s)
+      await loadAll()
+    } catch (e: any) {
+      alert(`Ошибка: ${e.message}`)
+    }
+  }
+
+  const handleReleaseKillSwitch = async () => {
+    if (!confirm('Снять kill switch? Стратегия останется выключенной — нужно включить отдельно.')) return
+    try {
+      await releaseKillSwitch()
+      const s = await getLiveStatus(); setLiveStatus(s)
+    } catch (e: any) {
+      alert(`Ошибка: ${e.message}`)
+    }
+  }
+
   // Poll live prices every 3s. Раньше работал только на вкладке OPEN, но теперь
   // верхняя статистика "Депо с открытыми" нуждается в unrealized P&L на любой вкладке.
   useEffect(() => {
@@ -377,8 +433,12 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
   }
 
   const handleReset = async () => {
-    if (!confirm(`Сбросить депо до $${resetAmount}? Все открытые позиции пометятся EXPIRED.`)) return
-    const updated = await resetBreakoutPaper(resetAmount, variant)
+    const msg = isLive
+      ? 'Сбросить baseline P&L до текущего availableBalance с Binance? Это влияет только на "Total P&L since baseline" — реальные сделки не трогаются.'
+      : `Сбросить депо до $${resetAmount}? Все открытые позиции пометятся EXPIRED.`
+    if (!confirm(msg)) return
+    // LIVE backend ignores startingDepositUsd (baseline comes from Binance).
+    const updated = await resetBreakoutPaper(isLive ? undefined : resetAmount, variant)
     setConfig(updated)
     await loadAll()
   }
@@ -479,11 +539,16 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
             Daily Breakout
             {variant === 'B' && <span className="ml-2 px-2 py-0.5 rounded text-xs font-mono bg-accent/15 text-accent align-middle">B · 20 conc · 5% margin</span>}
             {variant === 'C' && <span className="ml-2 px-2 py-0.5 rounded text-xs font-mono bg-accent/15 text-accent align-middle">C · limit on rangeEdge</span>}
+            {isLive && <span className="ml-2 px-2 py-0.5 rounded text-xs font-mono bg-short/15 text-short align-middle">LIVE · Binance Futures</span>}
           </h1>
           <p className="text-sm text-text-secondary">
-            Стратегия пробоя 3h-диапазона (00:00–03:00 UTC · {pragueRange}). {enabledCoins} {enabledCoins === 1 ? 'монета' : enabledCoins >= 2 && enabledCoins <= 4 ? 'монеты' : 'монет'} · виртуальная торговля + Telegram
+            Стратегия пробоя 3h-диапазона (00:00–03:00 UTC · {pragueRange}). {enabledCoins} {enabledCoins === 1 ? 'монета' : enabledCoins >= 2 && enabledCoins <= 4 ? 'монеты' : 'монет'} ·
+            {isLive
+              ? <span> реальная торговля на Binance Futures + Telegram</span>
+              : <span> виртуальная торговля + Telegram</span>}
             {variant === 'B' && <span className="ml-1">· копия B (тот же поток сигналов, увеличенная concurrency, уменьшенная маржа)</span>}
             {variant === 'C' && <span className="ml-1">· копия C (тот же поток сигналов, вход limit-ордером на rangeEdge — maker fee, без slip)</span>}
+            {isLive && <span className="ml-1">· копия C, исполняется ордерами на бирже</span>}
           </p>
           <button
             type="button"
@@ -497,7 +562,9 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         <div className="flex items-center gap-2 flex-wrap">
           <button onClick={handleTogglePaperEnabled}
             className={`px-4 py-2 rounded font-medium ${config.enabled ? 'bg-long/15 text-long border border-long/30' : 'bg-card border border-input text-text-secondary'}`}>
-            {config.enabled ? '● Демо вкл.' : '○ Демо выкл.'}
+            {isLive
+              ? (config.enabled ? '● Стратегия вкл.' : '○ Стратегия выкл.')
+              : (config.enabled ? '● Демо вкл.' : '○ Демо выкл.')}
           </button>
           <button onClick={() => setShowSettings(s => !s)}
             className="px-4 py-2 bg-card border border-input rounded font-medium hover:bg-input">
@@ -508,10 +575,12 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
             className="px-4 py-2 bg-card border border-accent/40 text-accent rounded font-medium hover:bg-accent/10 disabled:opacity-40 disabled:cursor-not-allowed">
             ⊗ Закрыть все по рынку
           </button>
-          <button onClick={handleWipeAll}
-            className="px-4 py-2 bg-card border border-short/40 text-short rounded font-medium hover:bg-short/10">
-            🗑 Очистить всё
-          </button>
+          {!isLive && (
+            <button onClick={handleWipeAll}
+              className="px-4 py-2 bg-card border border-short/40 text-short rounded font-medium hover:bg-short/10">
+              🗑 Очистить всё
+            </button>
+          )}
         </div>
       </div>
 
@@ -521,6 +590,20 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           Strategy logic itself is identical — only sizing/concurrency differ. */}
       {showAbout && (
         <div className="bg-card border border-input rounded-lg p-5 mb-4 text-sm text-text-secondary leading-relaxed space-y-4">
+          {isLive && (
+            <div className="bg-short/10 border border-short/30 rounded p-3 text-text-primary text-xs space-y-1">
+              <div><span className="font-semibold text-short">LIVE — реальная торговля на Binance Futures USDT-M.</span></div>
+              <div>
+                Точная копия стратегии C (limit на rangeEdge, maker fee), но каждое действие исполняется реальным ордером
+                через Binance API. Тот же поток сигналов, тот же universe монет, тот же 3h-диапазон. SL/TP виртуальные —
+                трекаются через aggTrade WS и закрываются reduceOnly MARKET'ом при касании уровня.
+              </div>
+              <div className="text-text-secondary">
+                Депозит и P&L берутся из реального availableBalance USDT кошелька Binance. Кнопка "Сбросить baseline"
+                фиксирует текущий баланс как новую точку отсчёта для "Total P&L since baseline".
+              </div>
+            </div>
+          )}
           {variant === 'B' && (
             <div className="bg-accent/10 border border-accent/30 rounded p-3 text-text-primary text-xs">
               <span className="font-semibold">Копия B — экспериментальный sizing.</span> Та же стратегия и тот же поток сигналов
@@ -830,7 +913,8 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       {/* Top stats */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
         <Stat label="Депозит" value={`$${config.currentDepositUsd.toFixed(2)}`}
-          sub={`из $${config.startingDepositUsd}`} tone={config.currentDepositUsd >= config.startingDepositUsd ? 'long' : 'short'} />
+          sub={isLive ? `baseline $${config.startingDepositUsd.toFixed(2)}` : `из $${config.startingDepositUsd}`}
+          tone={config.currentDepositUsd >= config.startingDepositUsd ? 'long' : 'short'} />
         <Stat
           label="Депо с открытыми"
           value={`$${equityWithOpen.toFixed(2)}`}
@@ -849,10 +933,54 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           sub={openCount > 0 ? `маржа $${activeMarginUsd.toFixed(2)} · Max DD ${config.maxDrawdownPct.toFixed(1)}%` : `Max DD ${config.maxDrawdownPct.toFixed(1)}%`} />
       </div>
 
+      {/* LIVE-only: Binance connectivity + kill switch panel. */}
+      {isLive && (
+        <div className="bg-card border border-input rounded p-3 mb-4 flex flex-wrap items-center gap-3 text-sm">
+          <div className="flex items-center gap-2">
+            <span className={`relative flex h-2 w-2`} title={liveStatus?.connected ? 'Подключено к Binance' : 'Нет подключения'}>
+              <span className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${liveStatus?.connected ? 'animate-ping bg-long' : 'bg-short'}`} />
+              <span className={`relative inline-flex h-2 w-2 rounded-full ${liveStatus?.connected ? 'bg-long' : 'bg-short'}`} />
+            </span>
+            <span className="font-mono text-xs">
+              {liveStatus?.connected
+                ? <>Binance <span className={liveStatus.net === 'prod' ? 'text-short font-semibold' : 'text-accent'}>{liveStatus.net?.toUpperCase()}</span></>
+                : <span className="text-short">offline{liveStatus?.reason ? ` · ${liveStatus.reason}` : ''}</span>}
+            </span>
+          </div>
+          {liveStatus?.connected && (
+            <span className="text-xs text-text-secondary font-mono">
+              баланс <span className="text-text-primary">${liveStatus.balanceUsdt?.toFixed(2)}</span>
+              · позиций <span className="text-text-primary">{liveStatus.openPositions}</span>
+              · ордеров <span className="text-text-primary">{liveStatus.openOrders}</span>
+            </span>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            {liveStatus?.killSwitchActive ? (
+              <>
+                <span className="px-2 py-1 rounded text-xs font-mono bg-short/15 text-short border border-short/30">
+                  🛑 KILL · {liveStatus.killSwitchReason ?? 'manual'}
+                </span>
+                <button onClick={handleReleaseKillSwitch}
+                  className="px-3 py-1 bg-card border border-input rounded text-xs font-medium hover:bg-input">
+                  Снять
+                </button>
+              </>
+            ) : (
+              <button onClick={handleKillSwitch}
+                className="px-3 py-1 bg-short/10 border border-short/40 text-short rounded text-xs font-medium hover:bg-short/20">
+                🛑 Kill switch
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Settings panel */}
       {showSettings && (
         <div className="bg-card border border-input rounded p-4 mb-4">
-          <h3 className="font-semibold mb-3">Настройки демо-счёта</h3>
+          <h3 className="font-semibold mb-3">
+            {isLive ? 'Настройки LIVE-счёта' : 'Настройки демо-счёта'}
+          </h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
               <label className="text-xs text-text-secondary block mb-1">Риск на сделку (%)</label>
@@ -863,39 +991,46 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                 }}
                 className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
             </div>
-            <div>
-              <label className="text-xs text-text-secondary block mb-1">
-                Taker fee (%) <span className="text-text-secondary/60">— market open + SL</span>
-              </label>
-              <input type="number" step="0.001" min="0" defaultValue={config.feeTakerPct ?? 0.05}
-                onBlur={async e => {
-                  const v = parseFloat(e.target.value)
-                  if (v >= 0) setConfig(await updateBreakoutPaperConfig({ feeTakerPct: v }, variant))
-                }}
-                className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
-            </div>
-            <div>
-              <label className="text-xs text-text-secondary block mb-1">
-                Maker fee (%) <span className="text-text-secondary/60">— TP limit</span>
-              </label>
-              <input type="number" step="0.001" min="0" defaultValue={config.feeMakerPct ?? 0.02}
-                onBlur={async e => {
-                  const v = parseFloat(e.target.value)
-                  if (v >= 0) setConfig(await updateBreakoutPaperConfig({ feeMakerPct: v }, variant))
-                }}
-                className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
-            </div>
-            <div>
-              <label className="text-xs text-text-secondary block mb-1">
-                Slippage taker (%/side) <span className="text-text-secondary/60">— market fills</span>
-              </label>
-              <input type="number" step="0.001" min="0" defaultValue={config.slipTakerPct ?? 0.03}
-                onBlur={async e => {
-                  const v = parseFloat(e.target.value)
-                  if (v >= 0) setConfig(await updateBreakoutPaperConfig({ slipTakerPct: v }, variant))
-                }}
-                className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
-            </div>
+            {/* Fee/slippage inputs are only meaningful for paper variants — they
+                feed the simulator's P&L formula. In LIVE the exchange charges real
+                fees on every fill, so these knobs are hidden to avoid confusion. */}
+            {!isLive && (
+              <>
+                <div>
+                  <label className="text-xs text-text-secondary block mb-1">
+                    Taker fee (%) <span className="text-text-secondary/60">— market open + SL</span>
+                  </label>
+                  <input type="number" step="0.001" min="0" defaultValue={config.feeTakerPct ?? 0.05}
+                    onBlur={async e => {
+                      const v = parseFloat(e.target.value)
+                      if (v >= 0) setConfig(await updateBreakoutPaperConfig({ feeTakerPct: v }, variant))
+                    }}
+                    className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
+                </div>
+                <div>
+                  <label className="text-xs text-text-secondary block mb-1">
+                    Maker fee (%) <span className="text-text-secondary/60">— TP limit</span>
+                  </label>
+                  <input type="number" step="0.001" min="0" defaultValue={config.feeMakerPct ?? 0.02}
+                    onBlur={async e => {
+                      const v = parseFloat(e.target.value)
+                      if (v >= 0) setConfig(await updateBreakoutPaperConfig({ feeMakerPct: v }, variant))
+                    }}
+                    className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
+                </div>
+                <div>
+                  <label className="text-xs text-text-secondary block mb-1">
+                    Slippage taker (%/side) <span className="text-text-secondary/60">— market fills</span>
+                  </label>
+                  <input type="number" step="0.001" min="0" defaultValue={config.slipTakerPct ?? 0.03}
+                    onBlur={async e => {
+                      const v = parseFloat(e.target.value)
+                      if (v >= 0) setConfig(await updateBreakoutPaperConfig({ slipTakerPct: v }, variant))
+                    }}
+                    className="w-full bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
+                </div>
+              </>
+            )}
             <div>
               <label className="text-xs text-text-secondary block mb-1">Max одновременных позиций</label>
               <input type="number" step="1" min="1" max="50" defaultValue={config.maxConcurrentPositions}
@@ -912,12 +1047,15 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
             </div>
           </div>
           <div className="mt-4 pt-4 border-t border-input flex items-center gap-3">
-            <input type="number" value={resetAmount}
-              onChange={e => setResetAmount(parseFloat(e.target.value) || 500)}
-              className="w-32 bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
+            {!isLive && (
+              <input type="number" value={resetAmount}
+                onChange={e => setResetAmount(parseFloat(e.target.value) || 500)}
+                className="w-32 bg-input border border-input rounded px-3 py-2 text-sm font-mono" />
+            )}
             <button onClick={handleReset}
-              className="px-4 py-2 bg-card border border-accent/40 text-accent rounded font-medium hover:bg-accent/10">
-              Сбросить депо
+              className="px-4 py-2 bg-card border border-accent/40 text-accent rounded font-medium hover:bg-accent/10"
+              title={isLive ? 'Сбрасывает baseline P&L до текущего баланса Binance' : undefined}>
+              {isLive ? 'Сбросить baseline (= баланс с Binance)' : 'Сбросить депо'}
             </button>
           </div>
           {setups.length > 0 && (
@@ -939,7 +1077,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       <div className="flex gap-2 mb-3 flex-wrap">
         <FilterButton active={statusFilter === 'OPEN'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('OPEN') }}>Открытые</FilterButton>
         <FilterButton active={statusFilter === 'CLOSED'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('CLOSED') }}>Закрытые</FilterButton>
-        {variant === 'C' ? (
+        {(variant === 'C' || isLive) ? (
           <FilterButton active={statusFilter === 'PENDING'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('PENDING') }}>Pending</FilterButton>
         ) : (
           <FilterButton active={statusFilter === 'SIGNALS'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('SIGNALS') }}>Сигналы</FilterButton>
@@ -1056,7 +1194,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       {/* Pending table — только для variant C: висящие limit-ордера на rangeEdge
           до пробоя. Пары BUY+SELL по одной монете схлопнуты в одну строку через
           pairOrderId, чтобы не дублировать ту же монету дважды. */}
-      {statusFilter === 'PENDING' && variant === 'C' && (() => {
+      {statusFilter === 'PENDING' && (variant === 'C' || isLive) && (() => {
         // Группируем PENDING-сделки по символу: если есть пара (BUY @ rangeHigh +
         // SELL @ rangeLow), показываем одну строку с обеими сторонами. Одинокий
         // limit (только одна сторона была размещена из-за price-guard) идёт
@@ -1210,7 +1348,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
               <div className="flex items-center justify-between gap-2 mb-2">
                 <div className="flex items-center gap-2 font-mono">
                   <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent">D</span>
-                  {t.status === 'PENDING' && (
+                  {(t.status === 'PENDING' || t.status === 'PENDING_LIMIT') && (
                     <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/10 text-accent/80">⏳</span>
                   )}
                   <span className={`${sideColorCls} font-semibold text-base`}>{t.symbol.replace('USDT', '')}</span>
@@ -1389,7 +1527,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                     <td className="px-3 py-2 font-mono font-medium text-text-primary">
                       <span className="flex items-center gap-2">
                         <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent" title="Demo paper trade">D</span>
-                        {t.status === 'PENDING' && (
+                        {(t.status === 'PENDING' || t.status === 'PENDING_LIMIT') && (
                           <span className="px-1 py-0.5 rounded text-[10px] font-bold bg-accent/10 text-accent/80" title="Limit ордер ждёт fill на rangeEdge">⏳</span>
                         )}
                         <span className={sideColorCls}>{t.symbol.replace('USDT', '')}</span>
