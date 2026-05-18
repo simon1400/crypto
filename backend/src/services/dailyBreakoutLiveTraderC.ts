@@ -721,6 +721,35 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
   return report
 }
 
+/**
+ * Sum of marginUsd from all PENDING_LIMIT and OPEN/TP1_HIT/TP2_HIT live C
+ * trades. Used by the placement guard to ensure new trades don't push total
+ * margin past available balance.
+ *
+ * For OPEN positions with partial TP fills, we discount margin by the closed
+ * fraction (remaining notional / leverage).
+ */
+async function sumExistingMarginC(): Promise<number> {
+  const rows = await prisma.breakoutLiveTradeC.findMany({
+    where: {
+      OR: [
+        { limitOrderState: 'PENDING_LIMIT' },
+        { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+      ],
+    },
+    select: { marginUsd: true, closes: true, positionSizeUsd: true, leverage: true },
+  })
+  let sum = 0
+  for (const r of rows) {
+    const baseMargin = r.marginUsd ?? 0
+    if (baseMargin <= 0) continue
+    const closesArr = (r.closes as any[]) ?? []
+    const closedFrac = closesArr.reduce((a, c: any) => a + (c.percent ?? 0), 0) / 100
+    sum += baseMargin * Math.max(0, 1 - closedFrac)
+  }
+  return sum
+}
+
 // ============================================================================
 // Circuit breaker — daily loss limit for live trading
 // ============================================================================
@@ -1026,6 +1055,26 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
   })
   if (!sizing || sizing.positionUnits <= 0) {
     console.warn(`${LOG} ${a.symbol} ${a.side} — sizing failed`)
+    return null
+  }
+
+  // Free margin guard. Even though computeSizing aims for targetMarginPct of
+  // deposit, that's the IDEAL — when the symbol's maxLeverage caps us below
+  // the ideal lev, marginUsd inflates well past targetMarginPct (e.g. SIREN
+  // with default maxLev=25 needed lev=32 → margin ~11% of depo instead of 5%).
+  // Multiply that across 20 pre-emptive pairs and we lock 200%+ of the
+  // available balance, leaving open positions one tick from liquidation.
+  //
+  // Skip placement when total margin used (existing pending + open) plus this
+  // trade's required margin would exceed availableBalance × safety factor.
+  const existingMargin = await sumExistingMarginC()
+  const required = sizing.marginUsd
+  // 90% of balance reserved for sizing. Leaves 10% buffer for funding fees,
+  // slippage on exits, and the safety margin Binance itself requires for
+  // initial-margin checks (it'll reject -2019 if we get too close to balance).
+  const budget = a.cfg.currentDepositUsd * 0.90
+  if (existingMargin + required > budget) {
+    console.log(`${LOG} ${a.symbol} ${a.side} — skip: margin used ${existingMargin.toFixed(2)} + new ${required.toFixed(2)} > budget ${budget.toFixed(2)} (depo ${a.cfg.currentDepositUsd.toFixed(2)})`)
     return null
   }
 
