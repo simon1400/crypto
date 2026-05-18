@@ -1247,10 +1247,9 @@ async function handleUserDataEvent(ev: any): Promise<void> {
 async function handleOrderUpdate(ev: OrderTradeUpdateEvent): Promise<void> {
   const o = ev.o
   const cid = o.c
-  const orderId = o.i
   const execStatus = o.X // NEW / PARTIALLY_FILLED / FILLED / CANCELED / EXPIRED
 
-  // 1. Entry limit — match by clientOrderId (deterministic).
+  // 1. Entry limit — match by clientOrderId (deterministic 'cL...' prefix).
   if (cid && cid.startsWith('cL')) {
     const trade = await prisma.breakoutLiveTradeC.findUnique({
       where: { binanceClientOrderId: cid },
@@ -1261,30 +1260,38 @@ async function handleOrderUpdate(ev: OrderTradeUpdateEvent): Promise<void> {
     }
   }
 
-  // 2. SL child — match by binanceSlOrderId.
-  const tradeBySl = await prisma.breakoutLiveTradeC.findFirst({
-    where: { binanceSlOrderId: BigInt(orderId) },
-  })
-  if (tradeBySl) {
-    await handleSlOrderUpdate(tradeBySl, ev)
-    return
+  // 2. SL child — match by clientAlgoId prefix 'slL<tradeId>' (the trigger
+  // event carries clientOrderId = our clientAlgoId from algoOrder placement).
+  // Format: 'slL<tradeId>' (initial) or 'slL<tradeId>r<seq>' (after trailing).
+  if (cid && cid.startsWith('slL')) {
+    const m = cid.match(/^slL(\d+)/)
+    if (m) {
+      const tradeId = parseInt(m[1], 10)
+      const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+      if (trade) {
+        await handleSlOrderUpdate(trade, ev)
+        return
+      }
+    }
   }
 
-  // 3. TP child — orderId stored in tpOrderIds JSON array.
-  const tradeByTp = await prisma.breakoutLiveTradeC.findFirst({
-    where: {
-      binanceTpOrderIds: { array_contains: String(orderId) as any },
-    },
-  })
-  if (tradeByTp) {
-    await handleTpOrderUpdate(tradeByTp, ev)
-    return
+  // 3. TP child — match by clientAlgoId prefix 'tpL<tradeId>_<n>'.
+  if (cid && cid.startsWith('tpL')) {
+    const m = cid.match(/^tpL(\d+)_(\d+)/)
+    if (m) {
+      const tradeId = parseInt(m[1], 10)
+      const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+      if (trade) {
+        await handleTpOrderUpdate(trade, ev)
+        return
+      }
+    }
   }
 
   // Order doesn't belong to any tracked trade — could be manual, or a stale
   // event for a row we've already finalized. Log only on actual fills.
   if (execStatus === 'FILLED') {
-    console.log(`${LOG} untracked FILLED order cid=${cid} id=${orderId} ${o.s} — manual or already reconciled`)
+    console.log(`${LOG} untracked FILLED order cid=${cid} id=${o.i} ${o.s} — manual or already reconciled`)
   }
 }
 
@@ -1465,25 +1472,36 @@ async function placeSlAndTpsForTrade(tradeId: number): Promise<void> {
   const tick = f.tickSize
   const roundStop = (p: number): number => Math.round(p / tick) * tick
 
-  // SL — STOP_MARKET reduceOnly, closePosition=false (we explicitly set qty).
-  // Using stopPrice = trade.currentStop (initially equals stopLoss).
+  // SL/TP children placed via Algo Order API (Binance migrated conditional
+  // orders off /fapi/v1/order in late 2025; old endpoint returns -4120).
+  //
+  // Child order matching strategy: we set a deterministic clientAlgoId on
+  // each algo order. When the trigger fires, Binance emits a regular MARKET
+  // order whose clientOrderId equals our clientAlgoId — that's how the WS
+  // fill handler routes the resulting fill to the right trade row.
+  //
+  // clientAlgoId scheme (kept ≤36 chars per Binance cap):
+  //   slL{tradeId}        — stop loss
+  //   tpL{tradeId}_{n}    — TP1/TP2/TP3 (n=1..3)
+  const slClientId = `slL${tradeId}`
   let slOrderId: bigint | null = null
   try {
-    const slOrder = await state.client.placeOrder({
+    const slOrder = await state.client.placeAlgoOrder({
       symbol: trade.symbol,
       side: closeSide,
       type: 'STOP_MARKET',
-      stopPrice: Number(roundStop(trade.currentStop).toFixed(f.pricePrecision)),
+      triggerPrice: Number(roundStop(trade.currentStop).toFixed(f.pricePrecision)),
       quantity: totalQty,
       reduceOnly: true,
       workingType: 'MARK_PRICE',
+      clientAlgoId: slClientId,
     })
-    slOrderId = BigInt(slOrder.orderId)
+    slOrderId = BigInt(slOrder.algoId)
   } catch (e: any) {
     console.error(`${LOG} #${tradeId} SL placement failed: ${e.message}`)
   }
 
-  // TPs — TAKE_PROFIT_MARKET reduceOnly, one per ladder level.
+  // TPs — same Algo API, with per-level deterministic clientAlgoId.
   const tpOrderIds: string[] = []
   const tpBuckets = [
     { price: tpLadder[0], qty: tp1Qty },
@@ -1494,16 +1512,17 @@ async function placeSlAndTpsForTrade(tradeId: number): Promise<void> {
     const bucket = tpBuckets[i]
     if (bucket.qty <= 0) continue
     try {
-      const tpOrder = await state.client.placeOrder({
+      const tpOrder = await state.client.placeAlgoOrder({
         symbol: trade.symbol,
         side: closeSide,
         type: 'TAKE_PROFIT_MARKET',
-        stopPrice: Number(roundStop(bucket.price).toFixed(f.pricePrecision)),
+        triggerPrice: Number(roundStop(bucket.price).toFixed(f.pricePrecision)),
         quantity: bucket.qty,
         reduceOnly: true,
         workingType: 'MARK_PRICE',
+        clientAlgoId: `tpL${tradeId}_${i + 1}`,
       })
-      tpOrderIds.push(String(tpOrder.orderId))
+      tpOrderIds.push(String(tpOrder.algoId))
     } catch (e: any) {
       console.error(`${LOG} #${tradeId} TP${i + 1} placement failed: ${e.message}`)
     }
@@ -1591,13 +1610,15 @@ async function handleTpOrderUpdate(trade: any, ev: OrderTradeUpdateEvent): Promi
   const feePaid = Number(o.n) || 0
   const fillTime = new Date(o.T || ev.E)
 
-  // Figure out which TP this was (1/2/3) by matching orderId against the array.
-  const tpIds = (trade.binanceTpOrderIds as string[]) ?? []
-  const tpIndex = tpIds.indexOf(String(o.i))
-  if (tpIndex === -1) {
-    console.warn(`${LOG} TP fill for #${trade.id} but orderId ${o.i} not in tpOrderIds — drift`)
+  // Figure out which TP this was (1/2/3) from the clientAlgoId suffix
+  // (format: 'tpL<tradeId>_<n>'). The triggered MARKET child inherits this as
+  // its clientOrderId, so o.c gives us the index directly.
+  const m = o.c?.match(/^tpL\d+_(\d+)/)
+  if (!m) {
+    console.warn(`${LOG} TP fill for #${trade.id} cID=${o.c} — can't parse TP index`)
     return
   }
+  const tpIndex = parseInt(m[1], 10) - 1  // 1-based → 0-based
   const tpLabel = `TP${tpIndex + 1}`
 
   // Idempotency — don't double-record same TP.
@@ -1701,7 +1722,8 @@ async function replaceSlOrder(tradeId: number, newStopPrice: number): Promise<vo
   // Cancel old SL (best-effort).
   if (trade.binanceSlOrderId) {
     try {
-      await state.client.cancelOrder(trade.symbol, { orderId: Number(trade.binanceSlOrderId) })
+      // SL is an algo order — must use the algoOrder cancel endpoint, not /fapi/v1/order.
+      await state.client.cancelAlgoOrder(trade.symbol, { algoId: Number(trade.binanceSlOrderId) })
     } catch (e: any) {
       if (!(e instanceof BinanceApiError) || (e.code !== -2011 && e.code !== -2013)) {
         console.warn(`${LOG} #${tradeId} cancel old SL failed: ${e.message}`)
@@ -1709,19 +1731,26 @@ async function replaceSlOrder(tradeId: number, newStopPrice: number): Promise<vo
     }
   }
 
-  // Place new SL at trailing stop.
+  // Place new SL at trailing stop. Via Algo Order API (same as initial SL).
+  // Note: we use a different clientAlgoId on each replacement (slL<tradeId>r<seq>)
+  // because Binance enforces clientAlgoId uniqueness AT LEAST until the original
+  // is fully resolved. Using slL<tradeId> for all SLs would collide after the
+  // first cancel-and-replace.
+  const replaceSeq = ((trade.closes as any[]) ?? []).length + 1  // monotonic-per-trade
+  const newSlClientId = `slL${tradeId}r${replaceSeq}`
   let newSlOrderId: bigint | null = null
   try {
-    const order = await state.client.placeOrder({
+    const order = await state.client.placeAlgoOrder({
       symbol: trade.symbol,
       side: closeSide,
       type: 'STOP_MARKET',
-      stopPrice: Number(stopPriceRounded.toFixed(f.pricePrecision)),
+      triggerPrice: Number(stopPriceRounded.toFixed(f.pricePrecision)),
       quantity: qty,
       reduceOnly: true,
       workingType: 'MARK_PRICE',
+      clientAlgoId: newSlClientId,
     })
-    newSlOrderId = BigInt(order.orderId)
+    newSlOrderId = BigInt(order.algoId)
   } catch (e: any) {
     console.error(`${LOG} #${tradeId} replace SL failed at ${stopPriceRounded}: ${e.message}`)
   }
@@ -1753,7 +1782,9 @@ async function cancelRemainingChildren(tradeId: number, reason: string): Promise
 
   for (const c of toCancel) {
     try {
-      await state.client.cancelOrder(trade.symbol, { orderId: c.id })
+      // SL and TP children are algo orders — they live in a separate ID space
+      // from regular orders. Must use cancelAlgoOrder, otherwise -1102/-2013.
+      await state.client.cancelAlgoOrder(trade.symbol, { algoId: c.id })
     } catch (e: any) {
       if (!(e instanceof BinanceApiError) || (e.code !== -2011 && e.code !== -2013)) {
         // -2011 / -2013: already cancelled or doesn't exist — ok.

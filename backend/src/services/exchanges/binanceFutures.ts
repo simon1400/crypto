@@ -93,6 +93,41 @@ export interface OrderResponse {
   updateTime: number
 }
 
+/**
+ * Conditional order parameters for the Algo Order API. Binance moved
+ * STOP_MARKET / TAKE_PROFIT_MARKET / STOP / TAKE_PROFIT / TRAILING_STOP_MARKET
+ * to a separate Algo Service endpoint post 2025-12-09 — the old /fapi/v1/order
+ * returns -4120 for these types.
+ */
+export interface PlaceAlgoOrderParams {
+  symbol: string
+  side: OrderSide
+  type: 'STOP_MARKET' | 'TAKE_PROFIT_MARKET' | 'STOP' | 'TAKE_PROFIT' | 'TRAILING_STOP_MARKET'
+  triggerPrice: number
+  quantity?: number
+  reduceOnly?: boolean
+  workingType?: 'MARK_PRICE' | 'CONTRACT_PRICE'
+  timeInForce?: TimeInForce
+  clientAlgoId?: string
+  priceProtect?: boolean
+  closePosition?: boolean
+}
+
+export interface AlgoOrderResponse {
+  algoId: number
+  clientAlgoId: string
+  symbol: string
+  side: string
+  type: string
+  algoStatus: string // NEW | TRIGGERED | CANCELLED | EXPIRED
+  triggerPrice: string
+  quantity: string
+  reduceOnly: boolean
+  workingType: string
+  timeInForce: string
+  updateTime: number
+}
+
 export interface PositionRisk {
   symbol: string
   positionAmt: string // signed: + long, - short, 0 flat
@@ -290,6 +325,44 @@ export class BinanceFuturesClient {
   async getOrder(symbol: string, opts: { orderId?: number; origClientOrderId?: string }): Promise<OrderResponse> {
     const params: Record<string, string | number> = { symbol, ...opts }
     return this.signedGet<OrderResponse>('/fapi/v1/order', params)
+  }
+
+  // --------------------------------------------------------------------------
+  // Algo orders — conditional STOP_MARKET / TAKE_PROFIT_MARKET etc.
+  //
+  // Binance migrated conditional orders to a separate Algo Service endpoint
+  // (post 2025-12-09). Placing STOP_MARKET via /fapi/v1/order now returns
+  // -4120 with message "Order type not supported for this endpoint. Please
+  // use the Algo Order API endpoints instead."
+  //
+  // Endpoint: POST /fapi/v1/algoOrder. Response fields differ: `algoId` and
+  // `clientAlgoId` instead of `orderId`/`clientOrderId`.
+  // --------------------------------------------------------------------------
+
+  async placeAlgoOrder(p: PlaceAlgoOrderParams): Promise<AlgoOrderResponse> {
+    const body: Record<string, string | number | boolean> = {
+      algoType: 'CONDITIONAL',
+      symbol: p.symbol,
+      side: p.side,
+      type: p.type,
+      triggerPrice: p.triggerPrice,
+    }
+    if (p.quantity !== undefined) body.quantity = p.quantity
+    if (p.reduceOnly !== undefined) body.reduceOnly = String(p.reduceOnly)
+    if (p.workingType) body.workingType = p.workingType
+    if (p.timeInForce) body.timeInForce = p.timeInForce
+    if (p.clientAlgoId) body.clientAlgoId = p.clientAlgoId
+    if (p.priceProtect !== undefined) body.priceProtect = p.priceProtect
+    if (p.closePosition !== undefined) body.closePosition = p.closePosition
+    return this.signedPost<AlgoOrderResponse>('/fapi/v1/algoOrder', body)
+  }
+
+  /** Cancel a single conditional/algo order. */
+  async cancelAlgoOrder(symbol: string, opts: { algoId?: number; clientAlgoId?: string }): Promise<any> {
+    const params: Record<string, string | number> = { symbol }
+    if (opts.algoId !== undefined) params.algoId = opts.algoId
+    if (opts.clientAlgoId !== undefined) params.clientAlgoId = opts.clientAlgoId
+    return this.signedDelete('/fapi/v1/algoOrder', params)
   }
 
   // --------------------------------------------------------------------------
