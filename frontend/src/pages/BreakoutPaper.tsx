@@ -16,7 +16,8 @@ import {
 } from '../api/breakoutPaper'
 import {
   getLiveStatus, killSwitch, releaseKillSwitch,
-  type BreakoutLiveStatus,
+  getLiveAttempts, clearLiveAttempts,
+  type BreakoutLiveStatus, type BreakoutLiveAttempt,
 } from '../api/breakoutLiveC'
 import BreakoutPaperTradeModal from '../components/BreakoutPaperTradeModal'
 import BreakoutSignalModal from '../components/BreakoutSignalModal'
@@ -51,7 +52,7 @@ function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): Posit
 
 // 'SIGNALS' — таб для A/B со списком сигналов сканера.
 // 'PENDING' — таб для C: висящие limit-ордера на rangeEdge до пробоя.
-type StatusFilter = 'OPEN' | 'CLOSED' | 'SIGNALS' | 'PENDING'
+type StatusFilter = 'OPEN' | 'CLOSED' | 'SIGNALS' | 'PENDING' | 'ATTEMPTS'
 
 const PAPER_STATUS_BADGE: Record<string, { bg: string; text: string; label: string }> = {
   NEW:       { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Новый' },
@@ -290,6 +291,9 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
   const [showBySymbol, setShowBySymbol] = useState(false)
   // LIVE-only: Binance connectivity snapshot + kill-switch state. Polled every 10s.
   const [liveStatus, setLiveStatus] = useState<BreakoutLiveStatus | null>(null)
+  // LIVE-only: placement-attempt audit log (today's UTC bucket). Fetched when
+  // the 'Отклонённые' tab is active. Refreshed on every loadAll().
+  const [attempts, setAttempts] = useState<BreakoutLiveAttempt[]>([])
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -357,6 +361,14 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         try {
           const openOnly = await getBreakoutPaperTrades({ status: ['OPEN', 'TP1_HIT', 'TP2_HIT'], limit: 100 }, variant)
           setOpenTradesAll(openOnly.data)
+        } catch { /* keep stale */ }
+      }
+      // LIVE 'Отклонённые' tab — pull today's attempts audit. Only fetched when
+      // the tab is active (the list can be hundreds of rows per cycle).
+      if (isLiveVariant(variant) && statusFilter === 'ATTEMPTS') {
+        try {
+          const a = await getLiveAttempts()
+          setAttempts(a.data)
         } catch { /* keep stale */ }
       }
     } catch (e: any) {
@@ -1082,6 +1094,9 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         ) : (
           <FilterButton active={statusFilter === 'SIGNALS'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('SIGNALS') }}>Сигналы</FilterButton>
         )}
+        {isLive && (
+          <FilterButton active={statusFilter === 'ATTEMPTS'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('ATTEMPTS') }}>Отклонённые</FilterButton>
+        )}
       </div>
 
       {/* Signals table (only when SIGNALS filter is active) */}
@@ -1303,8 +1318,106 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         )
       })()}
 
+      {/* LIVE 'Отклонённые' tab — placement attempts audit for today's UTC range
+          cycle. Every limit the strategy considered: placed, rejected by Binance
+          (-5022 post-only, -2027 max position, -4024 minPrice), skipped by our
+          markPrice gate (would be marketable), or skipped by pre-placement
+          filters (slDist<0.4%, no range, margin guard). */}
+      {statusFilter === 'ATTEMPTS' && isLive && (
+        <div className="bg-card border border-input rounded overflow-hidden mb-6">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-input">
+            <div className="text-xs text-text-secondary">
+              {loading ? 'Загрузка...' : (
+                <>
+                  Сегодня (UTC): <span className="text-text-primary font-medium">{attempts.length}</span> попыток
+                  {attempts.length > 0 && (() => {
+                    const placed = attempts.filter(a => a.status === 'PLACED').length
+                    const rejected = attempts.filter(a => a.status === 'REJECTED_EXCHANGE').length
+                    const gated = attempts.filter(a => a.status === 'SKIPPED_GATE').length
+                    const filtered = attempts.filter(a => a.status === 'SKIPPED_FILTER').length
+                    return <span className="text-text-secondary"> · {placed} placed · {rejected} rejected · {gated} gated · {filtered} filtered</span>
+                  })()}
+                </>
+              )}
+            </div>
+            <button
+              className="text-[11px] text-text-secondary hover:text-text-primary px-2 py-1 rounded border border-input hover:bg-input transition-colors"
+              onClick={async () => {
+                if (!confirm('Очистить журнал попыток за сегодня?')) return
+                try {
+                  await clearLiveAttempts()
+                  setAttempts([])
+                } catch (e: any) {
+                  alert(`Не удалось очистить: ${e.message}`)
+                }
+              }}
+            >
+              Очистить
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs min-w-[900px]">
+              <thead className="bg-input text-text-secondary">
+                <tr>
+                  <th className="text-left px-3 py-2">Время UTC</th>
+                  <th className="text-left px-3 py-2">Монета</th>
+                  <th className="text-center px-3 py-2">Сторона</th>
+                  <th className="text-center px-3 py-2">Статус</th>
+                  <th className="text-left px-3 py-2">Код</th>
+                  <th className="text-right px-3 py-2" title="Цена лимитки при попытке">Limit</th>
+                  <th className="text-right px-3 py-2" title="markPrice в момент попытки">Mark</th>
+                  <th className="text-right px-3 py-2">Range</th>
+                  <th className="text-left px-3 py-2">Причина</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && <tr><td colSpan={9} className="text-center py-12 text-text-secondary">Загрузка...</td></tr>}
+                {!loading && attempts.length === 0 && (
+                  <tr><td colSpan={9} className="text-center py-12 text-text-secondary">
+                    За сегодня попыток постановки лимиток ещё не было. Они появятся когда сканер начнёт цикл (раз в несколько минут после 03:00 UTC).
+                  </td></tr>
+                )}
+                {!loading && attempts.map(a => {
+                  const statusBadge = (() => {
+                    switch (a.status) {
+                      case 'PLACED':            return { label: '✓ Placed',  cls: 'bg-long/15 text-long' }
+                      case 'REJECTED_EXCHANGE': return { label: '✕ Rejected', cls: 'bg-short/15 text-short' }
+                      case 'SKIPPED_GATE':      return { label: '⊘ Gate',    cls: 'bg-accent/15 text-accent' }
+                      case 'SKIPPED_FILTER':    return { label: '⊘ Filter',  cls: 'bg-neutral/15 text-text-secondary' }
+                      default:                  return { label: a.status,    cls: 'bg-input text-text-secondary' }
+                    }
+                  })()
+                  const ts = new Date(a.attemptedAt)
+                  const hhmm = `${String(ts.getUTCHours()).padStart(2,'0')}:${String(ts.getUTCMinutes()).padStart(2,'0')}:${String(ts.getUTCSeconds()).padStart(2,'0')}`
+                  const rangeStr = a.rangeHigh != null && a.rangeLow != null
+                    ? `${fmtPrice(a.rangeLow)}/${fmtPrice(a.rangeHigh)}`
+                    : '—'
+                  return (
+                    <tr key={a.id} className="border-t border-input hover:bg-input/50 transition-colors">
+                      <td className="px-3 py-2 font-mono text-[11px] text-text-secondary whitespace-nowrap">{hhmm}</td>
+                      <td className="px-3 py-2 font-mono text-text-primary">{a.symbol.replace('USDT','')}</td>
+                      <td className="px-3 py-2 text-center">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${a.side === 'BUY' ? 'bg-long/15 text-long' : 'bg-short/15 text-short'}`}>{a.side}</span>
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${statusBadge.cls} whitespace-nowrap`}>{statusBadge.label}</span>
+                      </td>
+                      <td className="px-3 py-2 font-mono text-[11px] text-text-secondary">{a.reasonCode ?? '—'}</td>
+                      <td className="px-3 py-2 font-mono text-right text-text-secondary">{a.limitPrice != null ? `$${fmtPrice(a.limitPrice)}` : '—'}</td>
+                      <td className="px-3 py-2 font-mono text-right text-text-secondary">{a.markPrice != null ? `$${fmtPrice(a.markPrice)}` : '—'}</td>
+                      <td className="px-3 py-2 font-mono text-right text-text-secondary text-[11px]">{rangeStr}</td>
+                      <td className="px-3 py-2 text-text-secondary text-[11px] max-w-[400px] truncate" title={a.reasonText ?? ''}>{a.reasonText ?? ''}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Mobile trade cards (< 640px) */}
-      {statusFilter !== 'SIGNALS' && statusFilter !== 'PENDING' && (
+      {statusFilter !== 'SIGNALS' && statusFilter !== 'PENDING' && statusFilter !== 'ATTEMPTS' && (
       <div className="sm:hidden space-y-2 mb-6">
         {loading && (
           <div className="bg-card border border-input rounded p-6 text-center text-text-secondary text-sm">Загрузка...</div>
@@ -1453,7 +1566,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       )}
 
       {/* Trades table (>= 640px) */}
-      {statusFilter !== 'SIGNALS' && statusFilter !== 'PENDING' && (
+      {statusFilter !== 'SIGNALS' && statusFilter !== 'PENDING' && statusFilter !== 'ATTEMPTS' && (
       <div className="hidden sm:block bg-card border border-input rounded overflow-hidden mb-6">
         <div className="overflow-x-auto">
           <table className="w-full text-xs min-w-[900px]">

@@ -347,6 +347,9 @@ async function runEodTick(): Promise<void> {
     } catch (e: any) {
       console.warn(`${LOG} orphan cleanup failed: ${e.message}`)
     }
+    // Prune attempt audit rows from prior UTC days — they belonged to the
+    // last range cycle and aren't useful once a new one starts.
+    await pruneOldAttempts()
   }
 }
 
@@ -950,6 +953,67 @@ async function cancelAllPendingForBreaker(client: BinanceFuturesClient, reason: 
 }
 
 // ============================================================================
+// Attempt audit — every decision around a placement (placed, exchange-rejected,
+// or skipped by our gate / pre-placement filter) writes a row to
+// BreakoutLiveAttemptC. The LIVE UI 'Отклонённые' tab reads these so the user
+// can see what each cycle tried and why it didn't open.
+// ============================================================================
+
+interface AttemptArgs {
+  symbol: string
+  side: 'BUY' | 'SELL'
+  rangeDate: string
+  // PLACED | REJECTED_EXCHANGE | SKIPPED_GATE | SKIPPED_FILTER
+  status: 'PLACED' | 'REJECTED_EXCHANGE' | 'SKIPPED_GATE' | 'SKIPPED_FILTER'
+  reasonCode?: string | null
+  reasonText?: string | null
+  limitPrice?: number | null
+  markPrice?: number | null
+  rangeHigh?: number | null
+  rangeLow?: number | null
+}
+
+async function recordAttempt(a: AttemptArgs): Promise<void> {
+  try {
+    await prisma.breakoutLiveAttemptC.create({
+      data: {
+        symbol: a.symbol,
+        side: a.side,
+        rangeDate: a.rangeDate,
+        status: a.status,
+        reasonCode: a.reasonCode ?? null,
+        reasonText: a.reasonText ?? null,
+        limitPrice: a.limitPrice ?? null,
+        markPrice: a.markPrice ?? null,
+        rangeHigh: a.rangeHigh ?? null,
+        rangeLow: a.rangeLow ?? null,
+      },
+    })
+  } catch (e: any) {
+    // Best-effort audit — never break the placement cycle if logging fails.
+    console.warn(`${LOG} recordAttempt failed for ${a.symbol} ${a.side}: ${e.message}`)
+  }
+}
+
+/**
+ * Drop attempt rows older than today so the table stays bounded. Called at
+ * EOD alongside cancelOrphanPendingLimits / flatten.
+ */
+async function pruneOldAttempts(): Promise<void> {
+  const utcDate = new Date().toISOString().slice(0, 10)
+  try {
+    const r = await prisma.breakoutLiveAttemptC.deleteMany({
+      where: { rangeDate: { lt: utcDate } },
+    })
+    if (r.count > 0) {
+      console.log(`${LOG} pruned ${r.count} attempt(s) from prior UTC days`)
+    }
+  } catch (e: any) {
+    console.warn(`${LOG} pruneOldAttempts failed: ${e.message}`)
+  }
+}
+
+// ============================================================================
 // Placement — pre-emptive limit pairs on rangeEdge (mirrors paper C, but real)
 // ============================================================================
 
@@ -1034,17 +1098,59 @@ async function placeLimitsForRanges(
       // Live C trades on Binance — use Binance klines for range detection so
       // rangeHigh/rangeLow match the order book we're placing limits into.
       // (Paper variants use Bybit historical; live is exchange-aligned.)
-      const candles = await loadHistorical(symbol, '5m', 1, 'binance')
+      let candles: any[]
+      try {
+        // Binance USDT-M Futures — many perp-only pairs (FARTCOIN, KAS,
+        // USELESS, SIREN, AERO, VVV, 1000BONK, UB, VANA) are not on the spot
+        // endpoint at all and would 400 'Invalid symbol'. We trade on futures,
+        // klines must come from there too.
+        candles = await loadHistorical(symbol, '5m', 1, 'binance-futures')
+      } catch (e: any) {
+        // Not on Binance for this network (common on testnet for newer pairs),
+        // or transient 400. Recorded as one SKIPPED_FILTER per cycle so the
+        // user can see why those symbols never show up in Pending.
+        console.warn(`${LOG} ${symbol} placement failed: ${e.message}`)
+        await recordAttempt({
+          symbol, side: 'BUY', rangeDate: utcDate,
+          status: 'SKIPPED_FILTER',
+          reasonCode: 'klines', reasonText: e.message,
+        })
+        continue
+      }
       const range = detectRange(candles, utcDate, engineCfg)
-      if (!range) continue
+      if (!range) {
+        await recordAttempt({
+          symbol, side: 'BUY', rangeDate: utcDate,
+          status: 'SKIPPED_FILTER',
+          reasonCode: 'noRange',
+          reasonText: 'no 3h range detected for today yet',
+        })
+        continue
+      }
 
       // SL distance guard — same as engine/paper.
       const slDistPct = (range.rangeSize / Math.min(range.rangeHigh, range.rangeLow)) * 100
-      if (slDistPct < 0.4) continue
+      if (slDistPct < 0.4) {
+        await recordAttempt({
+          symbol, side: 'BUY', rangeDate: utcDate,
+          status: 'SKIPPED_FILTER',
+          reasonCode: 'slDist',
+          reasonText: `range too tight: ${slDistPct.toFixed(2)}% < 0.4%`,
+          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+        })
+        continue
+      }
 
       const f = filters.get(symbol)
       if (!f) {
         console.warn(`${LOG} ${symbol} — not on Binance Futures, skipping`)
+        await recordAttempt({
+          symbol, side: 'BUY', rangeDate: utcDate,
+          status: 'SKIPPED_FILTER',
+          reasonCode: 'noFilter',
+          reasonText: 'symbol not on Binance Futures',
+          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+        })
         continue
       }
 
@@ -1066,6 +1172,12 @@ async function placeLimitsForRanges(
         livePrice = await client.getMarkPrice(symbol)
       } catch {
         console.warn(`${LOG} ${symbol} — markPrice fetch failed, skipping placement (need it for marketable check)`)
+        await recordAttempt({
+          symbol, side: 'BUY', rangeDate: utcDate,
+          status: 'SKIPPED_FILTER',
+          reasonCode: 'markPrice', reasonText: 'markPrice fetch failed',
+          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+        })
         continue
       }
       if (livePrice == null || !isFinite(livePrice) || livePrice <= 0) continue
@@ -1078,6 +1190,31 @@ async function placeLimitsForRanges(
       const safetyAbs = Math.max(f.tickSize, livePrice * 0.0005)
       const canPlaceBuy = livePrice < range.rangeHigh - safetyAbs
       const canPlaceSell = livePrice > range.rangeLow + safetyAbs
+
+      // Record any side the gate refused. Both directions get their own audit
+      // row so the UI can show 'BUY skipped marketable / SELL placed' pairs.
+      if (!canPlaceBuy) {
+        await recordAttempt({
+          symbol, side: 'BUY', rangeDate: utcDate,
+          status: 'SKIPPED_GATE',
+          reasonCode: 'marketable',
+          reasonText: `markPrice ${livePrice} >= rangeHigh ${range.rangeHigh} − buffer (would be marketable)`,
+          limitPrice: range.rangeHigh,
+          markPrice: livePrice,
+          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+        })
+      }
+      if (!canPlaceSell) {
+        await recordAttempt({
+          symbol, side: 'SELL', rangeDate: utcDate,
+          status: 'SKIPPED_GATE',
+          reasonCode: 'marketable',
+          reasonText: `markPrice ${livePrice} <= rangeLow ${range.rangeLow} + buffer (would be marketable)`,
+          limitPrice: range.rangeLow,
+          markPrice: livePrice,
+          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+        })
+      }
 
       if (!canPlaceBuy && !canPlaceSell) {
         // Either price already broke out (no point chasing) or sits squarely
@@ -1115,6 +1252,8 @@ async function placeLimitsForRanges(
           client, net, cfg, f, symbol, side: 'BUY',
           entryPrice: range.rangeHigh, stopLoss: range.rangeLow,
           tpLadder: buyTpLadder, rangeDate: utcDate, placedAt,
+          markPrice: livePrice,
+          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
         })
         if (row) placedRows.push(row)
       }
@@ -1125,6 +1264,8 @@ async function placeLimitsForRanges(
           client, net, cfg, f, symbol, side: 'SELL',
           entryPrice: range.rangeLow, stopLoss: range.rangeHigh,
           tpLadder: sellTpLadder, rangeDate: utcDate, placedAt,
+          markPrice: livePrice,
+          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
         })
         if (row) placedRows.push(row)
       }
@@ -1163,6 +1304,11 @@ interface PlaceOneSideArgs {
   tpLadder: number[]
   rangeDate: string
   placedAt: Date
+  // Audit context — passed through so attempt rows have full picture even
+  // if the placement fails at a downstream step (sizing, exchange reject).
+  markPrice: number
+  rangeHigh: number
+  rangeLow: number
 }
 
 /**
@@ -1184,6 +1330,14 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
   })
   if (!sizing || sizing.positionUnits <= 0) {
     console.warn(`${LOG} ${a.symbol} ${a.side} — sizing failed`)
+    await recordAttempt({
+      symbol: a.symbol, side: a.side, rangeDate: a.rangeDate,
+      status: 'SKIPPED_FILTER',
+      reasonCode: 'sizing',
+      reasonText: 'sizing returned zero units',
+      limitPrice: a.entryPrice, markPrice: a.markPrice,
+      rangeHigh: a.rangeHigh, rangeLow: a.rangeLow,
+    })
     return null
   }
 
@@ -1203,7 +1357,15 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
   // initial-margin checks (it'll reject -2019 if we get too close to balance).
   const budget = a.cfg.currentDepositUsd * 0.90
   if (existingMargin + required > budget) {
-    console.log(`${LOG} ${a.symbol} ${a.side} — skip: margin used ${existingMargin.toFixed(2)} + new ${required.toFixed(2)} > budget ${budget.toFixed(2)} (depo ${a.cfg.currentDepositUsd.toFixed(2)})`)
+    const msg = `margin used ${existingMargin.toFixed(2)} + new ${required.toFixed(2)} > budget ${budget.toFixed(2)} (depo ${a.cfg.currentDepositUsd.toFixed(2)})`
+    console.log(`${LOG} ${a.symbol} ${a.side} — skip: ${msg}`)
+    await recordAttempt({
+      symbol: a.symbol, side: a.side, rangeDate: a.rangeDate,
+      status: 'SKIPPED_FILTER',
+      reasonCode: 'margin', reasonText: msg,
+      limitPrice: a.entryPrice, markPrice: a.markPrice,
+      rangeHigh: a.rangeHigh, rangeLow: a.rangeLow,
+    })
     return null
   }
 
@@ -1235,7 +1397,15 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
   const notional = qty * priceRounded
   const minNotional = Math.max(a.f.minNotional || 5, 5) + 1
   if (notional < minNotional || qty < a.f.minQty) {
-    console.warn(`${LOG} ${a.symbol} ${a.side} — qty ${qty} × ${priceRounded} = ${notional.toFixed(2)} below minNotional ${minNotional}`)
+    const msg = `qty ${qty} × ${priceRounded} = ${notional.toFixed(2)} below minNotional ${minNotional}`
+    console.warn(`${LOG} ${a.symbol} ${a.side} — ${msg}`)
+    await recordAttempt({
+      symbol: a.symbol, side: a.side, rangeDate: a.rangeDate,
+      status: 'SKIPPED_FILTER',
+      reasonCode: 'minNotional', reasonText: msg,
+      limitPrice: priceRounded, markPrice: a.markPrice,
+      rangeHigh: a.rangeHigh, rangeLow: a.rangeLow,
+    })
     return null
   }
 
@@ -1319,6 +1489,14 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
       return null
     }
     console.warn(`${LOG} ${a.symbol} ${a.side} placement REJECTED: ${e.message}`)
+    const code = e instanceof BinanceApiError ? String(e.code) : 'unknown'
+    await recordAttempt({
+      symbol: a.symbol, side: a.side, rangeDate: a.rangeDate,
+      status: 'REJECTED_EXCHANGE',
+      reasonCode: code, reasonText: e.message,
+      limitPrice: priceRounded, markPrice: a.markPrice,
+      rangeHigh: a.rangeHigh, rangeLow: a.rangeLow,
+    })
     return null
   }
 
@@ -1340,6 +1518,14 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
     },
   }).catch((e) => {
     console.warn(`${LOG} ${a.symbol} ${a.side} post-place update failed: ${e.message}`)
+  })
+
+  await recordAttempt({
+    symbol: a.symbol, side: a.side, rangeDate: a.rangeDate,
+    status: 'PLACED',
+    reasonCode: null, reasonText: null,
+    limitPrice: exchangePrice, markPrice: a.markPrice,
+    rangeHigh: a.rangeHigh, rangeLow: a.rangeLow,
   })
 
   return row

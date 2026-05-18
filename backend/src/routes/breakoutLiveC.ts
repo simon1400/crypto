@@ -432,6 +432,42 @@ router.post('/trades/:id/close-market', async (req, res) => {
   }
 })
 
+// GET /attempts — placement attempts audit log. Powers the LIVE 'Отклонённые'
+// tab. Default returns today's UTC bucket; ?rangeDate=YYYY-MM-DD overrides.
+// Each row: PLACED | REJECTED_EXCHANGE | SKIPPED_GATE | SKIPPED_FILTER + the
+// price context at attempt time.
+router.get('/attempts', async (req, res) => {
+  try {
+    const todayUtc = new Date().toISOString().slice(0, 10)
+    const rangeDate = typeof req.query.rangeDate === 'string' && req.query.rangeDate
+      ? req.query.rangeDate
+      : todayUtc
+    const limit = Math.min(parseInt(String(req.query.limit ?? '500'), 10) || 500, 2000)
+    const rows = await prisma.breakoutLiveAttemptC.findMany({
+      where: { rangeDate },
+      orderBy: { attemptedAt: 'desc' },
+      take: limit,
+    })
+    res.json({ data: rows, rangeDate, total: rows.length })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// DELETE /attempts — clear today's attempt log. The UI button.
+router.delete('/attempts', async (req, res) => {
+  try {
+    const todayUtc = new Date().toISOString().slice(0, 10)
+    const rangeDate = typeof req.query.rangeDate === 'string' && req.query.rangeDate
+      ? req.query.rangeDate
+      : todayUtc
+    const r = await prisma.breakoutLiveAttemptC.deleteMany({ where: { rangeDate } })
+    res.json({ deleted: r.count, rangeDate })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // ============================================================================
 // Kill switch — cancel all + close all + disable
 // ============================================================================

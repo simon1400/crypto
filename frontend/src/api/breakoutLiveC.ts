@@ -180,3 +180,31 @@ export async function testPlaceOrder(p: { symbol: string; side: 'BUY' | 'SELL'; 
 export async function cancelTestOrders(symbol: string): Promise<{ ok: boolean }> {
   return req(`${BP}/test-orders/${encodeURIComponent(symbol)}`, { method: 'DELETE' })
 }
+
+// === Placement attempts audit (powers 'Отклонённые' tab) ===
+
+export interface BreakoutLiveAttempt {
+  id: number
+  symbol: string
+  side: 'BUY' | 'SELL'
+  rangeDate: string
+  // PLACED | REJECTED_EXCHANGE | SKIPPED_GATE | SKIPPED_FILTER
+  status: string
+  reasonCode: string | null
+  reasonText: string | null
+  limitPrice: number | null
+  markPrice: number | null
+  rangeHigh: number | null
+  rangeLow: number | null
+  attemptedAt: string
+}
+
+export async function getLiveAttempts(rangeDate?: string): Promise<{ data: BreakoutLiveAttempt[]; rangeDate: string; total: number }> {
+  const q = rangeDate ? `?rangeDate=${encodeURIComponent(rangeDate)}` : ''
+  return req(`${BP}/attempts${q}`)
+}
+
+export async function clearLiveAttempts(rangeDate?: string): Promise<{ deleted: number; rangeDate: string }> {
+  const q = rangeDate ? `?rangeDate=${encodeURIComponent(rangeDate)}` : ''
+  return req(`${BP}/attempts${q}`, { method: 'DELETE' })
+}

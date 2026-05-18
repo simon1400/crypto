@@ -493,3 +493,28 @@ model BreakoutLiveFundingC {
   @@index([symbol, occurredAt])
   @@index([tradeId])
 }
+
+// Audit trail for every placement attempt — successful or not. Lets the UI
+// show why a given symbol/side wasn't filled on a given cycle: marketable
+// (our markPrice gate skipped it), Binance rejected (-5022 post-only,
+// -2027 max position, -4024 minPrice, etc.), or pre-placement filter
+// (slDist<0.4%, no range yet, margin guard).
+model BreakoutLiveAttemptC {
+  id          Int      @id @default(autoincrement())
+  symbol      String
+  side        String   // BUY | SELL
+  rangeDate   String   // 'YYYY-MM-DD' UTC — bucket for daily cleanup
+  // PLACED | REJECTED_EXCHANGE | SKIPPED_GATE | SKIPPED_FILTER
+  status      String
+  reasonCode  String? // '-5022' | '-2027' | 'marketable' | 'slDist' | 'noRange' | 'margin' | …
+  reasonText  String? // human-readable detail
+  // Prices captured at attempt time
+  limitPrice  Float?
+  markPrice   Float?
+  rangeHigh   Float?
+  rangeLow    Float?
+  attemptedAt DateTime @default(now())
+
+  @@index([rangeDate, symbol])
+  @@index([attemptedAt])
+}

@@ -7,6 +7,11 @@ const CACHE_DIR = path.join(__dirname, '../../data/backtest')
 const BYBIT_BASE = 'https://api.bybit.com/v5/market/kline'
 const BYBIT_LIMIT = 1000
 const BINANCE_BASE = 'https://api.binance.com/api/v3/klines'
+// Futures USDT-M. Live C uses this — many perp-only pairs (FARTCOIN, KAS,
+// USELESS, SIREN, AERO, VVV, 1000BONK, UB, VANA) are NOT on the spot endpoint
+// and a request returns -1121 'Invalid symbol'. The path/payload shape is
+// identical to spot klines so the parser doesn't change.
+const BINANCE_FUTURES_BASE = 'https://fapi.binance.com/fapi/v1/klines'
 const BINANCE_LIMIT = 1000
 
 const INTERVAL_MS: Record<string, number> = {
@@ -23,7 +28,7 @@ const BYBIT_INTERVAL: Record<string, string> = {
   '1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '4h': '240', '1d': 'D',
 }
 
-export type ExchangeSource = 'bybit' | 'binance'
+export type ExchangeSource = 'bybit' | 'binance' | 'binance-futures'
 export type BybitCategory = 'linear' | 'spot' | 'inverse'
 
 function cachePath(symbol: string, interval: string, source: ExchangeSource): string {
@@ -88,8 +93,10 @@ async function fetchBinanceBatch(
   interval: string,
   startTime: number,
   endTime: number,
+  futures: boolean = false,
 ): Promise<OHLCV[]> {
-  const url = `${BINANCE_BASE}?symbol=${symbol}&interval=${interval}&startTime=${startTime}&endTime=${endTime}&limit=${BINANCE_LIMIT}`
+  const base = futures ? BINANCE_FUTURES_BASE : BINANCE_BASE
+  const url = `${base}?symbol=${symbol}&interval=${interval}&startTime=${startTime}&endTime=${endTime}&limit=${BINANCE_LIMIT}`
   const res = await fetch(url)
   if (!res.ok) throw new Error(`Binance ${res.status} ${res.statusText} on ${symbol} ${interval}`)
   const raw = (await res.json()) as any[]
@@ -189,15 +196,16 @@ export async function loadHistorical(
       await new Promise((r) => setTimeout(r, 400))
     }
   } else {
-    // Binance: forward-walking
+    // Binance (spot or USDT-M futures, same kline shape): forward-walking.
+    const isFutures = source === 'binance-futures'
     let cursor = fetchFrom
     while (cursor <= lastClosedTime) {
-      const batch = await fetchBinanceBatch(symbol, interval, cursor, lastClosedTime)
+      const batch = await fetchBinanceBatch(symbol, interval, cursor, lastClosedTime, isFutures)
       if (batch.length === 0) break
       fresh.push(...batch)
       cursor = batch[batch.length - 1].time + intervalMs
       if (fresh.length % 10000 < BINANCE_LIMIT) {
-        console.log(`[Loader/binance] ${symbol} ${interval}: ${fresh.length} new (up to ${new Date(cursor).toISOString()})`)
+        console.log(`[Loader/${source}] ${symbol} ${interval}: ${fresh.length} new (up to ${new Date(cursor).toISOString()})`)
       }
       await new Promise((r) => setTimeout(r, 250))
     }
