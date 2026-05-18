@@ -11,6 +11,7 @@ import breakoutRouter from './routes/breakout'
 import breakoutPaperRouter from './routes/breakoutPaper'
 import breakoutPaperBRouter from './routes/breakoutPaperB'
 import breakoutPaperCRouter from './routes/breakoutPaperC'
+import breakoutLiveCRouter from './routes/breakoutLiveC'
 import binaryRouter from './routes/binary'
 import { startBreakoutLiveScanner, stopBreakoutLiveScanner } from './services/dailyBreakoutLiveScanner'
 import { startBreakoutPaperTrader, stopBreakoutPaperTrader, startBreakoutEodSummary, stopBreakoutEodSummary } from './services/dailyBreakoutPaperTrader'
@@ -43,6 +44,7 @@ app.use('/api/breakout', breakoutRouter)
 app.use('/api/breakout-paper', breakoutPaperRouter)
 app.use('/api/breakout-paper-b', breakoutPaperBRouter)
 app.use('/api/breakout-paper-c', breakoutPaperCRouter)
+app.use('/api/breakout-live-c', breakoutLiveCRouter)
 app.use('/api/binary', binaryRouter)
 
 const server = app.listen(PORT, () => {

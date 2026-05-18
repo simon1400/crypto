@@ -3,6 +3,7 @@ import { getSettings, saveSettings, SettingsResponse } from '../api/client'
 import ConnectionSection from '../components/settings/ConnectionSection'
 import SimulationSection from '../components/settings/SimulationSection'
 import TelegramSection from '../components/settings/TelegramSection'
+import BinanceSection from '../components/settings/BinanceSection'
 
 export default function Settings() {
   const [loading, setLoading] = useState(true)
@@ -107,6 +108,11 @@ export default function Settings() {
           useTestnet={useTestnet}
           setUseTestnet={setUseTestnet}
           balance={balance}
+        />
+        <BinanceSection
+          settings={settings}
+          onUpdate={setSettings}
+          showToast={showToast}
         />
         <SimulationSection
           takerFeeRate={takerFeeRate}

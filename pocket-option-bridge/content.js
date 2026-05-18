@@ -139,27 +139,15 @@
     }
   }
 
-  // Outbound frame logger + auth rewrite.
-  //
-  // PO recently started sending `isFastHistory:true,isOptimized:true` in auth.
-  // In that mode their server emits `updateHistoryNewFast` (raw ticks for the
-  // last ~15s) instead of `loadHistoryPeriodFast` (a full OHLC payload). Tick
-  // history is too small to warm BB(20). Rewrite auth to disable those flags
-  // so PO falls back to the old protocol that included pre-built candles.
+  // Outbound frame logger — for diagnostic purposes only; auth rewrite was
+  // tried (forcing isFastHistory/isOptimized to false) but PO ignored it and
+  // still emitted updateHistoryNewFast (raw ticks) instead of OHLC bars.
+  // The protocol no longer returns loadHistoryPeriodFast — must use ticks.
   const sendDumpLimit = 40
   function patchSend(ws, state) {
     const origSend = ws.send.bind(ws)
     ws.send = function (data) {
       try {
-        if (typeof data === 'string' && data.startsWith('42["auth",')) {
-          const rewritten = data
-            .replace(/"isFastHistory"\s*:\s*true/g, '"isFastHistory":false')
-            .replace(/"isOptimized"\s*:\s*true/g, '"isOptimized":false')
-          if (rewritten !== data) {
-            console.log(`[PO-Bridge] ws#${state.id} auth rewritten (disable fast/optimized)`)
-            data = rewritten
-          }
-        }
         if (state.sendDumps < sendDumpLimit && typeof data === 'string') {
           if (data !== '2' && data !== '3' && data.length > 0) {
             state.sendDumps++

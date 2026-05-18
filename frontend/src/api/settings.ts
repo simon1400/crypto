@@ -8,6 +8,13 @@ export interface SettingsResponse {
   hasKeys: boolean
   useTestnet: boolean
   balance: number | null
+  // Binance Futures keys (Variant C live)
+  binanceTestnetKeyMasked: string | null
+  binanceTestnetSecretMasked: string | null
+  binanceTestnetConfigured: boolean
+  binanceLiveKeyMasked: string | null
+  binanceLiveSecretMasked: string | null
+  binanceLiveConfigured: boolean
   telegramBotToken: string | null
   telegramChatId: string | null
   telegramEnabled: boolean
@@ -59,6 +66,33 @@ export async function setMt5Balance(data: { balance?: number | null; riskPct?: n
     method: 'PUT',
     headers: getHeaders(),
     body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+// ===================== Binance Futures keys (Variant C live) =====================
+
+export async function saveBinanceKeys(net: 'testnet' | 'live', apiKey: string, apiSecret: string): Promise<SettingsResponse & { binanceBalance?: string; binanceNet?: string }> {
+  const res = await fetch(`${BASE}/api/settings/binance-keys`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ net, apiKey, apiSecret }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteBinanceKeys(net: 'testnet' | 'live'): Promise<SettingsResponse> {
+  const res = await fetch(`${BASE}/api/settings/binance-keys?net=${net}`, {
+    method: 'DELETE',
+    headers: getHeaders(),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }))

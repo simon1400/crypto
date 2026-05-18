@@ -4,6 +4,7 @@ import { prisma } from '../db/prisma'
 import { encrypt, maskKey } from '../services/encryption'
 import { createBybitClient, validateBybitKeys } from '../services/bybit'
 import { sendTestNotification } from '../services/notifier'
+import { BinanceFuturesClient, BinanceApiError } from '../services/exchanges/binanceFutures'
 import { asyncHandler } from './_helpers'
 
 const router = Router()
@@ -14,6 +15,12 @@ function buildConfigResponse(config: BotConfig, extras?: { balance?: string; key
     apiSecretMasked: maskKey(config.apiSecret),
     hasKeys: !!(config.apiKey && config.apiSecret),
     useTestnet: config.useTestnet,
+    binanceTestnetKeyMasked: maskKey(config.binanceTestnetApiKey),
+    binanceTestnetSecretMasked: maskKey(config.binanceTestnetApiSecret),
+    binanceTestnetConfigured: !!(config.binanceTestnetApiKey && config.binanceTestnetApiSecret),
+    binanceLiveKeyMasked: maskKey(config.binanceLiveApiKey),
+    binanceLiveSecretMasked: maskKey(config.binanceLiveApiSecret),
+    binanceLiveConfigured: !!(config.binanceLiveApiKey && config.binanceLiveApiSecret),
     telegramBotToken: config.telegramBotToken ? '****' + config.telegramBotToken.slice(-4) : null,
     telegramChatId: config.telegramChatId,
     telegramEnabled: config.telegramEnabled,
@@ -170,6 +177,73 @@ router.get('/balance', asyncHandler(async (_req, res) => {
     }
     res.status(502).json({ error: `Failed to fetch balance: ${err.message}` })
   }
+}, 'Settings'))
+
+// ============================================================================
+// Binance Futures USDT-M API keys (used by Variant C live trader)
+// Two independent pairs: testnet + live. Validated on save via getAccount().
+// ============================================================================
+
+// PUT /api/settings/binance-keys
+// Body: { net: 'testnet' | 'live', apiKey: string, apiSecret: string }
+router.put('/binance-keys', asyncHandler(async (req, res) => {
+  const { net, apiKey, apiSecret } = req.body as {
+    net?: 'testnet' | 'live'
+    apiKey?: string
+    apiSecret?: string
+  }
+  if (net !== 'testnet' && net !== 'live') {
+    res.status(400).json({ error: 'net must be testnet or live' })
+    return
+  }
+  if (!apiKey || !apiSecret || apiKey.length < 10 || apiSecret.length < 10) {
+    res.status(400).json({ error: 'apiKey and apiSecret are required' })
+    return
+  }
+
+  // Validate against Binance by hitting getAccount() — confirms key has Futures
+  // trade permission and signing works. Doesn't validate IP whitelist (that
+  // surfaces on first real placement).
+  const client = new BinanceFuturesClient({
+    apiKey, apiSecret, net: net === 'live' ? 'prod' : 'testnet',
+  })
+  try {
+    await client.syncTime()
+    const acc = await client.getAccount()
+    const usdt = acc.assets.find((a) => a.asset === 'USDT')
+    const balance = usdt ? usdt.availableBalance : '0'
+
+    const keyField = net === 'testnet' ? 'binanceTestnetApiKey' : 'binanceLiveApiKey'
+    const secretField = net === 'testnet' ? 'binanceTestnetApiSecret' : 'binanceLiveApiSecret'
+
+    const updateData: any = {
+      [keyField]: encrypt(apiKey),
+      [secretField]: encrypt(apiSecret),
+    }
+    const config = await prisma.botConfig.upsert({
+      where: { id: 1 },
+      update: updateData,
+      create: { id: 1, ...updateData },
+    })
+    res.json({ ...buildConfigResponse(config), binanceBalance: balance, binanceNet: net })
+  } catch (e: any) {
+    const msg = e instanceof BinanceApiError ? e.message : (e?.message || 'unknown')
+    res.status(400).json({ error: `Binance validation failed: ${msg}` })
+  }
+}, 'Settings'))
+
+// DELETE /api/settings/binance-keys?net=testnet|live
+router.delete('/binance-keys', asyncHandler(async (req, res) => {
+  const net = req.query.net as string
+  if (net !== 'testnet' && net !== 'live') {
+    res.status(400).json({ error: 'net query param must be testnet or live' })
+    return
+  }
+  const updateData: any = net === 'testnet'
+    ? { binanceTestnetApiKey: null, binanceTestnetApiSecret: null }
+    : { binanceLiveApiKey: null, binanceLiveApiSecret: null }
+  const config = await prisma.botConfig.update({ where: { id: 1 }, data: updateData })
+  res.json(buildConfigResponse(config))
 }, 'Settings'))
 
 export default router
