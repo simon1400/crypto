@@ -1467,8 +1467,10 @@ export async function sendBreakoutEodSummary(utcDate: string): Promise<void> {
 // Bybit publicTrade WebSocket. Этот тимер запускается каждую минуту: достаточно частый
 // чтобы быстро открыть новую сделку при появлении сигнала, и держит 5m candle replay
 // как fallback если WS отвалится.
-const paperIntervals: Record<BreakoutVariant, NodeJS.Timeout | null> = { A: null, B: null, C: null }
-const paperBusy: Record<BreakoutVariant, boolean> = { A: false, B: false, C: false }
+// LIVE is included in the type for routing helpers but doesn't use the paper
+// tick — it has its own runLiveCycle in dailyBreakoutLiveTraderC.ts.
+const paperIntervals: Record<BreakoutVariant, NodeJS.Timeout | null> = { A: null, B: null, C: null, LIVE: null }
+const paperBusy: Record<BreakoutVariant, boolean> = { A: false, B: false, C: false, LIVE: false }
 
 export function startBreakoutPaperTrader(variant: BreakoutVariant = 'A'): void {
   const tag = logTag(variant)

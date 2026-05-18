@@ -1,17 +1,24 @@
 import { BASE, getHeaders } from './base'
 
 // === Variant routing ===
-// All paper-trader endpoints exist for both variants A (legacy prod) and B (alt
-// sizing experiment). Pass variant to API helpers to hit the right URL prefix.
-//   A → /api/breakout-paper/*
-//   B → /api/breakout-paper-b/*
+// All paper-trader endpoints exist for paper variants A/B/C + the live twin
+// LIVE. Pass variant to API helpers to hit the right URL prefix.
+//   A    → /api/breakout-paper       (paper, taker market entry, 10 conc)
+//   B    → /api/breakout-paper-b     (paper, taker market entry, 20 conc 5%)
+//   C    → /api/breakout-paper-c     (paper, limit-on-rangeEdge, 20 conc 5%)
+//   LIVE → /api/breakout-live-c      (real Binance Futures, same as C but real)
 // Default is A for backwards compatibility with existing call sites.
-export type BreakoutVariant = 'A' | 'B' | 'C'
+export type BreakoutVariant = 'A' | 'B' | 'C' | 'LIVE'
 
 function basePath(variant: BreakoutVariant = 'A'): string {
+  if (variant === 'LIVE') return '/api/breakout-live-c'
   if (variant === 'C') return '/api/breakout-paper-c'
   if (variant === 'B') return '/api/breakout-paper-b'
   return '/api/breakout-paper'
+}
+
+export function isLiveVariant(variant: BreakoutVariant): boolean {
+  return variant === 'LIVE'
 }
 
 export interface BreakoutPaperConfig {
