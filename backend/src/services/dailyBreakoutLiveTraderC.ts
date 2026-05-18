@@ -645,6 +645,105 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
 }
 
 // ============================================================================
+// Circuit breaker — daily loss limit for live trading
+// ============================================================================
+
+interface CircuitBreakerResult {
+  tripped: boolean
+  reason: string
+  realizedR: number
+  netPnlUsd: number
+  pnlPct: number
+}
+
+/**
+ * Compute today's UTC realized loss across all live C trades closed today.
+ * Trips when EITHER threshold is exceeded:
+ *   - sum(realizedR) <= -cfg.dailyLossLimitR   (default -8R)
+ *   - sum(netPnlUsd) / startOfDayDeposit <= -cfg.dailyLossLimitPct / 100   (default -10%)
+ *
+ * Start-of-day deposit is reconstructed as currentDepositUsd - sum(netPnlUsd today),
+ * same approach as paper C. We pull currentDepositUsd from the most recent
+ * refreshLiveBalance() snapshot rather than calling Binance — the breaker
+ * needs to be cheap (called every placement cycle).
+ */
+async function isLiveCircuitBreakerTripped(cfg: any): Promise<CircuitBreakerResult> {
+  const todayStart = new Date()
+  todayStart.setUTCHours(0, 0, 0, 0)
+
+  // Sum from rows closed today UTC.
+  const closedToday = await prisma.breakoutLiveTradeC.findMany({
+    where: {
+      closedAt: { gte: todayStart },
+      status: { in: ['CLOSED', 'SL_HIT', 'TP3_HIT'] },
+    },
+    select: { realizedR: true, netPnlUsd: true },
+  })
+
+  let sumR = 0
+  let sumPnl = 0
+  for (const t of closedToday) {
+    sumR += t.realizedR ?? 0
+    sumPnl += t.netPnlUsd ?? 0
+  }
+
+  const startOfDayDeposit = Math.max(1, (cfg.currentDepositUsd ?? 1) - sumPnl)
+  const pnlPct = (sumPnl / startOfDayDeposit) * 100
+
+  const rLimit = -Math.abs(cfg.dailyLossLimitR ?? 8)
+  const pctLimit = -Math.abs(cfg.dailyLossLimitPct ?? 10)
+
+  if (sumR <= rLimit) {
+    return {
+      tripped: true,
+      reason: `daily R breaker: ${sumR.toFixed(2)}R <= ${rLimit}R`,
+      realizedR: sumR, netPnlUsd: sumPnl, pnlPct,
+    }
+  }
+  if (pnlPct <= pctLimit) {
+    return {
+      tripped: true,
+      reason: `daily PnL breaker: ${pnlPct.toFixed(2)}% <= ${pctLimit}%`,
+      realizedR: sumR, netPnlUsd: sumPnl, pnlPct,
+    }
+  }
+  return { tripped: false, reason: '', realizedR: sumR, netPnlUsd: sumPnl, pnlPct }
+}
+
+/**
+ * When the breaker trips, cancel all still-pending entry limits on the
+ * exchange so no new exposure opens. Existing OPEN positions are left alone
+ * (they have real SL/TP children that will close them in normal flow).
+ */
+async function cancelAllPendingForBreaker(client: BinanceFuturesClient, reason: string): Promise<void> {
+  const pending = await prisma.breakoutLiveTradeC.findMany({
+    where: { limitOrderState: 'PENDING_LIMIT' },
+  })
+  for (const t of pending) {
+    try {
+      if (t.binanceClientOrderId) {
+        await client.cancelOrder(t.symbol, { origClientOrderId: t.binanceClientOrderId })
+      }
+    } catch (e: any) {
+      if (!(e instanceof BinanceApiError) || (e.code !== -2011 && e.code !== -2013)) {
+        console.warn(`${LOG} breaker cancel ${t.symbol} failed: ${e.message}`)
+      }
+    }
+    await prisma.breakoutLiveTradeC.update({
+      where: { id: t.id },
+      data: {
+        limitOrderState: 'CANCELLED_OTHER_SIDE',
+        status: 'CANCELLED',
+        closedAt: new Date(),
+      },
+    })
+  }
+  if (pending.length > 0) {
+    console.log(`${LOG} breaker cancelled ${pending.length} PENDING limits (${reason})`)
+  }
+}
+
+// ============================================================================
 // Placement — pre-emptive limit pairs on rangeEdge (mirrors paper C, but real)
 // ============================================================================
 
@@ -673,6 +772,17 @@ async function placeLimitsForRanges(
   client: BinanceFuturesClient,
   net: 'testnet' | 'prod',
 ): Promise<void> {
+  // Daily circuit breaker. Per user decision 2026-05-17, live C in tripped state:
+  //   - Blocks NEW limit placements
+  //   - Also CANCELS any still-pending limits on the exchange
+  // (Paper C only blocks new — live is stricter for real-money safety.)
+  const cb = await isLiveCircuitBreakerTripped(cfg)
+  if (cb.tripped) {
+    console.warn(`${LOG} ${cb.reason} — blocking new placements + cancelling pending for the rest of UTC day`)
+    await cancelAllPendingForBreaker(client, cb.reason)
+    return
+  }
+
   // Same universe + range params as paper variants (single source of truth).
   const dbCfg = await prisma.breakoutConfig.findUnique({ where: { id: 1 } })
   if (!dbCfg) return
