@@ -508,50 +508,19 @@ async function fillLimitInner(
  * Если хотя бы одно условие не выполнено — limit ОСТАЁТСЯ PENDING, продолжает
  * ждать. Если за день условия так и не выполнятся — EOD cancel в 23:55 UTC.
  */
-const MIN_PENETRATION_PCT = 0.05    // 5 bps = 0.05%
-const MIN_VOL_MULT = 1.5              // current candle vol >= 1.5× avg
+// 2026-05-18 ОТКАТ realistic fill model (d120c60): для BUY @ rangeHigh
+// проверялся candle.low — это reversal-логика, а у нас breakout entry. Правильное
+// поведение: WS instant fill — когда price пересекает limitPrice в сторону пробоя
+// (BUY: price >= limit, SELL: price <= limit). Это совпадает с моделью market-maker'а
+// при breakout и с тем как считал backtest до 2026-05-17.
 
 /**
- * Проверяем закрытую свечу: даёт ли она realistic fill для данного limit?
- *
- * Возвращает true если ОБА условия выполнены:
- *   - CROSS: для BUY low <= limit * (1 - MIN_PENETRATION); для SELL high >= limit * (1 + MIN_PENETRATION)
- *   - VOLUME: candle.volume >= avgVolume * MIN_VOL_MULT
- */
-function checkRealisticFill(
-  side: 'BUY' | 'SELL',
-  limitPrice: number,
-  candle: OHLCV,
-  avgVolume: number,
-): { fillable: boolean; reason?: string } {
-  const penFrac = MIN_PENETRATION_PCT / 100
-  const crossThreshold = side === 'BUY'
-    ? limitPrice * (1 - penFrac)
-    : limitPrice * (1 + penFrac)
-  const crossed = side === 'BUY'
-    ? candle.low <= crossThreshold
-    : candle.high >= crossThreshold
-  if (!crossed) {
-    return { fillable: false, reason: 'no min penetration (wick-only or no cross)' }
-  }
-  if (avgVolume > 0 && candle.volume < avgVolume * MIN_VOL_MULT) {
-    return { fillable: false, reason: `volume ${candle.volume.toFixed(0)} < ${MIN_VOL_MULT}× avg ${avgVolume.toFixed(0)}` }
-  }
-  return { fillable: true }
-}
-
-/**
- * Closed-candle replay: для каждого PENDING_LIMIT проверяем все закрытые свечи
- * с момента placement до сейчас на realistic fill conditions. Первая прошедшая
- * cross+volume свеча → fill.
- *
- * Это единственная точка fill для variant C (заменяет старую touch-fill в WS).
- * Закрытая свеча — потому что нужны volume и close price, оба известны только
- * после close (no-lookahead).
+ * Закрытая свеча: проверяем пересекла ли цена limitPrice в сторону пробоя.
+ *   - BUY @ rangeHigh: candle.high >= limitPrice (цена прошла вверх через уровень)
+ *   - SELL @ rangeLow: candle.low <= limitPrice (цена прошла вниз через уровень)
  */
 async function checkPendingLimitsAgainstCandles(symbol: string, candles: OHLCV[]): Promise<void> {
   if (candles.length === 0) return
-  const tag = logTag(VARIANT)
   const tm = tradeModel(VARIANT) as any
   const pending = await tm.findMany({
     where: { symbol, limitOrderState: 'PENDING_LIMIT' },
@@ -562,58 +531,37 @@ async function checkPendingLimitsAgainstCandles(symbol: string, candles: OHLCV[]
     const limitPrice = p.limitOrderPrice as number
     const side = p.side as 'BUY' | 'SELL'
     const sinceMs = new Date(p.limitPlacedAt).getTime()
-    // Свечи после placement, отсортированы по времени (loader даёт по возрастанию).
     const afterPlacement = candles.filter(c => c.time > sinceMs).sort((a, b) => a.time - b.time)
     if (afterPlacement.length === 0) continue
 
     let filledAt: number | null = null
-    let lastFailReason = ''
-    // Идём в хронологическом порядке — первая cross+volume свеча даёт fill.
-    for (let i = 0; i < afterPlacement.length; i++) {
-      const c = afterPlacement[i]
-      // avg volume по 24 предыдущим свечам в общем массиве (включая до placement).
-      const cIdxInAll = candles.findIndex(x => x.time === c.time)
-      const avgStart = Math.max(0, cIdxInAll - 24)
-      const avgWindow = candles.slice(avgStart, cIdxInAll)
-      const avgVolume = avgWindow.length > 0
-        ? avgWindow.reduce((s, x) => s + x.volume, 0) / avgWindow.length
-        : 0
-      const check = checkRealisticFill(side, limitPrice, c, avgVolume)
-      if (check.fillable) {
-        filledAt = c.time
-        break
-      }
-      lastFailReason = check.reason ?? ''
+    for (const c of afterPlacement) {
+      const touched = side === 'BUY' ? c.high >= limitPrice : c.low <= limitPrice
+      if (touched) { filledAt = c.time; break }
     }
-
-    if (filledAt != null) {
-      await fillLimit(p.id, new Date(filledAt))
-    } else if (lastFailReason) {
-      // Лог только при первом достаточно частом cross-touch (чтобы не спамить).
-      // Самый частый сценарий: цена коснулась но wick-and-back → no fill.
-      const someTouched = afterPlacement.some(c =>
-        side === 'BUY' ? c.low <= limitPrice : c.high >= limitPrice,
-      )
-      if (someTouched) {
-        console.log(`${tag} ${symbol} limit #${p.id} ${side} @ ${limitPrice} — touched but no realistic fill (${lastFailReason})`)
-      }
-    }
+    if (filledAt != null) await fillLimit(p.id, new Date(filledAt))
   }
 }
 
 /**
- * WS trade event: больше не филлим мгновенно (это была optimistic touch-fill).
- * Realistic fill требует закрытой свечи с cross+volume gate, что недоступно
- * в момент trade event. Поэтому WS callback теперь NO-OP для C —
- * fill происходит на slow tick через checkPendingLimitsAgainstCandles на
- * закрытых 5m свечах.
- *
- * Функция оставлена как hook (вызывается из breakoutWsTracker) и просто
- * возвращает управление — это сохраняет совместимость без удаления вызова.
+ * WS trade event: instant touch-fill.
+ *   - BUY @ rangeHigh: price >= limit (цена пошла вверх — пробой)
+ *   - SELL @ rangeLow: price <= limit (цена пошла вниз — пробой)
  */
-export async function processWsTradeForLimits(_symbol: string, _price: number, _ts: number): Promise<void> {
-  // Intentionally empty: realistic fill model has moved to closed-candle replay.
-  // See checkPendingLimitsAgainstCandles + safetyNetCheckLimitsC.
+export async function processWsTradeForLimits(symbol: string, price: number, ts: number): Promise<void> {
+  const tm = tradeModel(VARIANT) as any
+  const pending = await tm.findMany({
+    where: { symbol, limitOrderState: 'PENDING_LIMIT' },
+  })
+  if (pending.length === 0) return
+
+  for (const p of pending) {
+    const limitPrice = p.limitOrderPrice as number
+    const touched = p.side === 'BUY' ? price >= limitPrice : price <= limitPrice
+    if (touched) {
+      await fillLimit(p.id, new Date(ts))
+    }
+  }
 }
 
 /**
