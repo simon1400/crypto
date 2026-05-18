@@ -18,36 +18,15 @@
 import { Router } from 'express'
 import { prisma } from '../db/prisma'
 import {
-  getBinanceClient, getBinanceCreds, BinanceApiError, BinanceFuturesClient,
+  getBinanceClient, getBinanceCreds, BinanceApiError,
 } from '../services/exchanges/binanceFutures'
+import { refreshLiveBalance } from './_liveBalanceShared'
+
+// Re-export so existing import paths (`from './breakoutLiveC'`) keep working.
+export { refreshLiveBalance }
 
 const router = Router()
 
-/**
- * Pull the effective deposit number from Binance (single source of truth for
- * live sizing). Returns availableBalance — what we can actually post as margin
- * right now. Also caches it into BreakoutLiveConfigC.currentDepositUsd so the
- * UI has a fresh number even when the API call isn't being made in real time.
- *
- * If startingDepositUsd is still at the default ($100) AND Strategy has never
- * been enabled (peakDepositUsd == startingDepositUsd untouched), the function
- * leaves baseline alone — it gets snapshotted at the moment Strategy is first
- * turned on. This keeps Total P&L = current − baseline meaningful from day 1
- * regardless of how much USDT was on the account before we started trading.
- */
-export async function refreshLiveBalance(client: BinanceFuturesClient): Promise<{ available: number; total: number }> {
-  const acc = await client.getAccount()
-  const usdt = acc.assets.find((a) => a.asset === 'USDT')
-  const available = usdt ? Number(usdt.availableBalance) : 0
-  const total = usdt ? Number(usdt.walletBalance) : 0
-  // Cache as snapshot for UI / offline display. Do NOT touch startingDepositUsd
-  // here — that's set ONCE when Strategy is first enabled (see PUT /config).
-  await prisma.breakoutLiveConfigC.update({
-    where: { id: 1 },
-    data: { currentDepositUsd: available },
-  })
-  return { available, total }
-}
 
 // ============================================================================
 // Config
