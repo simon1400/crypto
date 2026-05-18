@@ -414,6 +414,10 @@ async function flattenAllOpenC(reason: string): Promise<{ closed: number; failed
 
       const closeSide: 'BUY' | 'SELL' = t.side === 'BUY' ? 'SELL' : 'BUY'
 
+      // Cancel the safety-net SL on the exchange before sending our MARKET —
+      // otherwise both could race and one gets -2022 ReduceOnly rejected.
+      await cancelSlOnExchange(t).catch(() => { /* best-effort */ })
+
       // 3. MARKET reduceOnly to close.
       // Note: actual fill price + realized pnl come back via ORDER_TRADE_UPDATE
       // (handleEntryOrderUpdate doesn't match because cID isn't 'cL*' — but the
@@ -443,6 +447,7 @@ async function flattenAllOpenC(reason: string): Promise<{ closed: number; failed
                 reason,
               },
             ] as any,
+            binanceSlOrderId: null,
           },
         })
         closed++
@@ -558,6 +563,8 @@ export async function flattenOneOpenLiveC(tradeId: number, reason: string): Prom
   }
 
   const closeSide: 'BUY' | 'SELL' = t.side === 'BUY' ? 'SELL' : 'BUY'
+  // Cancel the safety-net SL first — see flattenAllOpenC for rationale.
+  await cancelSlOnExchange(t).catch(() => { /* best-effort */ })
   try {
     await state.client.placeOrder({
       symbol: t.symbol,
@@ -581,6 +588,7 @@ export async function flattenOneOpenLiveC(tradeId: number, reason: string): Prom
             reason,
           },
         ] as any,
+        binanceSlOrderId: null,
       },
     })
     console.log(`${LOG} flattened #${t.id} ${t.symbol} ${t.side} qty ${qty} via MARKET (${reason})`)
@@ -696,10 +704,11 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
         })
         // Pair cancel: best-effort (if pair filled too, we'll catch on next loop).
         if (t.pairOrderId) await cancelPairOrder(t.pairOrderId).catch(() => { /* noop */ })
-        // No exchange-side SL/TP to place — virtual tracking takes over once
-        // refreshAggTradeSubscriptions() picks this symbol up on the next cycle.
+        // Virtual tracker handles the exit once aggTrade resubs include the
+        // symbol; safety-net SL gets attached too (hybrid model).
         await refreshAggTradeSubscriptions().catch(() => { /* noop */ })
-        console.log(`${LOG} reconcile: #${t.id} ${t.symbol} late FILL detected, recovered (virtual tracking)`)
+        await attachSlAfterEntry(t.id).catch(() => { /* noop */ })
+        console.log(`${LOG} reconcile: #${t.id} ${t.symbol} late FILL detected, recovered`)
       } else if (o.status === 'CANCELED' || o.status === 'EXPIRED') {
         await prisma.breakoutLiveTradeC.update({
           where: { id: t.id },
@@ -721,9 +730,27 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
   // --- DB OPEN vs exchange positions ---
   // Our DB says we're in a position. If exchange has zero amt for the symbol,
   // SL or TP fully closed it while we were down.
+  // Also: if position is still there, make sure the safety-net SL exists on
+  // the exchange — bot restart shouldn't leave positions exposed.
+  const slAlgoIdsOnExchange = new Set<number>()
+  for (const o of openOrders) {
+    if (o.clientOrderId?.startsWith('slL') && o.type === 'STOP_MARKET') {
+      // openOrders includes triggered/transformed algo orders by orderId, but
+      // pre-trigger algos live on the algo endpoint. We approximate by trusting
+      // binanceSlOrderId in DB and only re-place when DB says null.
+      slAlgoIdsOnExchange.add(o.orderId)
+    }
+  }
   for (const t of dbOpen) {
     const exchangeAmt = positionsBySymbol.get(t.symbol)
-    if (exchangeAmt && exchangeAmt !== 0) continue  // position still there — fine
+    if (exchangeAmt && exchangeAmt !== 0) {
+      // Position alive — ensure the safety-net SL is in place.
+      if (!t.binanceSlOrderId) {
+        await attachSlAfterEntry(t.id).catch((e) =>
+          console.warn(`${LOG} reconcile: attachSl #${t.id} threw: ${e?.message ?? e}`))
+      }
+      continue
+    }
 
     report.details.missingPositionsForDbOpen++
     // Position closed externally — finalize the row. Exact P&L will be inferred
@@ -1326,11 +1353,6 @@ async function handleOrderUpdate(ev: OrderTradeUpdateEvent): Promise<void> {
   const cid = o.c
 
   // Entry limit — match by clientOrderId (deterministic 'cL...' prefix).
-  // SL/TP closes for live C are NOT tracked here — they're virtual (paper-C
-  // mirror): when price hits a level, trackLiveTrade() sends MARKET
-  // reduceOnly and updates the DB row directly. The resulting MARKET fill
-  // arrives here too, but we don't care — there's no row to match by cID,
-  // and the trade is already CLOSED in DB.
   if (cid && cid.startsWith('cL')) {
     const trade = await prisma.breakoutLiveTradeC.findUnique({
       where: { binanceClientOrderId: cid },
@@ -1338,7 +1360,25 @@ async function handleOrderUpdate(ev: OrderTradeUpdateEvent): Promise<void> {
     if (trade) {
       await handleEntryOrderUpdate(trade, ev)
     }
+    return
   }
+
+  // Safety-net SL — when the exchange STOP_MARKET fires before our virtual
+  // tracker, the resulting MARKET fill arrives here with clientOrderId equal
+  // to the clientAlgoId we set ('slL{tradeId}'). Look up the trade row by id.
+  if (cid && cid.startsWith('slL')) {
+    const tradeId = parseInt(cid.slice(3), 10)
+    if (!Number.isFinite(tradeId)) return
+    const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+    if (trade) {
+      await handleSlOrderUpdate(trade, ev)
+    }
+    return
+  }
+
+  // Other MARKET reduceOnly fills (our virtual exits, manual closes) have
+  // exchange-generated cIDs — DB is already updated optimistically by the
+  // caller, nothing to do here.
 }
 
 /**
@@ -1406,11 +1446,15 @@ async function handleEntryOrderUpdate(trade: any, ev: OrderTradeUpdateEvent): Pr
         await cancelPairOrder(trade.pairOrderId)
       }
 
-      // SL + TPs are tracked VIRTUALLY (mirror of paper C): we watch aggTrade
-      // WS and send MARKET reduceOnly when price reaches a level. No child
-      // orders on the exchange — see handleAggTrade + trackLiveTrade below.
-      // Refresh aggTrade subscriptions so this newly-OPEN symbol is included.
+      // SL: hybrid model. Place STOP_MARKET reduceOnly on the exchange as a
+      // safety net (so a dead bot doesn't orphan the position), but the
+      // virtual tracker (trackLiveTrade) is still the primary exit path.
+      // TPs stay fully virtual — trailing simpler that way.
+      // Refresh aggTrade subscriptions FIRST so the virtual tracker is live
+      // even if SL placement is slow/fails.
       await refreshAggTradeSubscriptions().catch(() => { /* noop */ })
+      await attachSlAfterEntry(trade.id).catch((e) =>
+        console.warn(`${LOG} attachSlAfterEntry threw: ${e?.message ?? e}`))
     } catch (e: any) {
       console.error(`${LOG} entry fill handler failed for #${trade.id}: ${e.message}`)
       // Try to rollback claim so next event can retry.
@@ -1600,6 +1644,13 @@ async function exitLiveTradeSlice(
   let actualFillPrice = triggerPrice
   let actualPnlUsd = 0
   let feePaid = 0
+  // If we're about to close on SL, cancel the exchange-side STOP_MARKET first
+  // so the two paths don't race (both would try to reduceOnly, second one
+  // gets -2022). For TP exits the SL is *not* at this price level — leaving
+  // it is fine, retrailSlOnExchange below repositions it after the partial.
+  if (reason === 'SL') {
+    await cancelSlOnExchange(fresh).catch(() => { /* best-effort */ })
+  }
   try {
     const resp = await state.client.placeOrder({
       symbol: trade.symbol,
@@ -1709,8 +1760,200 @@ async function applyVirtualClose(
     `🛡 ${trailNote}`,
   ].join('\n'))
   console.log(`${LOG} ${emoji} ${reason} hit #${fresh.id} ${fresh.symbol} @ ${fillPrice} pnl ${netPnl.toFixed(4)}`)
+
+  // Sync the exchange-side SL with the new currentStop / position size.
+  //  - TP1/TP2: position shrunk + currentStop trailed (BE / TP1) — replace old
+  //    STOP_MARKET with a fresh one at the new trigger.
+  //  - SL / TP3: position is closed (terminal) — cancel the safety-net SL so
+  //    it doesn't dangle on the book.
+  if (terminal) {
+    await cancelSlOnExchange(fresh).catch(() => { /* best-effort */ })
+  } else if (reason === 'TP1' || reason === 'TP2') {
+    await retrailSlOnExchange(fresh.id).catch((e) =>
+      console.warn(`${LOG} retrailSlOnExchange threw: ${e?.message ?? e}`))
+  }
 }
 
+
+// ============================================================================
+// Exchange-side SL (hybrid model)
+//
+// The virtual tracker above (trackLiveTrade) is our primary exit path: it
+// watches aggTrade ticks and sends MARKET reduceOnly when price crosses a
+// level. It's robust and identical to paper C.
+//
+// On top of that we *also* place a STOP_MARKET reduceOnly on Binance as a
+// safety net for the SL specifically. Rationale:
+//
+//   - If the bot dies (PM2 restart, VPS reboot, WS disconnect storm) the
+//     exchange-side SL still triggers — no naked position.
+//   - SL closes via STOP_MARKET cost taker fee anyway (the exit IS a market
+//     order once it triggers), so we don't lose on commissions vs the virtual
+//     path. Avg slippage is comparable.
+//   - TPs stay virtual — trailing requires "cancel old SL + place new SL"
+//     after each TP, which is simpler than juggling 3 child orders that all
+//     need recalibration.
+//
+// When the exchange SL fires:
+//   - ORDER_TRADE_UPDATE arrives with clientOrderId='slL{tradeId}', X=FILLED
+//   - handleSlOrderUpdate() invokes applyVirtualClose(reason='SL') so the DB
+//     and Telegram path is exactly the same as a virtual SL hit.
+//   - trackLiveTrade is a no-op because the row has already moved to
+//     SL_HIT/CLOSED.
+//
+// When the bot's virtual SL fires first (price crossed currentStop, bot sent
+// MARKET reduceOnly before exchange triggered):
+//   - exitLiveTradeSlice cancels the exchange SL before sending MARKET (see
+//     below), avoiding -2022 ReduceOnly rejected.
+//
+// Binance migrated STOP_MARKET to the Algo Order API in 2025-12 — the regular
+// /fapi/v1/order endpoint returns -4120. So we use placeAlgoOrder. The
+// trigger price uses MARK_PRICE (not last trade) to avoid wick-out flashes,
+// matching paper-C semantics.
+// ============================================================================
+
+type PlaceSlResult = { ok: true; algoId: bigint } | { ok: false; error: string }
+
+async function placeSlOnExchange(trade: any): Promise<PlaceSlResult> {
+  if (!state) return { ok: false, error: 'live trader not running' }
+  const filters = await getFilters(state.client)
+  const f = filters.get(trade.symbol)
+  if (!f) return { ok: false, error: `no filter for ${trade.symbol}` }
+
+  const closeSide: 'BUY' | 'SELL' = trade.side === 'BUY' ? 'SELL' : 'BUY'
+  const tick = f.tickSize
+  const triggerPrice = Number((Math.round(trade.currentStop / tick) * tick).toFixed(f.pricePrecision))
+  const slClientId = `slL${trade.id}`
+
+  let lastErr = ''
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const r = await state.client.placeAlgoOrder({
+        symbol: trade.symbol,
+        side: closeSide,
+        type: 'STOP_MARKET',
+        triggerPrice,
+        quantity: trade.positionUnits,
+        reduceOnly: true,
+        workingType: 'MARK_PRICE',
+        clientAlgoId: slClientId,
+      })
+      return { ok: true, algoId: BigInt(r.algoId) }
+    } catch (e: any) {
+      lastErr = e?.message ?? String(e)
+      // -2021 'Order would immediately trigger' — markPrice already past stop.
+      // No point retrying; let the virtual tracker handle this on the next tick.
+      if (e instanceof BinanceApiError && e.code === -2021) break
+      // Backoff before next attempt: 500ms, 1500ms.
+      if (attempt < 3) {
+        await new Promise((res) => setTimeout(res, attempt === 1 ? 500 : 1500))
+      }
+    }
+  }
+  return { ok: false, error: lastErr }
+}
+
+async function cancelSlOnExchange(trade: any): Promise<void> {
+  if (!state) return
+  if (!trade.binanceSlOrderId) return
+  try {
+    await state.client.cancelAlgoOrder(trade.symbol, {
+      algoId: Number(trade.binanceSlOrderId),
+    })
+  } catch (e: any) {
+    // -2011 unknown order, -2013 doesn't exist — already gone, fine.
+    if (e instanceof BinanceApiError && (e.code === -2011 || e.code === -2013)) return
+    console.warn(`${LOG} cancel SL #${trade.id} ${trade.symbol} failed: ${e.message}`)
+  }
+}
+
+// Place SL after entry fill. Best-effort: on failure we keep the position
+// open with a virtual-only SL (trackLiveTrade still owns the exit) and warn
+// via Telegram so the operator can intervene.
+async function attachSlAfterEntry(tradeId: number): Promise<void> {
+  const fresh = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!fresh || fresh.status !== 'OPEN') return
+  if (fresh.binanceSlOrderId) return  // already placed (idempotent on reconcile/retry)
+
+  const r = await placeSlOnExchange(fresh)
+  if (r.ok) {
+    await prisma.breakoutLiveTradeC.update({
+      where: { id: tradeId },
+      data: { binanceSlOrderId: r.algoId },
+    })
+    console.log(`${LOG} 🛡 SL placed on exchange #${tradeId} ${fresh.symbol} @ ${fresh.currentStop} (algoId=${r.algoId})`)
+  } else {
+    console.warn(`${LOG} ⚠ SL placement failed for #${tradeId} ${fresh.symbol}: ${r.error} — virtual SL still active`)
+    sendLiveTelegram([
+      `⚠️ <b>${fresh.symbol}</b> · SL не выставлен на бирже`,
+      `━━━━━━━━━━━━━━━━━━`,
+      `Причина: <code>${r.error}</code>`,
+      `Виртуальный SL продолжает работать (бот закроет MARKET при касании).`,
+    ].join('\n'))
+  }
+}
+
+// Retrail SL on Binance after TP1/TP2 hit. Cancels the old algo order and
+// places a fresh STOP_MARKET at the new currentStop level. If anything fails,
+// we just clear binanceSlOrderId — virtual tracker owns the exit.
+async function retrailSlOnExchange(tradeId: number): Promise<void> {
+  const fresh = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!fresh) return
+  // Only retrail while position is still open.
+  if (!['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(fresh.status)) return
+
+  await cancelSlOnExchange(fresh)
+  // Reset stored algoId so attachSlAfterEntry can re-place idempotently.
+  await prisma.breakoutLiveTradeC.update({
+    where: { id: tradeId },
+    data: { binanceSlOrderId: null },
+  })
+  // The remaining position size is smaller after a partial TP — re-fetch and
+  // pass it to placeSlOnExchange via positionUnits. We adjust by closed fraction.
+  const refreshed = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!refreshed) return
+  const closesArr = ((refreshed.closes as any[]) ?? []) as Array<{ percent?: number }>
+  const closedFrac = closesArr.reduce((a, c) => a + (c.percent ?? 0), 0) / 100
+  const remainingUnits = refreshed.positionUnits * Math.max(0, 1 - closedFrac)
+  const tradeForSl = { ...refreshed, positionUnits: remainingUnits }
+  const r = await placeSlOnExchange(tradeForSl)
+  if (r.ok) {
+    await prisma.breakoutLiveTradeC.update({
+      where: { id: tradeId },
+      data: { binanceSlOrderId: r.algoId },
+    })
+    console.log(`${LOG} 🛡 SL retrailed #${tradeId} ${refreshed.symbol} → ${refreshed.currentStop}`)
+  } else {
+    console.warn(`${LOG} ⚠ SL retrail failed #${tradeId}: ${r.error} — virtual SL still active`)
+  }
+}
+
+// Handle the case where the exchange SL fires before our virtual tracker
+// gets a chance to act. The MARKET fill arrives as a regular order update
+// with clientOrderId='slL{tradeId}' (Binance preserves clientAlgoId as the
+// resulting fill's clientOrderId per Algo Order docs).
+async function handleSlOrderUpdate(trade: any, ev: OrderTradeUpdateEvent): Promise<void> {
+  const o = ev.o
+  if (o.X !== 'FILLED') return  // we only care about the fill event
+  // Position may already be CLOSED if our virtual tracker beat the exchange.
+  // Idempotent — applyVirtualClose checks status.
+  const fresh = await prisma.breakoutLiveTradeC.findUnique({ where: { id: trade.id } })
+  if (!fresh) return
+  if (!['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(fresh.status)) return
+  const closesArr = ((fresh.closes as any[]) ?? []) as Array<{ reason?: string; percent?: number }>
+  const closedFrac = closesArr.reduce((a, c) => a + (c.percent ?? 0), 0) / 100
+  const remainingFrac = Math.max(0, 1 - closedFrac)
+  if (remainingFrac < 1e-6) return
+
+  const fillPrice = Number(o.ap) || Number(o.L) || fresh.currentStop
+  const isLong = fresh.side === 'BUY'
+  const initialRisk = Math.abs(fresh.entryPrice - fresh.initialStop)
+  const pnlR = ((isLong ? fillPrice - fresh.entryPrice : fresh.entryPrice - fillPrice) / initialRisk) * remainingFrac
+  const grossPnl = (isLong ? fillPrice - fresh.entryPrice : fresh.entryPrice - fillPrice) * fresh.positionUnits * remainingFrac
+  const feePaid = Number(o.n) || 0
+  await applyVirtualClose(fresh, 'SL', fillPrice, remainingFrac, pnlR, grossPnl - feePaid, ev.T || ev.E, feePaid)
+  console.log(`${LOG} 🛑 exchange SL triggered #${fresh.id} ${fresh.symbol} @ ${fillPrice}`)
+}
 
 async function handleAccountUpdate(ev: AccountUpdateEvent): Promise<void> {
   // FUNDING_FEE → log to BreakoutLiveFundingC. Binance posts funding every
