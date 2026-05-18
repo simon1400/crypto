@@ -121,6 +121,25 @@ export async function startBreakoutLiveTraderC(): Promise<void> {
       return
     }
 
+    // Reconcile DB ↔ exchange BEFORE starting the WS handlers — we want to
+    // know about any drift (unknown positions, missing orders) before live
+    // events start flowing.
+    const reconcileReport = await reconcileWithExchange(client)
+    if (reconcileReport.hasUntrackedPositions || reconcileReport.hasUntrackedOrders) {
+      // Strategy stays disabled until user reviews manually. The trader is
+      // still running (WS up, status endpoint works), but won't auto-place.
+      await prisma.breakoutLiveConfigC.update({
+        where: { id: 1 },
+        data: {
+          enabled: false,
+          killSwitchActive: true,
+          killSwitchReason: `Untracked positions/orders on exchange: ${reconcileReport.summary}`,
+          killSwitchAt: new Date(),
+        },
+      })
+      console.error(`${LOG} ⚠ untracked exchange state — Strategy disabled until manual review: ${reconcileReport.summary}`)
+    }
+
     const userDataWs = new BinanceUserDataStream({
       net: creds.net,
       client,
@@ -419,6 +438,210 @@ async function cancelOrphanPendingLimits(): Promise<void> {
 // Exposed for the kill-switch route (POST /api/breakout-live-c/kill-switch).
 export async function flattenAllOpenLiveC(reason: string): Promise<{ closed: number; failed: number }> {
   return flattenAllOpenC(reason)
+}
+
+// ============================================================================
+// Reconciliation — sync DB ↔ exchange on startup
+// ============================================================================
+
+interface ReconcileReport {
+  hasUntrackedPositions: boolean
+  hasUntrackedOrders: boolean
+  summary: string
+  details: {
+    untrackedPositions: Array<{ symbol: string; amt: number }>
+    untrackedOrders: Array<{ symbol: string; orderId: number; cid: string; type: string }>
+    missingOrdersForDbPending: number
+    missingPositionsForDbOpen: number
+  }
+}
+
+/**
+ * Compare DB BreakoutLiveTradeC rows against the exchange. Used at startup to
+ * detect drift caused by:
+ *   - Process down while orders filled/expired (orders don't match DB state)
+ *   - Manual trading on the same account (positions/orders we never placed)
+ *   - Successful EOD flatten right before restart (positions gone, DB rows
+ *     not yet marked CLOSED in some edge cases)
+ *
+ * Policy:
+ *   - Our PENDING_LIMIT with no matching exchange order → fetch via getOrder()
+ *     to learn the final state, update DB accordingly.
+ *   - Our OPEN with no matching exchange position → mark CLOSED (filled by
+ *     SL/TP while we were down); exact P&L will be reconciled later.
+ *   - Exchange position/order without matching DB row → flag as untracked,
+ *     caller decides what to do.
+ */
+async function reconcileWithExchange(client: BinanceFuturesClient): Promise<ReconcileReport> {
+  const report: ReconcileReport = {
+    hasUntrackedPositions: false,
+    hasUntrackedOrders: false,
+    summary: '',
+    details: {
+      untrackedPositions: [],
+      untrackedOrders: [],
+      missingOrdersForDbPending: 0,
+      missingPositionsForDbOpen: 0,
+    },
+  }
+
+  let positions: Awaited<ReturnType<typeof client.getOpenPositions>>
+  let openOrders: Awaited<ReturnType<typeof client.getOpenOrders>>
+  try {
+    [positions, openOrders] = await Promise.all([
+      client.getOpenPositions(),
+      client.getOpenOrders(),
+    ])
+  } catch (e: any) {
+    console.error(`${LOG} reconcile: exchange query failed: ${e.message} — skipping`)
+    return report
+  }
+
+  // --- DB side ---
+  const dbPending = await prisma.breakoutLiveTradeC.findMany({
+    where: { limitOrderState: 'PENDING_LIMIT' },
+  })
+  const dbOpen = await prisma.breakoutLiveTradeC.findMany({
+    where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+  })
+
+  // Index exchange data for fast lookup.
+  const orderIdsOnExchange = new Set<number>()
+  const cidsOnExchange = new Set<string>()
+  for (const o of openOrders) {
+    orderIdsOnExchange.add(o.orderId)
+    if (o.clientOrderId) cidsOnExchange.add(o.clientOrderId)
+  }
+  const positionsBySymbol = new Map<string, number>()
+  for (const p of positions) {
+    positionsBySymbol.set(p.symbol, Number(p.positionAmt))
+  }
+
+  // --- DB PENDING_LIMIT vs exchange openOrders ---
+  // Our DB says PENDING. If exchange has no matching openOrder, find out what
+  // happened via getOrder() (FILLED, CANCELED, EXPIRED).
+  for (const t of dbPending) {
+    if (!t.binanceClientOrderId || !t.binanceOrderId) continue
+    if (orderIdsOnExchange.has(Number(t.binanceOrderId))) continue  // still pending — fine
+
+    report.details.missingOrdersForDbPending++
+    try {
+      const o = await client.getOrder(t.symbol, { orderId: Number(t.binanceOrderId) })
+      if (o.status === 'FILLED') {
+        // Late fill — we missed the WS event. Synthesize one so the fill
+        // handler runs (places SL/TPs, cancels pair). Note: WS would normally
+        // deliver this; for safety we mark FILLED via direct DB update.
+        const fillPrice = Number(o.avgPrice) || t.entryPrice
+        await prisma.breakoutLiveTradeC.update({
+          where: { id: t.id },
+          data: {
+            status: 'OPEN',
+            limitOrderState: 'FILLED',
+            limitFilledAt: new Date(),
+            entryPrice: fillPrice,
+            positionUnits: Number(o.executedQty) || t.positionUnits,
+            positionSizeUsd: fillPrice * (Number(o.executedQty) || t.positionUnits),
+          },
+        })
+        // Place SL+TPs that the WS-driven handler would have placed. Pair
+        // cancel: best-effort (if pair filled too, we'll catch on next loop).
+        if (t.pairOrderId) await cancelPairOrder(t.pairOrderId).catch(() => { /* noop */ })
+        await placeSlAndTpsForTrade(t.id).catch((e) => {
+          console.warn(`${LOG} reconcile: post-fill SL/TP placement failed for #${t.id}: ${e.message}`)
+        })
+        console.log(`${LOG} reconcile: #${t.id} ${t.symbol} late FILL detected, recovered`)
+      } else if (o.status === 'CANCELED' || o.status === 'EXPIRED') {
+        await prisma.breakoutLiveTradeC.update({
+          where: { id: t.id },
+          data: {
+            limitOrderState: o.status === 'EXPIRED' ? 'CANCELLED_EOD' : 'CANCELLED_OTHER_SIDE',
+            status: 'CANCELLED',
+            closedAt: new Date(),
+          },
+        })
+        console.log(`${LOG} reconcile: #${t.id} ${t.symbol} ${o.status} — finalized`)
+      }
+      // else: NEW/PARTIALLY_FILLED — orderIdsOnExchange should've caught it,
+      // weird race; leave alone for next cycle to retry.
+    } catch (e: any) {
+      console.warn(`${LOG} reconcile: getOrder for #${t.id} ${t.symbol} failed: ${e.message}`)
+    }
+  }
+
+  // --- DB OPEN vs exchange positions ---
+  // Our DB says we're in a position. If exchange has zero amt for the symbol,
+  // SL or TP fully closed it while we were down.
+  for (const t of dbOpen) {
+    const exchangeAmt = positionsBySymbol.get(t.symbol)
+    if (exchangeAmt && exchangeAmt !== 0) continue  // position still there — fine
+
+    report.details.missingPositionsForDbOpen++
+    // Position closed externally — finalize the row. Exact P&L will be inferred
+    // later from userTrades; for now, just close.
+    await prisma.breakoutLiveTradeC.update({
+      where: { id: t.id },
+      data: {
+        status: 'CLOSED',
+        closedAt: new Date(),
+        closes: [
+          ...((t.closes as any[]) ?? []),
+          {
+            price: 0,
+            percent: Math.max(0, 100 - ((t.closes as any[]) ?? []).reduce((a, c: any) => a + (c.percent ?? 0), 0)),
+            pnlUsd: 0,
+            closedAt: new Date().toISOString(),
+            reason: 'RECONCILED',
+          },
+        ] as any,
+      },
+    })
+    console.log(`${LOG} reconcile: #${t.id} ${t.symbol} position gone — closed`)
+  }
+
+  // --- Exchange positions without DB row ---
+  // Symbols where we have a non-zero position on exchange but no OPEN row.
+  const dbSymbolsOpen = new Set(dbOpen.map((t) => t.symbol))
+  for (const [sym, amt] of positionsBySymbol) {
+    if (amt === 0) continue
+    if (dbSymbolsOpen.has(sym)) continue
+    report.details.untrackedPositions.push({ symbol: sym, amt })
+    report.hasUntrackedPositions = true
+  }
+
+  // --- Exchange orders without DB row ---
+  // Our orders use cID prefix 'cL'. Anything else is foreign (manual, other
+  // bot, leftover from test placement, etc.).
+  const dbCidsKnown = new Set<string>()
+  for (const t of [...dbPending, ...dbOpen]) {
+    if (t.binanceClientOrderId) dbCidsKnown.add(t.binanceClientOrderId)
+  }
+  for (const o of openOrders) {
+    if (!o.clientOrderId?.startsWith('cL')) continue  // not ours by cID convention
+    if (dbCidsKnown.has(o.clientOrderId)) continue
+    report.details.untrackedOrders.push({
+      symbol: o.symbol, orderId: o.orderId, cid: o.clientOrderId, type: o.type,
+    })
+    report.hasUntrackedOrders = true
+  }
+
+  // Build human-readable summary for the kill-switch reason.
+  const parts: string[] = []
+  if (report.details.untrackedPositions.length > 0) {
+    parts.push(`${report.details.untrackedPositions.length} untracked position(s): ${report.details.untrackedPositions.map((p) => `${p.symbol}=${p.amt}`).join(', ')}`)
+  }
+  if (report.details.untrackedOrders.length > 0) {
+    parts.push(`${report.details.untrackedOrders.length} untracked order(s)`)
+  }
+  if (report.details.missingOrdersForDbPending > 0) {
+    parts.push(`${report.details.missingOrdersForDbPending} PENDING resolved from exchange`)
+  }
+  if (report.details.missingPositionsForDbOpen > 0) {
+    parts.push(`${report.details.missingPositionsForDbOpen} OPEN reconciled to closed`)
+  }
+  report.summary = parts.join('; ') || 'no drift'
+  console.log(`${LOG} reconcile: ${report.summary}`)
+
+  return report
 }
 
 // ============================================================================
