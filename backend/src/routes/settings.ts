@@ -5,6 +5,7 @@ import { encrypt, maskKey } from '../services/encryption'
 import { createBybitClient, validateBybitKeys } from '../services/bybit'
 import { sendTestNotification } from '../services/notifier'
 import { BinanceFuturesClient, BinanceApiError } from '../services/exchanges/binanceFutures'
+import { restartBreakoutLiveTraderC } from '../services/dailyBreakoutLiveTraderC'
 import { asyncHandler } from './_helpers'
 
 const router = Router()
@@ -225,6 +226,9 @@ router.put('/binance-keys', asyncHandler(async (req, res) => {
       update: updateData,
       create: { id: 1, ...updateData },
     })
+    // Restart live trader so it picks up the new keys without process restart.
+    // Fire-and-forget — if it fails the user still has updated keys in DB.
+    restartBreakoutLiveTraderC().catch((e) => console.warn('[Settings] restart live trader failed:', e.message))
     res.json({ ...buildConfigResponse(config), binanceBalance: balance, binanceNet: net })
   } catch (e: any) {
     const msg = e instanceof BinanceApiError ? e.message : (e?.message || 'unknown')
@@ -243,6 +247,8 @@ router.delete('/binance-keys', asyncHandler(async (req, res) => {
     ? { binanceTestnetApiKey: null, binanceTestnetApiSecret: null }
     : { binanceLiveApiKey: null, binanceLiveApiSecret: null }
   const config = await prisma.botConfig.update({ where: { id: 1 }, data: updateData })
+  // Restart live trader so it disconnects the now-missing creds.
+  restartBreakoutLiveTraderC().catch((e) => console.warn('[Settings] restart live trader failed:', e.message))
   res.json(buildConfigResponse(config))
 }, 'Settings'))
 

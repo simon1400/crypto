@@ -16,6 +16,7 @@ import binaryRouter from './routes/binary'
 import { startBreakoutLiveScanner, stopBreakoutLiveScanner } from './services/dailyBreakoutLiveScanner'
 import { startBreakoutPaperTrader, stopBreakoutPaperTrader, startBreakoutEodSummary, stopBreakoutEodSummary } from './services/dailyBreakoutPaperTrader'
 import { startBreakoutLimitTraderC, stopBreakoutLimitTraderC } from './services/dailyBreakoutLimitTrader'
+import { startBreakoutLiveTraderC, stopBreakoutLiveTraderC } from './services/dailyBreakoutLiveTraderC'
 import { startBreakoutWsTracker, stopBreakoutWsTracker } from './services/breakoutWsTracker'
 import { startForexHelper, stopForexHelper } from './services/forexHelperService'
 
@@ -63,6 +64,13 @@ const server = app.listen(PORT, () => {
   startBreakoutWsTracker()
   startBreakoutEodSummary()
 
+  // === Variant C LIVE (Binance Futures real-money twin of paper C) ===
+  // Connects to Binance + user-data WS to stream order/account events. Trading
+  // is gated by BreakoutLiveConfigC.enabled (toggled from UI). If creds aren't
+  // configured yet, start() is a no-op — restart triggered when /settings saves
+  // new keys.
+  startBreakoutLiveTraderC().catch((e) => console.error('[BreakoutLiveC] start failed:', e.message))
+
   // === Forex Binary Helper — BB-touch signals for Pocket Option forex pairs ===
   startForexHelper().catch((e) => console.error('[ForexHelper] start failed:', e))
 })
@@ -77,6 +85,7 @@ async function gracefulShutdown(signal: string) {
   stopBreakoutPaperTrader('B')
   stopBreakoutPaperTrader('C')
   stopBreakoutLimitTraderC()
+  stopBreakoutLiveTraderC()
   stopBreakoutWsTracker()
   stopBreakoutEodSummary()
   stopForexHelper()
