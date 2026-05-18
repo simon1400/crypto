@@ -11,7 +11,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   getLiveConfig, updateLiveConfig, getLiveStatus, getLiveTrades,
-  killSwitch, releaseKillSwitch, testPlaceOrder, cancelTestOrders,
+  killSwitch, releaseKillSwitch, testPlaceOrder, cancelTestOrders, resetBaseline,
   type BreakoutLiveConfig, type BreakoutLiveStatus, type BreakoutLiveTrade,
 } from '../api/breakoutLiveC'
 import { formatDate, fmt2, fmt2Signed, formatPrice } from '../lib/formatters'
@@ -117,6 +117,17 @@ export default function BreakoutLiveCPanel() {
     }
   }
 
+  async function handleResetBaseline() {
+    if (!confirm('Сбросить baseline на текущий баланс Binance? Total P&L начнёт считаться с нуля.')) return
+    try {
+      const r = await resetBaseline()
+      setActionMsg(`Baseline = $${r.baselineUsd.toFixed(2)}`)
+      await load()
+    } catch (e: any) {
+      setActionMsg(`Reset baseline failed: ${e.message}`)
+    }
+  }
+
   if (loading) {
     return <div className="text-text-secondary text-sm py-8 text-center">Загрузка...</div>
   }
@@ -174,11 +185,50 @@ export default function BreakoutLiveCPanel() {
           </div>
         )}
         {status?.connected && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-            <Metric label="Баланс USDT" value={fmt2(status.balanceUsdt ?? 0)} mono />
-            <Metric label="Открытых позиций" value={String(status.openPositions ?? 0)} />
-            <Metric label="Открытых ордеров" value={String(status.openOrders ?? 0)} />
-            <Metric label="API weight 1m" value={`${status.usedWeight1m ?? 0} / 2400`} mono />
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+              <Metric
+                label="Депо (Binance)"
+                value={`$${fmt2(status.balanceUsdt ?? 0)}`}
+                mono
+                accent
+              />
+              <Metric
+                label="Baseline"
+                value={status.baselineUsd ? `$${fmt2(status.baselineUsd)}` : '—'}
+                mono
+              />
+              <Metric
+                label="Total P&L"
+                value={status.totalPnlUsd !== undefined ? `${fmt2Signed(status.totalPnlUsd)} (${fmt2Signed(status.totalPnlPct ?? 0)}%)` : '—'}
+                mono
+                pnl={status.totalPnlUsd}
+              />
+              <Metric
+                label="Wallet (с маржой)"
+                value={`$${fmt2(status.walletBalanceUsdt ?? 0)}`}
+                mono
+              />
+            </div>
+            <div className="grid grid-cols-3 gap-3 text-xs">
+              <Metric label="Открытых позиций" value={String(status.openPositions ?? 0)} />
+              <Metric label="Открытых ордеров" value={String(status.openOrders ?? 0)} />
+              <Metric label="API weight 1m" value={`${status.usedWeight1m ?? 0} / 2400`} mono />
+            </div>
+            {status.baselineSnapshottedAt && (
+              <div className="text-xs text-text-secondary">
+                Baseline зафиксирован: {new Date(status.baselineSnapshottedAt).toLocaleString('ru-RU')}
+                <button onClick={handleResetBaseline} className="ml-2 text-accent hover:underline">
+                  сбросить
+                </button>
+              </div>
+            )}
+            {!status.baselineSnapshottedAt && (
+              <div className="text-xs text-text-secondary">
+                Baseline ещё не зафиксирован — будет снят автоматически при первом включении Strategy
+                (либо <button onClick={handleResetBaseline} className="text-accent hover:underline">зафиксировать сейчас</button>).
+              </div>
+            )}
           </div>
         )}
         {status?.positions && status.positions.length > 0 && (
@@ -308,15 +358,16 @@ export default function BreakoutLiveCPanel() {
       <details className="bg-card rounded-lg p-4 border border-input">
         <summary className="cursor-pointer text-sm font-medium">Параметры стратегии</summary>
         <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs font-mono">
-          <Metric label="Стартовый депо" value={`$${fmt2(config.startingDepositUsd)}`} />
-          <Metric label="Текущий депо (DB)" value={`$${fmt2(config.currentDepositUsd)}`} />
-          <Metric label="Total P&L" value={fmt2Signed(config.totalPnLUsd)} />
           <Metric label="Risk/trade" value={`${config.riskPctPerTrade}%`} />
           <Metric label="Maker fee" value={`${config.feeMakerPct}%`} />
           <Metric label="Taker fee" value={`${config.feeTakerPct}%`} />
           <Metric label="Margin target" value={`${config.targetMarginPct}%`} />
           <Metric label="Concurrent max" value={String(config.maxConcurrentPositions)} />
           <Metric label="Daily breaker" value={`-${config.dailyLossLimitPct}% / -${config.dailyLossLimitR}R`} />
+        </div>
+        <div className="mt-3 text-xs text-text-secondary">
+          Sizing берёт <b>availableBalance</b> с Binance перед каждой сделкой —
+          фиксированный депо в БД больше не используется.
         </div>
       </details>
 
@@ -374,11 +425,14 @@ export default function BreakoutLiveCPanel() {
   )
 }
 
-function Metric({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Metric({ label, value, mono, accent, pnl }: { label: string; value: string; mono?: boolean; accent?: boolean; pnl?: number }) {
+  const color = pnl !== undefined
+    ? (pnl > 0 ? 'text-long' : pnl < 0 ? 'text-short' : 'text-text-secondary')
+    : accent ? 'text-accent' : ''
   return (
     <div>
       <div className="text-text-secondary text-[10px] uppercase">{label}</div>
-      <div className={`text-base ${mono ? 'font-mono' : ''}`}>{value}</div>
+      <div className={`text-base ${mono ? 'font-mono' : ''} ${color}`}>{value}</div>
     </div>
   )
 }

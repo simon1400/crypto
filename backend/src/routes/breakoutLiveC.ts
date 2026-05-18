@@ -18,10 +18,36 @@
 import { Router } from 'express'
 import { prisma } from '../db/prisma'
 import {
-  getBinanceClient, getBinanceCreds, BinanceApiError,
+  getBinanceClient, getBinanceCreds, BinanceApiError, BinanceFuturesClient,
 } from '../services/exchanges/binanceFutures'
 
 const router = Router()
+
+/**
+ * Pull the effective deposit number from Binance (single source of truth for
+ * live sizing). Returns availableBalance — what we can actually post as margin
+ * right now. Also caches it into BreakoutLiveConfigC.currentDepositUsd so the
+ * UI has a fresh number even when the API call isn't being made in real time.
+ *
+ * If startingDepositUsd is still at the default ($100) AND Strategy has never
+ * been enabled (peakDepositUsd == startingDepositUsd untouched), the function
+ * leaves baseline alone — it gets snapshotted at the moment Strategy is first
+ * turned on. This keeps Total P&L = current − baseline meaningful from day 1
+ * regardless of how much USDT was on the account before we started trading.
+ */
+export async function refreshLiveBalance(client: BinanceFuturesClient): Promise<{ available: number; total: number }> {
+  const acc = await client.getAccount()
+  const usdt = acc.assets.find((a) => a.asset === 'USDT')
+  const available = usdt ? Number(usdt.availableBalance) : 0
+  const total = usdt ? Number(usdt.walletBalance) : 0
+  // Cache as snapshot for UI / offline display. Do NOT touch startingDepositUsd
+  // here — that's set ONCE when Strategy is first enabled (see PUT /config).
+  await prisma.breakoutLiveConfigC.update({
+    where: { id: 1 },
+    data: { currentDepositUsd: available },
+  })
+  return { available, total }
+}
 
 // ============================================================================
 // Config
@@ -47,9 +73,49 @@ router.put('/config', async (req, res) => {
       dailyLossLimitPct, dailyLossLimitR, weeklyLossLimitPct,
       maxConcurrentPositions, maxPositionsPerSymbol,
     } = req.body
+
+    // Baseline snapshot: the first time Strategy is enabled, capture the
+    // current Binance available balance as startingDepositUsd. This becomes the
+    // reference point for Total P&L going forward. resetAt marks the snapshot
+    // time so we can show "since {date}" in the UI.
+    let baselineSnapshot: { startingDepositUsd: number; resetAt: Date } | null = null
+    if (enabled === true) {
+      const current = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
+      if (current && !current.resetAt) {
+        const creds = await getBinanceCreds(useTestnet ?? current.useTestnet)
+        if (creds) {
+          try {
+            const client = getBinanceClient(creds)
+            await client.syncTime()
+            const acc = await client.getAccount()
+            const usdt = acc.assets.find((a) => a.asset === 'USDT')
+            const avail = usdt ? Number(usdt.availableBalance) : 0
+            if (avail > 0) {
+              baselineSnapshot = {
+                startingDepositUsd: avail,
+                resetAt: new Date(),
+              }
+            }
+          } catch (e: any) {
+            // If we can't reach Binance at the enable moment, refuse to enable
+            // rather than start with a stale baseline.
+            return res.status(400).json({
+              error: `Не могу снимать baseline: ${e.message}. Проверь подключение и попробуй снова.`,
+            })
+          }
+        }
+      }
+    }
+
     const cfg = await prisma.breakoutLiveConfigC.update({
       where: { id: 1 },
       data: {
+        ...(baselineSnapshot ? {
+          startingDepositUsd: baselineSnapshot.startingDepositUsd,
+          currentDepositUsd: baselineSnapshot.startingDepositUsd,
+          peakDepositUsd: baselineSnapshot.startingDepositUsd,
+          resetAt: baselineSnapshot.resetAt,
+        } : {}),
         ...(enabled !== undefined ? { enabled } : {}),
         ...(useTestnet !== undefined ? { useTestnet } : {}),
         ...(riskPctPerTrade !== undefined ? { riskPctPerTrade } : {}),
@@ -68,6 +134,44 @@ router.put('/config', async (req, res) => {
       },
     })
     res.json(cfg)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ============================================================================
+// Baseline — set startingDepositUsd = current Binance available balance.
+// Used both implicitly (auto-snapshot on first enable) and explicitly via this
+// endpoint. Calling reset zeroes out the previous P&L base — useful after
+// depositing more USDT to start counting fresh from the new balance.
+// ============================================================================
+
+router.post('/baseline/reset', async (_req, res) => {
+  try {
+    const cfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
+    if (!cfg) return res.status(404).json({ error: 'Config not found' })
+
+    const creds = await getBinanceCreds(cfg.useTestnet)
+    if (!creds) return res.status(400).json({ error: 'Binance ключи не настроены. Добавь их в Настройках.' })
+
+    const client = getBinanceClient(creds)
+    await client.syncTime()
+    const acc = await client.getAccount()
+    const usdt = acc.assets.find((a) => a.asset === 'USDT')
+    const avail = usdt ? Number(usdt.availableBalance) : 0
+    if (avail <= 0) return res.status(400).json({ error: 'На Binance нулевой баланс USDT' })
+
+    const updated = await prisma.breakoutLiveConfigC.update({
+      where: { id: 1 },
+      data: {
+        startingDepositUsd: avail,
+        currentDepositUsd: avail,
+        peakDepositUsd: avail,
+        maxDrawdownPct: 0,
+        resetAt: new Date(),
+      },
+    })
+    res.json({ ok: true, baselineUsd: avail, config: updated })
   } catch (e: any) {
     res.status(500).json({ error: e.message })
   }
@@ -96,11 +200,17 @@ router.get('/status', async (_req, res) => {
 
     const client = getBinanceClient(creds)
     await client.syncTime()
-    const [balance, positions, openOrders] = await Promise.all([
-      client.getBalanceUsdt(),
+    const [bal, positions, openOrders] = await Promise.all([
+      refreshLiveBalance(client),
       client.getOpenPositions(),
       client.getOpenOrders(),
     ])
+    // Baseline for P&L is startingDepositUsd, snapshotted at first enable (see PUT /config).
+    // If Strategy has never been turned on, baseline == default ($100) — UI will
+    // show that visually (it's expected).
+    const baseline = cfg.startingDepositUsd
+    const totalPnlUsd = bal.available - baseline
+    const totalPnlPct = baseline > 0 ? (totalPnlUsd / baseline) * 100 : 0
 
     res.json({
       connected: true,
@@ -108,7 +218,13 @@ router.get('/status', async (_req, res) => {
       enabled: cfg.enabled,
       killSwitchActive: cfg.killSwitchActive,
       killSwitchReason: cfg.killSwitchReason,
-      balanceUsdt: balance,
+      // Use 'balanceUsdt' as the canonical current deposit (live Binance source of truth).
+      balanceUsdt: bal.available,
+      walletBalanceUsdt: bal.total,
+      baselineUsd: baseline,
+      totalPnlUsd: Math.round(totalPnlUsd * 100) / 100,
+      totalPnlPct: Math.round(totalPnlPct * 100) / 100,
+      baselineSnapshottedAt: cfg.resetAt,
       openPositions: positions.length,
       openOrders: openOrders.length,
       usedWeight1m: client.usedWeight1m,

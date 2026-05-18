@@ -71,7 +71,13 @@ export interface BreakoutLiveStatus {
   enabled?: boolean
   killSwitchActive?: boolean
   killSwitchReason?: string | null
-  balanceUsdt?: number
+  // Live Binance source of truth.
+  balanceUsdt?: number          // availableBalance — sizing source
+  walletBalanceUsdt?: number    // total wallet including locked margin
+  baselineUsd?: number          // startingDepositUsd snapshot
+  totalPnlUsd?: number          // available - baseline
+  totalPnlPct?: number
+  baselineSnapshottedAt?: string | null
   openPositions?: number
   openOrders?: number
   usedWeight1m?: number
@@ -161,6 +167,10 @@ export async function killSwitch(reason?: string): Promise<{ ok: boolean; cancel
 
 export async function releaseKillSwitch(): Promise<BreakoutLiveConfig> {
   return req(`${BP}/kill-switch/release`, { method: 'POST' })
+}
+
+export async function resetBaseline(): Promise<{ ok: boolean; baselineUsd: number; config: BreakoutLiveConfig }> {
+  return req(`${BP}/baseline/reset`, { method: 'POST' })
 }
 
 export async function testPlaceOrder(p: { symbol: string; side: 'BUY' | 'SELL'; priceOffsetPct?: number; quantity?: number }): Promise<any> {
