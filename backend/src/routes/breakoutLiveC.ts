@@ -313,9 +313,15 @@ router.post('/test-place-order', async (req, res) => {
     const priceRounded = side === 'BUY'
       ? Math.floor(targetPrice / tick) * tick
       : Math.ceil(targetPrice / tick) * tick
-    const minNotional = f.minNotional || 5
-    let qty = quantity ?? Math.max(f.minQty, (minNotional * 1.1) / priceRounded)
-    qty = Math.floor(qty / step) * step
+    // Binance Futures wants notional >= 5 (mainnet) or >= 50 (testnet) — the value
+    // in exchangeInfo MIN_NOTIONAL filter is the floor but actual enforcement is
+    // higher and varies by symbol/network. Use $55 with a fat margin so the test
+    // order isn't rejected with -4164 on testnet.
+    const minNotional = Math.max(f.minNotional || 5, 55)
+    // Use CEIL on the qty calc so the rounded notional stays above the floor —
+    // FLOOR could shave the notional just below 55 after step rounding.
+    let qty = quantity ?? Math.max(f.minQty, minNotional / priceRounded)
+    qty = Math.ceil(qty / step) * step
     qty = Number(qty.toFixed(f.quantityPrecision))
 
     const cid = `cTEST_${Date.now()}_${side}`
