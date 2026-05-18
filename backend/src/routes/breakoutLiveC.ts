@@ -21,6 +21,7 @@ import {
   getBinanceClient, getBinanceCreds, BinanceApiError,
 } from '../services/exchanges/binanceFutures'
 import { refreshLiveBalance } from './_liveBalanceShared'
+import { buildSharedReadHandlers } from './breakoutPaperRouterFactory'
 import { flattenAllOpenLiveC } from '../services/dailyBreakoutLiveTraderC'
 
 // Re-export so existing import paths (`from './breakoutLiveC'`) keep working.
@@ -241,8 +242,114 @@ router.get('/status', async (_req, res) => {
 })
 
 // ============================================================================
+// Wipe-all — DANGEROUS: deletes BreakoutLiveTradeC rows + resets config stats.
+//
+// Does NOT touch the exchange itself — caller must have already flattened
+// positions via kill-switch or /flatten-all. Used after a misconfiguration
+// run to start fresh from a clean DB. Will refuse to run on prod net unless
+// confirmation=PROD_WIPE_ACK is passed in the body.
+// ============================================================================
+
+router.post('/wipe-all', async (req, res) => {
+  try {
+    const { confirmation } = req.body as { confirmation?: string }
+    const cfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
+    if (!cfg) return res.status(404).json({ error: 'Config not found' })
+
+    if (!cfg.useTestnet && confirmation !== 'PROD_WIPE_ACK') {
+      return res.status(400).json({
+        error: 'Wipe on PROD network requires confirmation=PROD_WIPE_ACK in body. Caller should pop a hard "type PROD_WIPE_ACK" prompt before sending.',
+      })
+    }
+
+    // Refuse if anything still open on exchange — would orphan a position
+    // with no DB trace.
+    const creds = await getBinanceCreds(cfg.useTestnet)
+    if (creds) {
+      const client = getBinanceClient(creds)
+      const positions = await client.getOpenPositions().catch(() => null)
+      if (positions && positions.length > 0) {
+        return res.status(400).json({
+          error: `Cannot wipe: ${positions.length} position(s) still open on Binance. Use kill-switch or /flatten-all first.`,
+        })
+      }
+    }
+
+    const deletedTrades = await prisma.breakoutLiveTradeC.deleteMany({})
+    const deletedFunding = await prisma.breakoutLiveFundingC.deleteMany({})
+    const reset = await prisma.breakoutLiveConfigC.update({
+      where: { id: 1 },
+      data: {
+        enabled: false,
+        killSwitchActive: false,
+        killSwitchReason: null,
+        killSwitchAt: null,
+        resetAt: null,
+        startingDepositUsd: 100,
+        currentDepositUsd: 100,
+        peakDepositUsd: 100,
+        maxDrawdownPct: 0,
+        totalTrades: 0,
+        totalWins: 0,
+        totalLosses: 0,
+        totalPnLUsd: 0,
+        totalFundingUsd: 0,
+      },
+    })
+    res.json({
+      ok: true,
+      deletedTrades: deletedTrades.count,
+      deletedFunding: deletedFunding.count,
+      config: reset,
+    })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /reset — alias of /baseline/reset that the BreakoutPaper UI expects.
+// Body: { startingDepositUsd? } is IGNORED for live (baseline always comes
+// from Binance availableBalance). Kept for API surface compatibility.
+router.post('/reset', async (_req, res) => {
+  try {
+    const cfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
+    if (!cfg) return res.status(404).json({ error: 'Config not found' })
+
+    const creds = await getBinanceCreds(cfg.useTestnet)
+    if (!creds) return res.status(400).json({ error: 'Binance keys not configured.' })
+
+    const client = getBinanceClient(creds)
+    await client.syncTime()
+    const acc = await client.getAccount()
+    const usdt = acc.assets.find((a) => a.asset === 'USDT')
+    const avail = usdt ? Number(usdt.availableBalance) : 0
+    if (avail <= 0) return res.status(400).json({ error: 'Zero USDT balance on Binance.' })
+
+    const updated = await prisma.breakoutLiveConfigC.update({
+      where: { id: 1 },
+      data: {
+        startingDepositUsd: avail,
+        currentDepositUsd: avail,
+        peakDepositUsd: avail,
+        maxDrawdownPct: 0,
+        resetAt: new Date(),
+      },
+    })
+    res.json(updated)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ============================================================================
 // Trades
 // ============================================================================
+
+// Shared read handlers (identical shape to paper /trades/live and /stats so
+// the BreakoutPaper component can render either off the same response).
+const sharedRead = buildSharedReadHandlers('LIVE')
+router.get('/trades/live', sharedRead.tradesLive)
+router.get('/stats', sharedRead.stats)
 
 router.get('/trades', async (req, res) => {
   try {

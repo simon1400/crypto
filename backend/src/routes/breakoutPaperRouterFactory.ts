@@ -12,7 +12,7 @@
  * removes the B row; the signal stays for variant A.
  */
 
-import { Router } from 'express'
+import { Router, type Request, type Response } from 'express'
 import { prisma } from '../db/prisma'
 import {
   resetBreakoutPaperAccount, syncSignalStatus, forceOpenSignal,
@@ -21,6 +21,129 @@ import {
 import { loadHistorical } from '../scalper/historicalLoader'
 import { fetchPricesBatch } from '../services/market'
 import { BreakoutVariant, configModel, tradeModel } from '../services/breakoutVariant'
+
+/**
+ * Build shared read-only handlers parameterised by variant. Used by the live
+ * router to expose /trades/live and /stats with identical shape to paper —
+ * the BreakoutPaper component renders both off the same response.
+ *
+ * Mutating endpoints (PUT /trades/:id, POST /reset, etc.) are NOT exported
+ * here because they touch paper-specific helpers (resetBreakoutPaperAccount,
+ * syncSignalStatus) which assume paper config shape. Live has its own
+ * /baseline/reset and /kill-switch routes instead.
+ */
+export function buildSharedReadHandlers(variant: BreakoutVariant) {
+  const cm = configModel(variant) as any
+  const tm = tradeModel(variant) as any
+
+  const tradesLive = async (_req: Request, res: Response) => {
+    try {
+      const trades = await tm.findMany({
+        where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+      })
+      if (trades.length === 0) return res.json([])
+
+      const symbols: string[] = trades.map((t: any) => String(t.symbol))
+      const prices = await fetchPricesBatch(symbols)
+
+      const result = await Promise.all(trades.map(async (t: any) => {
+        const price: number | null = prices[t.symbol] ?? null
+        if (price == null) {
+          return { id: t.id, status: t.status, currentPrice: null, unrealizedPnl: 0, unrealizedPnlPct: 0 }
+        }
+        const fills = (t.closes as any[]) ?? []
+        const closedPctSoFar = fills.reduce((a: number, c: any) => a + (c.percent ?? 0), 0)
+        const remainingFrac = Math.max(0, 1 - closedPctSoFar / 100)
+        if (remainingFrac < 1e-6) {
+          return { id: t.id, status: t.status, currentPrice: price, unrealizedPnl: 0, unrealizedPnlPct: 0, remainingUnrealizedPnl: 0, remainingUnrealizedPnlPct: 0 }
+        }
+        const isLong = t.side === 'BUY'
+        const fillUnits = t.positionUnits * remainingFrac
+        const unrealizedGross = (isLong ? price - t.entryPrice : t.entryPrice - price) * fillUnits
+        const takerPct = t.feeTakerPct ?? null
+        const feeRatePct = takerPct ?? t.feesRoundTripPct ?? 0.08
+        const exitFeesIfClosedNow = t.positionUnits * price * remainingFrac * (feeRatePct / 100)
+        const remainingUnrealized = unrealizedGross - exitFeesIfClosedNow
+        const remainingUnrealizedPnlPct = t.depositAtEntryUsd > 0
+          ? (remainingUnrealized / t.depositAtEntryUsd) * 100 : 0
+        return {
+          id: t.id, status: t.status, currentPrice: price,
+          unrealizedPnl: Math.round(remainingUnrealized * 100) / 100,
+          unrealizedPnlPct: Math.round(remainingUnrealizedPnlPct * 100) / 100,
+          remainingUnrealizedPnl: Math.round(remainingUnrealized * 100) / 100,
+          remainingUnrealizedPnlPct: Math.round(remainingUnrealizedPnlPct * 100) / 100,
+        }
+      }))
+      res.json(result)
+    } catch (e: any) {
+      res.status(500).json({ error: e.message })
+    }
+  }
+
+  const stats = async (_req: Request, res: Response) => {
+    try {
+      const cfg = await cm.upsert({ where: { id: 1 }, update: {}, create: { id: 1 } })
+      const closed = await tm.findMany({
+        where: { status: { in: ['CLOSED', 'SL_HIT', 'EXPIRED'] } },
+        select: { netPnlUsd: true, openedAt: true, closedAt: true, symbol: true },
+      })
+      const wins = closed.filter((t: any) => t.netPnlUsd > 0).length
+      const losses = closed.filter((t: any) => t.netPnlUsd < 0).length
+      const winRate = wins + losses > 0 ? wins / (wins + losses) : 0
+
+      const allWithCloses = await tm.findMany({
+        where: { NOT: { closes: { equals: [] } } },
+        select: {
+          symbol: true, status: true, closes: true,
+          netPnlUsd: true, realizedPnlUsd: true, feesPaidUsd: true,
+          openedAt: true,
+        },
+      })
+      const closedStatusSet = new Set(['CLOSED', 'SL_HIT', 'EXPIRED'])
+      const byDay: Record<string, number> = {}
+      const bySymbolPnl: Record<string, number> = {}
+      for (const t of allWithCloses) {
+        const closesArr = ((t.closes as any[]) ?? []) as Array<{ price: number; percent: number; pnlUsd: number; closedAt: string; reason?: string }>
+        const totalNet = closedStatusSet.has(t.status)
+          ? t.netPnlUsd
+          : (t.realizedPnlUsd - t.feesPaidUsd)
+        const grossSum = closesArr.reduce((a, c) => a + (c.pnlUsd ?? 0), 0)
+        for (const c of closesArr) {
+          const weight = grossSum !== 0 ? (c.pnlUsd ?? 0) / grossSum : 1 / closesArr.length
+          const netShare = totalNet * weight
+          const day = (c.closedAt ? new Date(c.closedAt) : t.openedAt).toISOString().slice(0, 10)
+          byDay[day] = (byDay[day] ?? 0) + netShare
+          bySymbolPnl[t.symbol] = (bySymbolPnl[t.symbol] ?? 0) + netShare
+        }
+      }
+      const equityCurve: Array<{ date: string; pnl: number; equity: number }> = []
+      let running = cfg.startingDepositUsd
+      for (const date of Object.keys(byDay).sort()) {
+        running += byDay[date]
+        equityCurve.push({ date, pnl: byDay[date], equity: running })
+      }
+      const bySymbol: Record<string, { trades: number; wins: number; pnl: number }> = {}
+      for (const t of closed) {
+        bySymbol[t.symbol] = bySymbol[t.symbol] ?? { trades: 0, wins: 0, pnl: 0 }
+        bySymbol[t.symbol].trades++
+        if (t.netPnlUsd > 0) bySymbol[t.symbol].wins++
+      }
+      for (const sym of Object.keys(bySymbolPnl)) {
+        bySymbol[sym] = bySymbol[sym] ?? { trades: 0, wins: 0, pnl: 0 }
+        bySymbol[sym].pnl = bySymbolPnl[sym]
+      }
+      res.json({
+        config: cfg, winRate,
+        returnPct: cfg.startingDepositUsd > 0 ? ((cfg.currentDepositUsd - cfg.startingDepositUsd) / cfg.startingDepositUsd) * 100 : 0,
+        bySymbol, equityCurve,
+      })
+    } catch (e: any) {
+      res.status(500).json({ error: e.message })
+    }
+  }
+
+  return { tradesLive, stats }
+}
 
 async function getCurrentPrice(symbol: string): Promise<number | null> {
   try {
