@@ -43,6 +43,43 @@ import { DEFAULT_BREAKOUT_SETUPS } from './dailyBreakoutLiveScanner'
 import { refreshLiveBalance } from '../routes/_liveBalanceShared'
 
 const LOG = '[BreakoutLiveC]'
+const TG_PREFIX = '⚠️ <b>[LIVE C]</b> '
+
+// ============================================================================
+// Telegram helper — sends a live notification using the BotConfig credentials.
+// Kept separate from notifier.ts (which is paper-only) so live events don't
+// risk regressing the existing message templates.
+// ============================================================================
+async function sendLiveTelegram(html: string): Promise<void> {
+  try {
+    const cfg = await prisma.botConfig.findUnique({ where: { id: 1 } })
+    if (!cfg?.telegramEnabled) return
+    if (!cfg.telegramBotToken || !cfg.telegramChatId) return
+    await fetch(`https://api.telegram.org/bot${cfg.telegramBotToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: cfg.telegramChatId,
+        text: TG_PREFIX + html,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+      }),
+    })
+  } catch (e: any) {
+    console.warn(`${LOG} Telegram send failed: ${e.message}`)
+  }
+}
+
+function fmtPrice(n: number): string {
+  if (n >= 1000) return n.toFixed(2)
+  if (n >= 1) return n.toFixed(4)
+  return n.toFixed(6)
+}
+
+function fmtPnl(n: number): string {
+  const sign = n >= 0 ? '+' : '−'
+  return `${sign}$${Math.abs(n).toFixed(2)}`
+}
 
 // Cache exchangeInfo filters for 1h — they don't change intraday and we'd
 // otherwise hit /fapi/v1/exchangeInfo (weight 1) on every placement cycle.
@@ -85,6 +122,24 @@ interface RunningState {
 // Track which UTC day we already EOD-flushed so the 1-min tick doesn't fire
 // the flush repeatedly between 23:55 and 23:56.
 let lastEodDate: string | null = null
+
+// One breaker alert per UTC day. Set when notifyBreaker fires, cleared on the
+// first cycle of a new UTC day (compared inside maybeNotifyBreaker).
+let breakerNotifiedDate: string | null = null
+
+async function maybeNotifyBreaker(cb: { reason: string; realizedR: number; netPnlUsd: number; pnlPct: number }): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10)
+  if (breakerNotifiedDate === today) return
+  breakerNotifiedDate = today
+  await sendLiveTelegram([
+    `🛑 <b>Circuit breaker</b>  · сегодняшняя торговля остановлена`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `❗ ${cb.reason}`,
+    `📈 Σ R    ${cb.realizedR.toFixed(2)}R`,
+    `💵 Σ P&L  <b>${fmtPnl(cb.netPnlUsd)}</b> (${cb.pnlPct.toFixed(2)}%)`,
+    `🚫 Новые лимитки заблокированы, висящие отменены до следующего UTC дня.`,
+  ].join('\n'))
+}
 
 let state: RunningState | null = null
 let startInFlight = false
@@ -138,6 +193,19 @@ export async function startBreakoutLiveTraderC(): Promise<void> {
         },
       })
       console.error(`${LOG} ⚠ untracked exchange state — Strategy disabled until manual review: ${reconcileReport.summary}`)
+      await sendLiveTelegram([
+        `🛑 <b>Reconciliation drift</b>  · Strategy выключен`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `❗ Обнаружены позиции/ордера на бирже, которых нет в БД.`,
+        `📋 ${reconcileReport.summary}`,
+        `⚙ Проверь страницу C·LIVE и сними kill-switch вручную.`,
+      ].join('\n'))
+    } else if (reconcileReport.summary !== 'no drift') {
+      // Soft drift (recovered late fills / closed positions) — informational only.
+      await sendLiveTelegram([
+        `ℹ <b>Reconciliation</b>  · восстановление состояния`,
+        `${reconcileReport.summary}`,
+      ].join('\n'))
     }
 
     const userDataWs = new BinanceUserDataStream({
@@ -391,6 +459,16 @@ async function flattenAllOpenC(reason: string): Promise<{ closed: number; failed
   }
 
   console.log(`${LOG} flatten complete (${reason}): ${closed} closed, ${failed} failed`)
+
+  if (closed > 0 || failed > 0) {
+    const emoji = reason === 'EOD-FLAT' ? '🌙' : '🛑'
+    await sendLiveTelegram([
+      `${emoji} <b>${reason}</b>  · позиции закрыты по рынку`,
+      `━━━━━━━━━━━━━━━━━━`,
+      `✓ Закрыто: <b>${closed}</b>`,
+      failed > 0 ? `✗ Ошибки: <b>${failed}</b>` : '',
+    ].filter(Boolean).join('\n'))
+  }
   return { closed, failed }
 }
 
@@ -779,6 +857,8 @@ async function placeLimitsForRanges(
   if (cb.tripped) {
     console.warn(`${LOG} ${cb.reason} — blocking new placements + cancelling pending for the rest of UTC day`)
     await cancelAllPendingForBreaker(client, cb.reason)
+    // One alert per UTC day — guarded by breakerNotifiedDate at module scope.
+    await maybeNotifyBreaker(cb)
     return
   }
 
@@ -1166,6 +1246,17 @@ async function handleEntryOrderUpdate(trade: any, ev: OrderTradeUpdateEvent): Pr
 
       console.log(`${LOG} ✓ entry filled #${trade.id} ${trade.symbol} ${trade.side} @ ${fillPrice} qty ${cumQty}`)
 
+      const sideText = trade.side === 'BUY' ? 'LONG' : 'SHORT'
+      const sideEmoji = trade.side === 'BUY' ? '🟢' : '🔴'
+      sendLiveTelegram([
+        `${sideEmoji} <b>${trade.symbol}</b> <b>${sideText}</b>  · entry filled`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `💰 Цена   <code>${fmtPrice(fillPrice)}</code>`,
+        `📐 Размер <code>$${(fillPrice * cumQty).toFixed(2)}</code>  · ${cumQty} ед.`,
+        `⚡ Плечо  <code>${trade.leverage ?? '?'}x</code>`,
+        `🛑 SL    <code>${fmtPrice(trade.stopLoss)}</code>`,
+      ].join('\n'))
+
       // Cancel the pair limit (if any) — one side filled, other no longer needed.
       // Best-effort: if cancel fails (e.g. already filled itself), surface but don't crash.
       if (trade.pairOrderId) {
@@ -1381,6 +1472,18 @@ async function handleSlOrderUpdate(trade: any, ev: OrderTradeUpdateEvent): Promi
   await cancelRemainingChildren(trade.id, 'sl filled')
 
   console.log(`${LOG} ✗ SL hit #${trade.id} ${trade.symbol} @ ${fillPrice} pnl ${realizedPnl.toFixed(4)}`)
+
+  // SL trailing level: 0 = initial SL (full loss), 1 = SL at BE (locked TP1 part),
+  //                    2 = SL at TP1 (locked TP1+TP2)
+  const tpCount = closesArr.filter((c) => c.reason === 'TP1' || c.reason === 'TP2').length
+  const slLabel = tpCount === 0 ? 'SL' : tpCount === 1 ? 'SL@BE' : 'SL@TP1'
+  sendLiveTelegram([
+    `🔴 <b>${trade.symbol}</b> <b>${slLabel}</b>  · позиция закрыта`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `💰 Цена   <code>${fmtPrice(fillPrice)}</code>`,
+    `💵 P&L    <b>${fmtPnl(realizedPnl - feePaid)}</b>`,
+    `Σ R     ${(trade.realizedR + 0).toFixed(2)}R`,
+  ].join('\n'))
 }
 
 /**
@@ -1455,6 +1558,18 @@ async function handleTpOrderUpdate(trade: any, ev: OrderTradeUpdateEvent): Promi
   })
 
   console.log(`${LOG} ✓ ${tpLabel} hit #${trade.id} ${trade.symbol} @ ${fillPrice} pnl ${realizedPnl.toFixed(4)} → SL to ${newStop}`)
+
+  const trailNote = tpIndex === 0 ? 'SL → BE'
+    : tpIndex === 1 ? 'SL → TP1'
+    : 'позиция закрыта полностью'
+  sendLiveTelegram([
+    `✅ <b>${trade.symbol}</b> <b>${tpLabel}</b>  · частичное закрытие`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `💰 Цена   <code>${fmtPrice(fillPrice)}</code>`,
+    `📊 Закрыто  ${percent}%`,
+    `💵 P&L    <b>${fmtPnl(realizedPnl - feePaid)}</b>`,
+    `🛡 ${trailNote}`,
+  ].join('\n'))
 
   if (tpIndex === 2) {
     // Full exit — cancel SL (no remaining qty for it to close).
