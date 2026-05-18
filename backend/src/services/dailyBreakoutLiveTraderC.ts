@@ -78,8 +78,13 @@ interface RunningState {
   userDataWs: BinanceUserDataStream
   marketDataWs: BinanceMarketDataStream
   tickTimer: NodeJS.Timeout | null
+  eodTimer: NodeJS.Timeout | null
   net: 'testnet' | 'prod'
 }
+
+// Track which UTC day we already EOD-flushed so the 1-min tick doesn't fire
+// the flush repeatedly between 23:55 and 23:56.
+let lastEodDate: string | null = null
 
 let state: RunningState | null = null
 let startInFlight = false
@@ -130,13 +135,19 @@ export async function startBreakoutLiveTraderC(): Promise<void> {
     })
     marketDataWs.start()
 
-    // Slow tick — every 5 min, mirrors paper C cycle (placement + safety net + EOD).
-    // Implementation lands in follow-up commits; for now it just logs heartbeat.
+    // Slow tick — every 5 min, mirrors paper C cycle (placement + safety net).
     const tickTimer = setInterval(() => {
       runLiveCycle().catch((e) => console.error(`${LOG} cycle error:`, e.message))
     }, 5 * 60 * 1000)
 
-    state = { client, userDataWs, marketDataWs, tickTimer, net: creds.net }
+    // EOD-FLAT tick — every minute, fires once at 23:55 UTC to flatten any
+    // still-open positions. Independent from the 5min cycle so we don't miss
+    // the window. Also runs orphan PENDING cleanup after midnight.
+    const eodTimer = setInterval(() => {
+      runEodTick().catch((e) => console.error(`${LOG} EOD tick error:`, e.message))
+    }, 60 * 1000)
+
+    state = { client, userDataWs, marketDataWs, tickTimer, eodTimer, net: creds.net }
     console.log(`${LOG} started (${creds.net})`)
 
     // Kick off one immediate cycle so subscriptions/reconciliation happen now,
@@ -151,6 +162,7 @@ export function stopBreakoutLiveTraderC(): void {
   if (!state) return
   console.log(`${LOG} stopping`)
   if (state.tickTimer) clearInterval(state.tickTimer)
+  if (state.eodTimer) clearInterval(state.eodTimer)
   state.userDataWs.stop()
   state.marketDataWs.stop()
   state = null
@@ -210,6 +222,203 @@ async function runLiveCycle(): Promise<void> {
   } finally {
     cycleBusy = false
   }
+}
+
+// ============================================================================
+// EOD-FLAT — close all open Variant C live positions at 23:55 UTC
+// ============================================================================
+
+/**
+ * Runs every minute. Two responsibilities:
+ *   1. If current UTC time is in 23:55-23:56 window AND we haven't flushed
+ *      today yet → flatten all open positions via MARKET reduceOnly.
+ *   2. Around 00:01 UTC, cancel any PENDING_LIMIT entry orders still on the
+ *      book from prior days (cleanup if EOD didn't run, e.g. process restart).
+ */
+async function runEodTick(): Promise<void> {
+  if (!state) return
+  const now = new Date()
+  const utcDate = now.toISOString().slice(0, 10)
+  const hour = now.getUTCHours()
+  const minute = now.getUTCMinutes()
+
+  // EOD flatten window: 23:55 UTC. Idempotent via lastEodDate guard.
+  if (hour === 23 && minute >= 55 && lastEodDate !== utcDate) {
+    lastEodDate = utcDate
+    console.log(`${LOG} EOD-FLAT window ${utcDate} 23:55 UTC — flattening open positions`)
+    try {
+      await flattenAllOpenC('EOD-FLAT')
+    } catch (e: any) {
+      console.error(`${LOG} EOD-FLAT failed: ${e.message}`)
+    }
+  }
+
+  // Orphan PENDING cleanup just after midnight UTC. Cancels any pre-emptive
+  // limits from yesterday that didn't fill and weren't already cancelled by
+  // EOD (e.g. WS event missed during a brief disconnect).
+  if (hour === 0 && minute === 1) {
+    try {
+      await cancelOrphanPendingLimits()
+    } catch (e: any) {
+      console.warn(`${LOG} orphan cleanup failed: ${e.message}`)
+    }
+  }
+}
+
+/**
+ * Close every BreakoutLiveTradeC row still in an open status: cancel its SL/TP
+ * children, send MARKET reduceOnly for the remaining qty, mark CLOSED.
+ *
+ * Used by EOD-FLAT (23:55 UTC) and by the kill-switch endpoint (manual flush).
+ */
+async function flattenAllOpenC(reason: string): Promise<{ closed: number; failed: number }> {
+  if (!state) return { closed: 0, failed: 0 }
+
+  const openTrades = await prisma.breakoutLiveTradeC.findMany({
+    where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+  })
+  if (openTrades.length === 0) {
+    console.log(`${LOG} flatten — nothing open`)
+    return { closed: 0, failed: 0 }
+  }
+
+  let closed = 0
+  let failed = 0
+
+  for (const t of openTrades) {
+    try {
+      // 1. Cancel SL + TP children so they don't fire after we market-close.
+      await cancelRemainingChildren(t.id, reason)
+
+      // 2. Compute remaining qty (units not yet closed by partial TPs).
+      const closesArr = ((t.closes as any[]) ?? [])
+      const closedFrac = closesArr.reduce((a: number, c: any) => a + (c.percent ?? 0), 0) / 100
+      const remainingFrac = Math.max(0, 1 - closedFrac)
+      const remainingQty = t.positionUnits * remainingFrac
+      if (remainingQty <= 0) {
+        // Nothing left to close on exchange (already fully filled via TPs/SL).
+        // Just finalize the DB row.
+        await prisma.breakoutLiveTradeC.update({
+          where: { id: t.id },
+          data: { status: 'CLOSED', closedAt: new Date() },
+        })
+        closed++
+        continue
+      }
+
+      const filters = await getFilters(state.client)
+      const f = filters.get(t.symbol)
+      if (!f) {
+        console.warn(`${LOG} flatten #${t.id} — no filter for ${t.symbol}`)
+        failed++
+        continue
+      }
+
+      const step = f.stepSize
+      let qty = Math.floor(remainingQty / step) * step
+      qty = Number(qty.toFixed(f.quantityPrecision))
+      if (qty < f.minQty) {
+        // Below min qty — already dust. Just finalize.
+        await prisma.breakoutLiveTradeC.update({
+          where: { id: t.id },
+          data: { status: 'CLOSED', closedAt: new Date() },
+        })
+        closed++
+        continue
+      }
+
+      const closeSide: 'BUY' | 'SELL' = t.side === 'BUY' ? 'SELL' : 'BUY'
+
+      // 3. MARKET reduceOnly to close.
+      // Note: actual fill price + realized pnl come back via ORDER_TRADE_UPDATE
+      // (handleEntryOrderUpdate doesn't match because cID isn't 'cL*' — but the
+      // event won't match any tracked order either, it'll fall through and be
+      // logged as 'untracked'). We mark CLOSED here optimistically; precise
+      // realized P&L is reconciled via REST in the next refresh cycle.
+      try {
+        await state.client.placeOrder({
+          symbol: t.symbol,
+          side: closeSide,
+          type: 'MARKET',
+          quantity: qty,
+          reduceOnly: true,
+        })
+        await prisma.breakoutLiveTradeC.update({
+          where: { id: t.id },
+          data: {
+            status: 'CLOSED',
+            closedAt: new Date(),
+            closes: [
+              ...closesArr,
+              {
+                price: 0,  // exact price comes via WS event; recorded as 0 if missed
+                percent: Math.round(remainingFrac * 100),
+                pnlUsd: 0,
+                closedAt: new Date().toISOString(),
+                reason,
+              },
+            ] as any,
+          },
+        })
+        closed++
+        console.log(`${LOG} flattened #${t.id} ${t.symbol} ${t.side} qty ${qty} via MARKET (${reason})`)
+      } catch (e: any) {
+        console.warn(`${LOG} flatten #${t.id} MARKET failed: ${e.message}`)
+        failed++
+      }
+    } catch (e: any) {
+      console.warn(`${LOG} flatten #${t.id} threw: ${e.message}`)
+      failed++
+    }
+  }
+
+  console.log(`${LOG} flatten complete (${reason}): ${closed} closed, ${failed} failed`)
+  return { closed, failed }
+}
+
+/**
+ * Cancel any BreakoutLiveTradeC rows still PENDING_LIMIT from before today's
+ * UTC midnight — both in DB and on the exchange. Defensive cleanup so the
+ * book doesn't accumulate stale limits across restarts/EOD failures.
+ */
+async function cancelOrphanPendingLimits(): Promise<void> {
+  if (!state) return
+  const todayStart = new Date()
+  todayStart.setUTCHours(0, 0, 0, 0)
+
+  const orphans = await prisma.breakoutLiveTradeC.findMany({
+    where: {
+      limitOrderState: 'PENDING_LIMIT',
+      limitPlacedAt: { lt: todayStart },
+    },
+  })
+  if (orphans.length === 0) return
+
+  for (const o of orphans) {
+    try {
+      if (o.binanceClientOrderId) {
+        await state.client.cancelOrder(o.symbol, { origClientOrderId: o.binanceClientOrderId })
+      }
+    } catch (e: any) {
+      if (!(e instanceof BinanceApiError) || (e.code !== -2011 && e.code !== -2013)) {
+        console.warn(`${LOG} orphan cancel ${o.symbol} failed: ${e.message}`)
+      }
+    }
+    await prisma.breakoutLiveTradeC.update({
+      where: { id: o.id },
+      data: {
+        limitOrderState: 'CANCELLED_EOD',
+        status: 'EXPIRED',
+        closedAt: new Date(),
+      },
+    })
+  }
+  console.log(`${LOG} cancelled ${orphans.length} orphan PENDING_LIMIT from prior days`)
+}
+
+// Exposed for the kill-switch route (POST /api/breakout-live-c/kill-switch).
+export async function flattenAllOpenLiveC(reason: string): Promise<{ closed: number; failed: number }> {
+  return flattenAllOpenC(reason)
 }
 
 // ============================================================================

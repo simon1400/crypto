@@ -21,6 +21,7 @@ import {
   getBinanceClient, getBinanceCreds, BinanceApiError,
 } from '../services/exchanges/binanceFutures'
 import { refreshLiveBalance } from './_liveBalanceShared'
+import { flattenAllOpenLiveC } from '../services/dailyBreakoutLiveTraderC'
 
 // Re-export so existing import paths (`from './breakoutLiveC'`) keep working.
 export { refreshLiveBalance }
@@ -345,6 +346,18 @@ router.post('/kill-switch', async (req, res) => {
     })
 
     res.json({ ok: true, cancelledOrders, closedPositions })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /flatten-all — close all C-LIVE positions only (does NOT disable Strategy).
+// Useful for manual mid-day exits without engaging the full kill switch.
+router.post('/flatten-all', async (req, res) => {
+  try {
+    const { reason } = req.body as { reason?: string }
+    const r = await flattenAllOpenLiveC(reason ?? 'manual')
+    res.json({ ok: true, ...r })
   } catch (e: any) {
     res.status(500).json({ error: e.message })
   }
