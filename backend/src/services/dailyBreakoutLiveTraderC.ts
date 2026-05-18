@@ -373,10 +373,10 @@ async function flattenAllOpenC(reason: string): Promise<{ closed: number; failed
 
   for (const t of openTrades) {
     try {
-      // 1. Cancel SL + TP children so they don't fire after we market-close.
-      await cancelRemainingChildren(t.id, reason)
-
-      // 2. Compute remaining qty (units not yet closed by partial TPs).
+      // Compute remaining qty (units not yet closed by partial TPs). Virtual
+      // SL/TP — no child orders on exchange to cancel; trackLiveTrade owns
+      // exits entirely via MARKET reduceOnly, and once status moves to
+      // CLOSED the aggTrade tracker will skip this row.
       const closesArr = ((t.closes as any[]) ?? [])
       const closedFrac = closesArr.reduce((a: number, c: any) => a + (c.percent ?? 0), 0) / 100
       const remainingFrac = Math.max(0, 1 - closedFrac)
@@ -620,13 +620,12 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
             positionSizeUsd: fillPrice * (Number(o.executedQty) || t.positionUnits),
           },
         })
-        // Place SL+TPs that the WS-driven handler would have placed. Pair
-        // cancel: best-effort (if pair filled too, we'll catch on next loop).
+        // Pair cancel: best-effort (if pair filled too, we'll catch on next loop).
         if (t.pairOrderId) await cancelPairOrder(t.pairOrderId).catch(() => { /* noop */ })
-        await placeSlAndTpsForTrade(t.id).catch((e) => {
-          console.warn(`${LOG} reconcile: post-fill SL/TP placement failed for #${t.id}: ${e.message}`)
-        })
-        console.log(`${LOG} reconcile: #${t.id} ${t.symbol} late FILL detected, recovered`)
+        // No exchange-side SL/TP to place — virtual tracking takes over once
+        // refreshAggTradeSubscriptions() picks this symbol up on the next cycle.
+        await refreshAggTradeSubscriptions().catch(() => { /* noop */ })
+        console.log(`${LOG} reconcile: #${t.id} ${t.symbol} late FILL detected, recovered (virtual tracking)`)
       } else if (o.status === 'CANCELED' || o.status === 'EXPIRED') {
         await prisma.breakoutLiveTradeC.update({
           where: { id: t.id },
@@ -1247,51 +1246,20 @@ async function handleUserDataEvent(ev: any): Promise<void> {
 async function handleOrderUpdate(ev: OrderTradeUpdateEvent): Promise<void> {
   const o = ev.o
   const cid = o.c
-  const execStatus = o.X // NEW / PARTIALLY_FILLED / FILLED / CANCELED / EXPIRED
 
-  // 1. Entry limit — match by clientOrderId (deterministic 'cL...' prefix).
+  // Entry limit — match by clientOrderId (deterministic 'cL...' prefix).
+  // SL/TP closes for live C are NOT tracked here — they're virtual (paper-C
+  // mirror): when price hits a level, trackLiveTrade() sends MARKET
+  // reduceOnly and updates the DB row directly. The resulting MARKET fill
+  // arrives here too, but we don't care — there's no row to match by cID,
+  // and the trade is already CLOSED in DB.
   if (cid && cid.startsWith('cL')) {
     const trade = await prisma.breakoutLiveTradeC.findUnique({
       where: { binanceClientOrderId: cid },
     })
     if (trade) {
       await handleEntryOrderUpdate(trade, ev)
-      return
     }
-  }
-
-  // 2. SL child — match by clientAlgoId prefix 'slL<tradeId>' (the trigger
-  // event carries clientOrderId = our clientAlgoId from algoOrder placement).
-  // Format: 'slL<tradeId>' (initial) or 'slL<tradeId>r<seq>' (after trailing).
-  if (cid && cid.startsWith('slL')) {
-    const m = cid.match(/^slL(\d+)/)
-    if (m) {
-      const tradeId = parseInt(m[1], 10)
-      const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
-      if (trade) {
-        await handleSlOrderUpdate(trade, ev)
-        return
-      }
-    }
-  }
-
-  // 3. TP child — match by clientAlgoId prefix 'tpL<tradeId>_<n>'.
-  if (cid && cid.startsWith('tpL')) {
-    const m = cid.match(/^tpL(\d+)_(\d+)/)
-    if (m) {
-      const tradeId = parseInt(m[1], 10)
-      const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
-      if (trade) {
-        await handleTpOrderUpdate(trade, ev)
-        return
-      }
-    }
-  }
-
-  // Order doesn't belong to any tracked trade — could be manual, or a stale
-  // event for a row we've already finalized. Log only on actual fills.
-  if (execStatus === 'FILLED') {
-    console.log(`${LOG} untracked FILLED order cid=${cid} id=${o.i} ${o.s} — manual or already reconciled`)
   }
 }
 
@@ -1360,8 +1328,11 @@ async function handleEntryOrderUpdate(trade: any, ev: OrderTradeUpdateEvent): Pr
         await cancelPairOrder(trade.pairOrderId)
       }
 
-      // Place SL + TPs as reduceOnly children.
-      await placeSlAndTpsForTrade(trade.id)
+      // SL + TPs are tracked VIRTUALLY (mirror of paper C): we watch aggTrade
+      // WS and send MARKET reduceOnly when price reaches a level. No child
+      // orders on the exchange — see handleAggTrade + trackLiveTrade below.
+      // Refresh aggTrade subscriptions so this newly-OPEN symbol is included.
+      await refreshAggTradeSubscriptions().catch(() => { /* noop */ })
     } catch (e: any) {
       console.error(`${LOG} entry fill handler failed for #${trade.id}: ${e.message}`)
       // Try to rollback claim so next event can retry.
@@ -1433,367 +1404,235 @@ async function cancelPairOrder(pairTradeId: number): Promise<void> {
   }
 }
 
-/**
- * After an entry fills, place the four reduceOnly children on Binance:
- *   - STOP_MARKET on stopLoss (SL)
- *   - 3× TAKE_PROFIT_MARKET on tpLadder (TP1/TP2/TP3), split 50/30/20
- *
- * Splits are notional-proportional in qty terms with step-size rounding.
- * Any leftover qty from rounding goes to TP3 so we don't leave dust on the
- * book unmonitored.
- */
-async function placeSlAndTpsForTrade(tradeId: number): Promise<void> {
+// ============================================================================
+// Virtual SL/TP tracking — mirrors paper C, exits via MARKET reduceOnly.
+//
+// Why virtual instead of real algo orders on the exchange:
+// - paper C logic is battle-tested over 2+ weeks of live trading
+// - real algo orders need /fapi/v1/algoOrder migration, separate cID space,
+//   and immediate-trigger handling when price already past stop
+// - one ws layer (aggTrade) drives all exits; one exit path (MARKET reduceOnly)
+//
+// Each aggTrade tick on a tracked symbol → check if it crosses any
+// remaining SL/TP level → if so, send MARKET reduceOnly for the appropriate
+// slice and update DB row (currentStop trails, status moves through TP1_HIT
+// → TP2_HIT → TP3_HIT or CLOSED/SL_HIT).
+// ============================================================================
+
+const SPLITS = [0.5, 0.3, 0.2]  // TP1/TP2/TP3 fractions of position units
+
+// Per-trade in-flight lock — prevents concurrent aggTrade ticks from sending
+// two MARKET reduceOnlys for the same level. Keyed by trade.id.
+const tradeBusy = new Set<number>()
+
+async function trackLiveTrade(trade: any, price: number, ts: number): Promise<void> {
+  if (tradeBusy.has(trade.id)) return  // already processing a tick for this trade
   if (!state) return
-  const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
-  if (!trade || trade.status !== 'OPEN') return
+  if (!['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(trade.status)) return
 
-  const filters = await getFilters(state.client)
-  const f = filters.get(trade.symbol)
-  if (!f) {
-    console.warn(`${LOG} #${tradeId} cannot place SL/TPs — no filter for ${trade.symbol}`)
-    return
-  }
-
-  const closeSide: 'BUY' | 'SELL' = trade.side === 'BUY' ? 'SELL' : 'BUY'
-  const totalQty = trade.positionUnits
-
-  // Split 50/30/20 with step-size rounding. Last bucket absorbs the remainder.
-  const step = f.stepSize
-  let tp1Qty = Math.floor((totalQty * 0.5) / step) * step
-  let tp2Qty = Math.floor((totalQty * 0.3) / step) * step
-  let tp3Qty = totalQty - tp1Qty - tp2Qty  // remainder
-  // Round tp3Qty down to step to keep all qty grids aligned.
-  tp3Qty = Math.floor(tp3Qty / step) * step
-  tp1Qty = Number(tp1Qty.toFixed(f.quantityPrecision))
-  tp2Qty = Number(tp2Qty.toFixed(f.quantityPrecision))
-  tp3Qty = Number(tp3Qty.toFixed(f.quantityPrecision))
-
-  const tpLadder = trade.tpLadder as number[]
-  const tick = f.tickSize
-  const roundStop = (p: number): number => Math.round(p / tick) * tick
-
-  // SL/TP children placed via Algo Order API (Binance migrated conditional
-  // orders off /fapi/v1/order in late 2025; old endpoint returns -4120).
-  //
-  // Child order matching strategy: we set a deterministic clientAlgoId on
-  // each algo order. When the trigger fires, Binance emits a regular MARKET
-  // order whose clientOrderId equals our clientAlgoId — that's how the WS
-  // fill handler routes the resulting fill to the right trade row.
-  //
-  // clientAlgoId scheme (kept ≤36 chars per Binance cap):
-  //   slL{tradeId}        — stop loss
-  //   tpL{tradeId}_{n}    — TP1/TP2/TP3 (n=1..3)
-  const slClientId = `slL${tradeId}`
-  let slOrderId: bigint | null = null
-  try {
-    const slOrder = await state.client.placeAlgoOrder({
-      symbol: trade.symbol,
-      side: closeSide,
-      type: 'STOP_MARKET',
-      triggerPrice: Number(roundStop(trade.currentStop).toFixed(f.pricePrecision)),
-      quantity: totalQty,
-      reduceOnly: true,
-      workingType: 'MARK_PRICE',
-      clientAlgoId: slClientId,
-    })
-    slOrderId = BigInt(slOrder.algoId)
-  } catch (e: any) {
-    console.error(`${LOG} #${tradeId} SL placement failed: ${e.message}`)
-  }
-
-  // TPs — same Algo API, with per-level deterministic clientAlgoId.
-  const tpOrderIds: string[] = []
-  const tpBuckets = [
-    { price: tpLadder[0], qty: tp1Qty },
-    { price: tpLadder[1], qty: tp2Qty },
-    { price: tpLadder[2], qty: tp3Qty },
-  ]
-  for (let i = 0; i < tpBuckets.length; i++) {
-    const bucket = tpBuckets[i]
-    if (bucket.qty <= 0) continue
-    try {
-      const tpOrder = await state.client.placeAlgoOrder({
-        symbol: trade.symbol,
-        side: closeSide,
-        type: 'TAKE_PROFIT_MARKET',
-        triggerPrice: Number(roundStop(bucket.price).toFixed(f.pricePrecision)),
-        quantity: bucket.qty,
-        reduceOnly: true,
-        workingType: 'MARK_PRICE',
-        clientAlgoId: `tpL${tradeId}_${i + 1}`,
-      })
-      tpOrderIds.push(String(tpOrder.algoId))
-    } catch (e: any) {
-      console.error(`${LOG} #${tradeId} TP${i + 1} placement failed: ${e.message}`)
-    }
-  }
-
-  await prisma.breakoutLiveTradeC.update({
-    where: { id: tradeId },
-    data: {
-      binanceSlOrderId: slOrderId,
-      binanceTpOrderIds: tpOrderIds as any,
-    },
-  })
-  console.log(`${LOG} #${tradeId} ${trade.symbol} children placed: SL=${slOrderId} TPs=${tpOrderIds.length}`)
-}
-
-/**
- * Handle SL order update — when STOP_MARKET fills, position is fully closed
- * (or partially if SL trailed up after TP1/TP2 and only the trailing slice
- * triggered). Records close and finalizes if no remaining qty.
- */
-async function handleSlOrderUpdate(trade: any, ev: OrderTradeUpdateEvent): Promise<void> {
-  const o = ev.o
-  if (o.X !== 'FILLED') return  // ignore intermediate NEW/CANCELED
-
-  const fillPrice = Number(o.ap) || Number(o.L) || trade.currentStop
-  const fillQty = Number(o.z) || trade.positionUnits
-  const realizedPnl = Number(o.rp) || 0
-  const feePaid = Number(o.n) || 0
-  const fillTime = new Date(o.T || ev.E)
-
-  const closesArr = ((trade.closes as any[]) ?? []).slice()
-  const totalClosedFrac = closesArr.reduce((a, c) => a + (c.percent ?? 0), 0)
-  const remainingPct = Math.max(0, 100 - totalClosedFrac)
-
-  closesArr.push({
-    price: fillPrice,
-    percent: remainingPct,
-    pnlUsd: realizedPnl,
-    closedAt: fillTime.toISOString(),
-    reason: 'SL',
-  })
-
-  await prisma.breakoutLiveTradeC.update({
-    where: { id: trade.id },
-    data: {
-      closes: closesArr as any,
-      realizedPnlUsd: { increment: realizedPnl },
-      feesPaidUsd: { increment: feePaid },
-      netPnlUsd: { increment: realizedPnl - feePaid },
-      status: 'SL_HIT',
-      closedAt: fillTime,
-    },
-  })
-
-  // Cancel any remaining TP children so they don't fire and reopen exposure.
-  await cancelRemainingChildren(trade.id, 'sl filled')
-
-  console.log(`${LOG} ✗ SL hit #${trade.id} ${trade.symbol} @ ${fillPrice} pnl ${realizedPnl.toFixed(4)}`)
-
-  // SL trailing level: 0 = initial SL (full loss), 1 = SL at BE (locked TP1 part),
-  //                    2 = SL at TP1 (locked TP1+TP2)
-  const tpCount = closesArr.filter((c) => c.reason === 'TP1' || c.reason === 'TP2').length
-  const slLabel = tpCount === 0 ? 'SL' : tpCount === 1 ? 'SL@BE' : 'SL@TP1'
-  sendLiveTelegram([
-    `🔴 <b>${trade.symbol}</b> <b>${slLabel}</b>  · позиция закрыта`,
-    `━━━━━━━━━━━━━━━━━━`,
-    `💰 Цена   <code>${fmtPrice(fillPrice)}</code>`,
-    `💵 P&L    <b>${fmtPnl(realizedPnl - feePaid)}</b>`,
-    `Σ R     ${(trade.realizedR + 0).toFixed(2)}R`,
-  ].join('\n'))
-}
-
-/**
- * Handle TP order update — when TAKE_PROFIT_MARKET fills, record partial close
- * and trail the SL: TP1 → SL to entry (BE), TP2 → SL to TP1.
- * After TP3 the position is fully out — cancel SL.
- */
-async function handleTpOrderUpdate(trade: any, ev: OrderTradeUpdateEvent): Promise<void> {
-  const o = ev.o
-  if (o.X !== 'FILLED') return
-
-  const fillPrice = Number(o.ap) || Number(o.L)
-  const fillQty = Number(o.z) || 0
-  const realizedPnl = Number(o.rp) || 0
-  const feePaid = Number(o.n) || 0
-  const fillTime = new Date(o.T || ev.E)
-
-  // Figure out which TP this was (1/2/3) from the clientAlgoId suffix
-  // (format: 'tpL<tradeId>_<n>'). The triggered MARKET child inherits this as
-  // its clientOrderId, so o.c gives us the index directly.
-  const m = o.c?.match(/^tpL\d+_(\d+)/)
-  if (!m) {
-    console.warn(`${LOG} TP fill for #${trade.id} cID=${o.c} — can't parse TP index`)
-    return
-  }
-  const tpIndex = parseInt(m[1], 10) - 1  // 1-based → 0-based
-  const tpLabel = `TP${tpIndex + 1}`
-
-  // Idempotency — don't double-record same TP.
-  const closesArr = ((trade.closes as any[]) ?? []).slice()
-  if (closesArr.some((c: any) => c.reason === tpLabel)) return
-
-  // Calculate percent share of this TP (50/30/20 nominal). Use actual fillQty /
-  // positionUnits in case rounding made it different.
-  const percent = trade.positionUnits > 0
-    ? Math.round((fillQty / trade.positionUnits) * 100)
-    : (tpIndex === 0 ? 50 : tpIndex === 1 ? 30 : 20)
-
-  closesArr.push({
-    price: fillPrice,
-    percent,
-    pnlUsd: realizedPnl,
-    closedAt: fillTime.toISOString(),
-    reason: tpLabel,
-  })
-
-  // Trailing SL: after TP1 → SL to entry; after TP2 → SL to TP1 level.
-  const tpLadder = trade.tpLadder as number[]
-  let newStop = trade.currentStop
-  let newStatus = trade.status
-  if (tpIndex === 0) {
-    newStop = trade.entryPrice  // BE
-    newStatus = 'TP1_HIT'
-  } else if (tpIndex === 1) {
-    newStop = tpLadder[0]  // TP1 level
-    newStatus = 'TP2_HIT'
-  } else if (tpIndex === 2) {
-    // TP3 — position fully out. Mark CLOSED, cancel any remaining children.
-    newStatus = 'TP3_HIT'
-  }
-
-  await prisma.breakoutLiveTradeC.update({
-    where: { id: trade.id },
-    data: {
-      closes: closesArr as any,
-      realizedR: { increment: tpIndex === 0 ? 0.5 : tpIndex === 1 ? 0.6 : 0.6 }, // 50% × 1R, 30% × 2R, 20% × 3R
-      realizedPnlUsd: { increment: realizedPnl },
-      feesPaidUsd: { increment: feePaid },
-      netPnlUsd: { increment: realizedPnl - feePaid },
-      currentStop: newStop,
-      status: newStatus,
-      ...(tpIndex === 2 ? { closedAt: fillTime } : {}),
-    },
-  })
-
-  console.log(`${LOG} ✓ ${tpLabel} hit #${trade.id} ${trade.symbol} @ ${fillPrice} pnl ${realizedPnl.toFixed(4)} → SL to ${newStop}`)
-
-  const trailNote = tpIndex === 0 ? 'SL → BE'
-    : tpIndex === 1 ? 'SL → TP1'
-    : 'позиция закрыта полностью'
-  sendLiveTelegram([
-    `✅ <b>${trade.symbol}</b> <b>${tpLabel}</b>  · частичное закрытие`,
-    `━━━━━━━━━━━━━━━━━━`,
-    `💰 Цена   <code>${fmtPrice(fillPrice)}</code>`,
-    `📊 Закрыто  ${percent}%`,
-    `💵 P&L    <b>${fmtPnl(realizedPnl - feePaid)}</b>`,
-    `🛡 ${trailNote}`,
-  ].join('\n'))
-
-  if (tpIndex === 2) {
-    // Full exit — cancel SL (no remaining qty for it to close).
-    await cancelRemainingChildren(trade.id, 'tp3 filled')
-  } else {
-    // Trailing: replace the SL order at the new stop level.
-    await replaceSlOrder(trade.id, newStop)
-  }
-}
-
-/**
- * Replace the existing SL STOP_MARKET with a new one at a different stopPrice
- * (trailing). Cancels the old one first, places new, updates binanceSlOrderId.
- */
-async function replaceSlOrder(tradeId: number, newStopPrice: number): Promise<void> {
-  if (!state) return
-  const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
-  if (!trade) return
-
-  // Compute remaining qty (positionUnits - already closed).
-  const closesArr = ((trade.closes as any[]) ?? [])
+  const isLong = trade.side === 'BUY'
+  const currentStop = trade.currentStop
+  const tpLadder = (trade.tpLadder as number[]) ?? []
+  const closesArr = ((trade.closes as any[]) ?? []) as Array<{ reason?: string; percent?: number }>
   const closedFrac = closesArr.reduce((a, c) => a + (c.percent ?? 0), 0) / 100
-  const remainingQty = trade.positionUnits * (1 - closedFrac)
-  if (remainingQty <= 0) return
+  const remainingFrac = Math.max(0, 1 - closedFrac)
+  if (remainingFrac < 1e-6) return
+
+  // SL hit? (price crossed currentStop in the wrong direction)
+  const slHit = isLong ? price <= currentStop : price >= currentStop
+  if (slHit) {
+    tradeBusy.add(trade.id)
+    try {
+      await exitLiveTradeSlice(trade, remainingFrac, 'SL', currentStop, price, ts)
+    } finally {
+      tradeBusy.delete(trade.id)
+    }
+    return
+  }
+
+  // TP hits? Determine next TP index from prior closes (count of TP* reasons).
+  const tpsHit = closesArr.filter((c) => c.reason === 'TP1' || c.reason === 'TP2' || c.reason === 'TP3').length
+  if (tpsHit >= 3) return  // all TPs done
+
+  const nextTpIdx = tpsHit  // 0=TP1, 1=TP2, 2=TP3
+  const tpPrice = tpLadder[nextTpIdx]
+  if (tpPrice === undefined) return
+  const tpHit = isLong ? price >= tpPrice : price <= tpPrice
+  if (!tpHit) return
+
+  tradeBusy.add(trade.id)
+  try {
+    const splitFrac = Math.min(SPLITS[nextTpIdx] ?? remainingFrac, remainingFrac)
+    const tpLabel = (`TP${nextTpIdx + 1}`) as 'TP1' | 'TP2' | 'TP3'
+    await exitLiveTradeSlice(trade, splitFrac, tpLabel, tpPrice, price, ts)
+  } finally {
+    tradeBusy.delete(trade.id)
+  }
+}
+
+/**
+ * Send a MARKET reduceOnly for `frac` of the position and persist the close.
+ * On TP1/TP2 hit also trails currentStop: TP1 → SL to entry (BE); TP2 → SL
+ * to TP1 level. On TP3 hit or SL hit → trade is finalized.
+ *
+ * triggerPrice = the level we wanted to exit at (TP price or current stop).
+ *                Used for the closes[].price record.
+ * fillPrice    = the aggTrade tick that triggered us. We don't use it as the
+ *                exit price (Binance fills the MARKET wherever it fills);
+ *                actual fill price arrives via ORDER_TRADE_UPDATE for the
+ *                MARKET but we already record `triggerPrice` as our reference.
+ */
+async function exitLiveTradeSlice(
+  trade: any,
+  frac: number,
+  reason: 'SL' | 'TP1' | 'TP2' | 'TP3',
+  triggerPrice: number,
+  _fillPrice: number,
+  ts: number,
+): Promise<void> {
+  if (!state) return
+  // Idempotency: check the row hasn't already been advanced past this reason
+  // (e.g. by a slower duplicate tick that beat us to the lock).
+  const fresh = await prisma.breakoutLiveTradeC.findUnique({ where: { id: trade.id } })
+  if (!fresh) return
+  if (!['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(fresh.status)) return
+  const freshCloses = ((fresh.closes as any[]) ?? []) as Array<{ reason?: string }>
+  if (freshCloses.some((c) => c.reason === reason)) return
 
   const filters = await getFilters(state.client)
   const f = filters.get(trade.symbol)
   if (!f) return
 
-  const closeSide: 'BUY' | 'SELL' = trade.side === 'BUY' ? 'SELL' : 'BUY'
   const step = f.stepSize
-  let qty = Math.floor(remainingQty / step) * step
+  const closeUnits = fresh.positionUnits * frac
+  let qty = Math.floor(closeUnits / step) * step
   qty = Number(qty.toFixed(f.quantityPrecision))
-  if (qty < f.minQty) return
+  if (qty < f.minQty) {
+    // Too small to send as a real order — record the close at the virtual
+    // level and move on (e.g. TP3 remainder after step rounding).
+    const isLong = trade.side === 'BUY'
+    const initialRisk = Math.abs(fresh.entryPrice - fresh.initialStop)
+    const pnlR = ((isLong ? triggerPrice - fresh.entryPrice : fresh.entryPrice - triggerPrice) / initialRisk) * frac
+    const pnlUsd = (isLong ? triggerPrice - fresh.entryPrice : fresh.entryPrice - triggerPrice) * closeUnits
+    await applyVirtualClose(fresh, reason, triggerPrice, frac, pnlR, pnlUsd, ts)
+    return
+  }
 
-  const tick = f.tickSize
-  const stopPriceRounded = Math.round(newStopPrice / tick) * tick
-
-  // Cancel old SL (best-effort).
-  if (trade.binanceSlOrderId) {
-    try {
-      // SL is an algo order — must use the algoOrder cancel endpoint, not /fapi/v1/order.
-      await state.client.cancelAlgoOrder(trade.symbol, { algoId: Number(trade.binanceSlOrderId) })
-    } catch (e: any) {
-      if (!(e instanceof BinanceApiError) || (e.code !== -2011 && e.code !== -2013)) {
-        console.warn(`${LOG} #${tradeId} cancel old SL failed: ${e.message}`)
-      }
+  const closeSide: 'BUY' | 'SELL' = trade.side === 'BUY' ? 'SELL' : 'BUY'
+  let actualFillPrice = triggerPrice
+  let actualPnlUsd = 0
+  let feePaid = 0
+  try {
+    const resp = await state.client.placeOrder({
+      symbol: trade.symbol,
+      side: closeSide,
+      type: 'MARKET',
+      quantity: qty,
+      reduceOnly: true,
+    })
+    // Binance MARKET reply may include avgPrice; if not, fall back to trigger.
+    if (resp.avgPrice && Number(resp.avgPrice) > 0) {
+      actualFillPrice = Number(resp.avgPrice)
+    }
+    // ORDER_TRADE_UPDATE will deliver realized pnl + commission via WS — for
+    // now record from trigger as best estimate.
+  } catch (e: any) {
+    if (e instanceof BinanceApiError && e.code === -2022) {
+      // -2022 'ReduceOnly Order is rejected' — position already closed by us
+      // or by the exchange (ADL/liq). Record the virtual close anyway so DB
+      // matches reality, mark CLOSED. Better than leaving row OPEN forever.
+      console.warn(`${LOG} #${fresh.id} ${trade.symbol} ${reason} MARKET rejected (-2022 reduceOnly) — position already closed`)
+    } else {
+      console.error(`${LOG} #${fresh.id} ${trade.symbol} ${reason} MARKET failed: ${e.message}`)
+      // Don't write the close — re-try on next tick (slip lock so next tick can).
+      return
     }
   }
 
-  // Place new SL at trailing stop. Via Algo Order API (same as initial SL).
-  // Note: we use a different clientAlgoId on each replacement (slL<tradeId>r<seq>)
-  // because Binance enforces clientAlgoId uniqueness AT LEAST until the original
-  // is fully resolved. Using slL<tradeId> for all SLs would collide after the
-  // first cancel-and-replace.
-  const replaceSeq = ((trade.closes as any[]) ?? []).length + 1  // monotonic-per-trade
-  const newSlClientId = `slL${tradeId}r${replaceSeq}`
-  let newSlOrderId: bigint | null = null
-  try {
-    const order = await state.client.placeAlgoOrder({
-      symbol: trade.symbol,
-      side: closeSide,
-      type: 'STOP_MARKET',
-      triggerPrice: Number(stopPriceRounded.toFixed(f.pricePrecision)),
-      quantity: qty,
-      reduceOnly: true,
-      workingType: 'MARK_PRICE',
-      clientAlgoId: newSlClientId,
-    })
-    newSlOrderId = BigInt(order.algoId)
-  } catch (e: any) {
-    console.error(`${LOG} #${tradeId} replace SL failed at ${stopPriceRounded}: ${e.message}`)
+  const isLong = trade.side === 'BUY'
+  const initialRisk = Math.abs(fresh.entryPrice - fresh.initialStop)
+  const pnlR = ((isLong ? actualFillPrice - fresh.entryPrice : fresh.entryPrice - actualFillPrice) / initialRisk) * frac
+  actualPnlUsd = (isLong ? actualFillPrice - fresh.entryPrice : fresh.entryPrice - actualFillPrice) * closeUnits
+
+  // Estimate taker fee (Binance USDT-M VIP0 = 0.04% taker on MARKET).
+  feePaid = qty * actualFillPrice * (fresh.feeTakerPct ?? 0.04) / 100
+
+  await applyVirtualClose(fresh, reason, actualFillPrice, frac, pnlR, actualPnlUsd - feePaid, ts, feePaid)
+}
+
+async function applyVirtualClose(
+  fresh: any,
+  reason: 'SL' | 'TP1' | 'TP2' | 'TP3',
+  fillPrice: number,
+  frac: number,
+  pnlR: number,
+  netPnl: number,
+  ts: number,
+  feePaid: number = 0,
+): Promise<void> {
+  const newCloses = [
+    ...((fresh.closes as any[]) ?? []),
+    {
+      price: fillPrice,
+      percent: frac * 100,
+      pnlR,
+      pnlUsd: netPnl + feePaid,  // gross pnl for reporting; fees split below
+      closedAt: new Date(ts).toISOString(),
+      reason,
+    },
+  ]
+
+  // Trailing logic for TPs.
+  let newCurrentStop = fresh.currentStop
+  let newStatus = fresh.status
+  let terminal = false
+  if (reason === 'TP1') {
+    newCurrentStop = fresh.entryPrice  // BE
+    newStatus = 'TP1_HIT'
+  } else if (reason === 'TP2') {
+    newCurrentStop = (fresh.tpLadder as number[])[0]  // TP1 level
+    newStatus = 'TP2_HIT'
+  } else if (reason === 'TP3') {
+    newStatus = 'TP3_HIT'
+    terminal = true
+  } else if (reason === 'SL') {
+    // SL trail label: 0 = initial stop full loss, 1+ = locked partial profit
+    const priorTps = ((fresh.closes as any[]) ?? []).filter((c: any) => c.reason?.startsWith('TP')).length
+    newStatus = priorTps === 0 ? 'SL_HIT' : 'CLOSED'
+    terminal = true
   }
 
   await prisma.breakoutLiveTradeC.update({
-    where: { id: tradeId },
+    where: { id: fresh.id },
     data: {
-      binanceSlOrderId: newSlOrderId,
-      currentStop: stopPriceRounded,
+      closes: newCloses as any,
+      currentStop: newCurrentStop,
+      status: newStatus,
+      realizedR: { increment: pnlR },
+      realizedPnlUsd: { increment: netPnl + feePaid },
+      feesPaidUsd: { increment: feePaid },
+      netPnlUsd: { increment: netPnl },
+      ...(terminal ? { closedAt: new Date(ts) } : {}),
     },
   })
+
+  // Telegram + trailing console log.
+  const emoji = reason === 'SL' ? '🔴' : '✅'
+  const trailNote = reason === 'TP1' ? 'SL → BE'
+    : reason === 'TP2' ? 'SL → TP1'
+    : reason === 'TP3' ? 'позиция закрыта полностью'
+    : 'позиция закрыта'
+  sendLiveTelegram([
+    `${emoji} <b>${fresh.symbol}</b> <b>${reason}</b>  · ${reason === 'SL' ? 'позиция закрыта' : 'частичное закрытие'}`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `💰 Цена   <code>${fmtPrice(fillPrice)}</code>`,
+    `📊 Закрыто  ${Math.round(frac * 100)}%`,
+    `💵 P&L    <b>${fmtPnl(netPnl)}</b>`,
+    `🛡 ${trailNote}`,
+  ].join('\n'))
+  console.log(`${LOG} ${emoji} ${reason} hit #${fresh.id} ${fresh.symbol} @ ${fillPrice} pnl ${netPnl.toFixed(4)}`)
 }
 
-/**
- * Cancel any still-open SL/TP children for a trade. Used when the trade is
- * fully closed (SL hit or TP3 hit) so leftover orders don't sit on the book
- * waiting to fire on a stale stop level.
- */
-async function cancelRemainingChildren(tradeId: number, reason: string): Promise<void> {
-  if (!state) return
-  const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
-  if (!trade) return
-
-  const toCancel: Array<{ id: number; kind: string }> = []
-  if (trade.binanceSlOrderId) toCancel.push({ id: Number(trade.binanceSlOrderId), kind: 'SL' })
-  for (const tpIdStr of ((trade.binanceTpOrderIds as string[]) ?? [])) {
-    toCancel.push({ id: Number(tpIdStr), kind: 'TP' })
-  }
-
-  for (const c of toCancel) {
-    try {
-      // SL and TP children are algo orders — they live in a separate ID space
-      // from regular orders. Must use cancelAlgoOrder, otherwise -1102/-2013.
-      await state.client.cancelAlgoOrder(trade.symbol, { algoId: c.id })
-    } catch (e: any) {
-      if (!(e instanceof BinanceApiError) || (e.code !== -2011 && e.code !== -2013)) {
-        // -2011 / -2013: already cancelled or doesn't exist — ok.
-        console.warn(`${LOG} #${tradeId} cancel ${c.kind} ${c.id} failed: ${e.message}`)
-      }
-    }
-  }
-  console.log(`${LOG} #${tradeId} ${trade.symbol} cancelled ${toCancel.length} children (${reason})`)
-}
 
 async function handleAccountUpdate(ev: AccountUpdateEvent): Promise<void> {
   // FUNDING_FEE → log to BreakoutLiveFundingC. Binance posts funding every
@@ -1877,13 +1716,45 @@ async function logFundingFromEvent(ev: AccountUpdateEvent): Promise<void> {
 // ============================================================================
 
 // Per-symbol freshness ticker — last seen trade ts. Used by the UI / status
-// endpoint to indicate which symbols are receiving live data; the actual
-// trade lifecycle is driven by ORDER_TRADE_UPDATE events from the user-data
-// stream, not by aggTrade.
+// endpoint to indicate which symbols are receiving live data, AND drives
+// virtual SL/TP exits — each aggTrade tick on a symbol with open positions
+// runs trackLiveTrade() to check if any TP/SL level has been crossed and
+// sends MARKET reduceOnly when so. (Entry fills still come from
+// ORDER_TRADE_UPDATE on the user-data stream.)
 const lastAggTradeAt = new Map<string, number>()
 
-function handleAggTrade(sym: string, _price: number, ts: number): void {
+// Per-symbol throttle so a hot symbol (e.g. BTC at 100tps) doesn't hammer
+// the DB. 100ms = 10 checks/sec is enough to catch any SL/TP without melting.
+const TICK_THROTTLE_MS = 100
+const lastTickProcessedAt = new Map<string, number>()
+
+function handleAggTrade(sym: string, price: number, ts: number): void {
   lastAggTradeAt.set(sym, ts)
+
+  const now = Date.now()
+  const last = lastTickProcessedAt.get(sym) ?? 0
+  if (now - last < TICK_THROTTLE_MS) return
+  lastTickProcessedAt.set(sym, now)
+
+  // Fire-and-forget tracker. trackLiveTrade has its own per-trade busy lock
+  // so concurrent ticks on the same symbol can't race.
+  void processAggTradeForSymbol(sym, price, ts)
+}
+
+async function processAggTradeForSymbol(sym: string, price: number, ts: number): Promise<void> {
+  try {
+    const openTrades = await prisma.breakoutLiveTradeC.findMany({
+      where: {
+        symbol: sym,
+        status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] },
+      },
+    })
+    for (const t of openTrades) {
+      await trackLiveTrade(t, price, ts)
+    }
+  } catch (e: any) {
+    console.warn(`${LOG} aggTrade tracker ${sym} threw: ${e.message}`)
+  }
 }
 
 export function getLastAggTradeAt(symbol: string): number | undefined {
