@@ -32,7 +32,12 @@ import { OHLCV } from '../services/market'
 import { takerFillPrice, isMakerFill } from '../services/dailyBreakoutPaperTrader'
 
 const SPLITS = [0.5, 0.3, 0.2]
-const SINCE_ISO = '2026-05-17T17:00:00Z'
+// 17.05 03:00 UTC — placements первого дня после деплоя broken realistic fill (d120c60).
+// До этой даты fill mechanic был старый правильный, и replay даёт ложные отличия
+// из-за MANUAL closes пользователем + меняющейся EOD-FLAT policy (была включена/
+// выключена несколько раз 10-15.05). Замысел расширить до 10.05 был ошибочный —
+// pre-bug сделки не нуждаются в пересчёте.
+const SINCE_ISO = '2026-05-17T03:00:00Z'
 
 interface CloseRecord {
   price: number
@@ -280,14 +285,19 @@ async function main() {
       replay: r,
     })
 
-    console.log(
-      `#${String(t.id).padEnd(4)} ${t.symbol.padEnd(13)} ${t.side.padEnd(4)} ` +
-      `L=${String(t.limitOrderPrice).padEnd(10)} ` +
-      `oldFill=${tStr(t.limitFilledAt).padEnd(11)} newFill=${tStr(r.realFillAt).padEnd(11)} ` +
-      `${diffStatus.padEnd(20)} ` +
-      `pnl ${oldNetPnl.toFixed(2).padStart(8)} → ${r.netPnlUsd.toFixed(2).padStart(8)} ` +
-      `(${diffPnl >= 0 ? '+' : ''}${diffPnl.toFixed(2)})`,
-    )
+    // Print only diff rows by default (use --all to print everything).
+    const printAll = process.argv.includes('--all')
+    const isDiff = Math.abs(diffPnl) > 0.01 || oldStatus !== r.status
+    if (printAll || isDiff) {
+      console.log(
+        `#${String(t.id).padEnd(4)} ${t.symbol.padEnd(13)} ${t.side.padEnd(4)} ` +
+        `L=${String(t.limitOrderPrice).padEnd(10)} ` +
+        `oldFill=${tStr(t.limitFilledAt).padEnd(11)} newFill=${tStr(r.realFillAt).padEnd(11)} ` +
+        `${diffStatus.padEnd(20)} ` +
+        `pnl ${oldNetPnl.toFixed(2).padStart(8)} → ${r.netPnlUsd.toFixed(2).padStart(8)} ` +
+        `(${diffPnl >= 0 ? '+' : ''}${diffPnl.toFixed(2)})`,
+      )
+    }
   }
 
   console.log('')
