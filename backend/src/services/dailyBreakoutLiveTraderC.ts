@@ -37,7 +37,6 @@ import {
 } from './exchanges/binanceFuturesWs'
 import { detectRange, BreakoutEngineConfig } from '../scalper/dailyBreakoutEngine'
 import { loadHistorical } from '../scalper/historicalLoader'
-import { fetchPricesBatch } from './market'
 import { computeSizing } from './marginGuard'
 import { DEFAULT_BREAKOUT_SETUPS } from './dailyBreakoutLiveScanner'
 import { refreshLiveBalance } from '../routes/_liveBalanceShared'
@@ -930,7 +929,10 @@ async function placeLimitsForRanges(
       })
       if (existing) continue
 
-      const candles = await loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
+      // Live C trades on Binance — use Binance klines for range detection so
+      // rangeHigh/rangeLow match the order book we're placing limits into.
+      // (Paper variants use Bybit historical; live is exchange-aligned.)
+      const candles = await loadHistorical(symbol, '5m', 1, 'binance')
       const range = detectRange(candles, utcDate, engineCfg)
       if (!range) continue
 
@@ -938,11 +940,12 @@ async function placeLimitsForRanges(
       const slDistPct = (range.rangeSize / Math.min(range.rangeHigh, range.rangeLow)) * 100
       if (slDistPct < 0.4) continue
 
+      // Live price from Binance markPrice (exchange-aligned). Used only to
+      // decide which side of the pair can be placed without immediate cross
+      // (a BUY limit above mark would post-only reject; SELL below mark same).
       let livePrice: number | null = null
       try {
-        const prices = await fetchPricesBatch([symbol])
-        const live = prices[symbol]
-        if (live && live > 0) livePrice = live
+        livePrice = await client.getMarkPrice(symbol)
       } catch { /* ok — place both sides if live price unknown */ }
 
       const canPlaceBuy = livePrice == null || livePrice <= range.rangeHigh
