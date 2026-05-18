@@ -1063,6 +1063,54 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
 
   const cid = buildEntryCid(a.net, a.rangeDate, a.symbol, a.side)
 
+  // CRITICAL: pre-insert the row with binanceClientOrderId BEFORE calling
+  // placeOrder(). On thin/testnet pairs the LIMIT can fill instantly, and the
+  // ORDER_TRADE_UPDATE WS event will arrive while we're still awaiting
+  // placeOrder().then(). If the row doesn't exist yet, the fill handler can't
+  // match by cID and logs the event as 'untracked' — leaving the position
+  // open on the exchange WITHOUT SL/TP children and with no DB pair-cancel.
+  // The pre-inserted row has placeholder values that get filled in once the
+  // placement response comes back.
+  const expectedQty = qty
+  const expectedPrice = priceRounded
+  let row: any
+  try {
+    row = await prisma.breakoutLiveTradeC.create({
+      data: {
+        signalId: 0,
+        symbol: a.symbol,
+        side: a.side,
+        entryPrice: expectedPrice,
+        stopLoss: a.stopLoss,
+        initialStop: a.stopLoss,
+        currentStop: a.stopLoss,
+        tpLadder: a.tpLadder as any,
+        depositAtEntryUsd: a.cfg.currentDepositUsd,
+        riskUsd: sizing.riskUsd,
+        positionSizeUsd: expectedPrice * expectedQty,
+        positionUnits: expectedQty,
+        leverage: targetLev,
+        marginUsd: (expectedPrice * expectedQty) / targetLev,
+        status: 'PENDING_LIMIT',
+        limitOrderState: 'PENDING_LIMIT',
+        limitOrderPrice: expectedPrice,
+        limitPlacedAt: a.placedAt,
+        openedAt: a.placedAt,
+        feeTakerPct: a.cfg.feeTakerPct,
+        feeMakerPct: a.cfg.feeMakerPct,
+        slipTakerPct: a.cfg.slipTakerPct,
+        autoTrailingSL: a.cfg.autoTrailingSL,
+        binanceClientOrderId: cid,
+        // binanceOrderId set after placement response.
+      },
+    })
+  } catch (e: any) {
+    // Duplicate cID in DB (unique constraint) → row from a prior cycle
+    // already exists. Skip silently — placement won't be attempted.
+    if (e.code === 'P2002') return null
+    throw e
+  }
+
   let orderId: number
   let exchangePrice: number
   let exchangeQty: number
@@ -1080,6 +1128,10 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
     exchangePrice = Number(order.price)
     exchangeQty = Number(order.origQty)
   } catch (e: any) {
+    // Placement failed — roll back the placeholder row so the cycle can retry
+    // (or be retried on the next placement run) without leaving a ghost
+    // PENDING_LIMIT in DB that never had an order on the exchange.
+    await prisma.breakoutLiveTradeC.delete({ where: { id: row.id } }).catch(() => { /* noop */ })
     if (e instanceof BinanceApiError && e.code === -2014) {
       // Duplicate cID — order from a prior tick already exists. Skip silently.
       return null
@@ -1088,37 +1140,26 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
     return null
   }
 
-  // Persist row. signalId=0 because pre-emptive — no upstream BreakoutSignal
-  // when we place (scanner creates one later on actual breakout, see paper C).
-  const row = await prisma.breakoutLiveTradeC.create({
+  // Fill in the exchange-assigned fields. The WS fill handler may have already
+  // moved this row past PENDING_LIMIT by now (in which case we leave its state
+  // alone and just back-fill binanceOrderId for reconciliation).
+  await prisma.breakoutLiveTradeC.update({
+    where: { id: row.id },
     data: {
-      signalId: 0,
-      symbol: a.symbol,
-      side: a.side,
-      entryPrice: exchangePrice,
-      stopLoss: a.stopLoss,
-      initialStop: a.stopLoss,
-      currentStop: a.stopLoss,
-      tpLadder: a.tpLadder as any,
-      depositAtEntryUsd: a.cfg.currentDepositUsd,
-      riskUsd: sizing.riskUsd,
-      positionSizeUsd: exchangePrice * exchangeQty,
-      positionUnits: exchangeQty,
-      leverage: targetLev,
-      marginUsd: (exchangePrice * exchangeQty) / targetLev,
-      status: 'PENDING_LIMIT',
-      limitOrderState: 'PENDING_LIMIT',
-      limitOrderPrice: exchangePrice,
-      limitPlacedAt: a.placedAt,
-      openedAt: a.placedAt,
-      feeTakerPct: a.cfg.feeTakerPct,
-      feeMakerPct: a.cfg.feeMakerPct,
-      slipTakerPct: a.cfg.slipTakerPct,
-      autoTrailingSL: a.cfg.autoTrailingSL,
-      binanceClientOrderId: cid,
       binanceOrderId: BigInt(orderId),
+      // Only correct entry numbers if WS hasn't filled the row yet. Once
+      // status moves to OPEN/FILLED, the fill handler manages these fields.
+      ...(exchangePrice !== expectedPrice
+        ? { entryPrice: exchangePrice, limitOrderPrice: exchangePrice, positionSizeUsd: exchangePrice * exchangeQty }
+        : {}),
+      ...(exchangeQty !== expectedQty
+        ? { positionUnits: exchangeQty }
+        : {}),
     },
+  }).catch((e) => {
+    console.warn(`${LOG} ${a.symbol} ${a.side} post-place update failed: ${e.message}`)
   })
+
   return row
 }
 
