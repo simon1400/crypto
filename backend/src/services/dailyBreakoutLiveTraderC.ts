@@ -230,12 +230,11 @@ async function runLiveCycle(): Promise<void> {
     // tracked symbol that has a formed 3h range today and no open record yet.
     await placeLimitsForRanges(cfg, state.client, state.net)
 
-    // TODO (next commits):
-    // - safety net fill check (cross 5m candle against limit price — Binance
-    //   delivers FILLED via ORDER_TRADE_UPDATE, but if WS misses the event we
-    //   reconcile by REST openOrders + 5m candles)
-    // - EOD-FLAT at 23:55 UTC
-    // - market data WS subscription diff (which symbols need aggTrade)
+    // Refresh market-data aggTrade subscriptions so we keep an eye on every
+    // symbol with a live row (PENDING or OPEN). Used for freshness signal and
+    // future safety-net logic; SL/TP triggers themselves are real exchange
+    // orders so don't depend on aggTrade.
+    await refreshAggTradeSubscriptions()
   } catch (e: any) {
     console.error(`${LOG} cycle threw:`, e.message)
   } finally {
@@ -1561,23 +1560,117 @@ async function cancelRemainingChildren(tradeId: number, reason: string): Promise
 }
 
 async function handleAccountUpdate(ev: AccountUpdateEvent): Promise<void> {
-  // FUNDING_FEE → log to BreakoutLiveFundingC.
+  // FUNDING_FEE → log to BreakoutLiveFundingC. Binance posts funding every
+  // 8h (00:00, 08:00, 16:00 UTC) for every open perp position; the event's
+  // 'a.B' deltas contain the actual USDT amount charged/credited.
   if (ev.a?.m === 'FUNDING_FEE') {
-    // TODO (funding logging commit): write BreakoutLiveFundingC rows
+    await logFundingFromEvent(ev)
     return
   }
   // Position/balance updates feed reconciliation; for now we only consume them
   // implicitly via REST when the cycle/status endpoint queries.
 }
 
+/**
+ * Persist funding fee events to BreakoutLiveFundingC. The event delivers a
+ * batch of position-level deltas (a.P) — one per symbol that paid/received
+ * funding in this 8h interval. We log one row per (symbol, occurredAt) pair
+ * and try to associate with the currently OPEN trade for that symbol so the
+ * trade-level fundingPaidUsd accumulates correctly.
+ */
+async function logFundingFromEvent(ev: AccountUpdateEvent): Promise<void> {
+  const occurredAt = new Date(ev.T || ev.E)
+  const positions = ev.a?.P ?? []
+  // We can't know the per-symbol funding amount from a.P directly (it carries
+  // updated position state, not deltas). Instead we use the balance deltas in
+  // a.B — for FUNDING_FEE reason the USDT balance change equals the funding
+  // total across all positions. But to keep per-symbol attribution we use
+  // a separate userTrades-like approach: the ACCOUNT_UPDATE doesn't itemize,
+  // so we record one aggregated row with symbol='*' and a per-symbol best-
+  // effort split if there's only one OPEN position. Anything else gets logged
+  // for inspection but not attributed.
+  const usdtDelta = ev.a?.B?.find((b) => b.a === 'USDT')
+  const amount = usdtDelta ? Number(usdtDelta.bc) : 0  // 'bc' = balance change for this event
+  if (!amount || !isFinite(amount)) return
+
+  const openTrades = await prisma.breakoutLiveTradeC.findMany({
+    where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+    select: { id: true, symbol: true },
+  })
+
+  if (openTrades.length === 1) {
+    // Single-position case — attribute fully.
+    const t = openTrades[0]
+    await prisma.breakoutLiveFundingC.create({
+      data: {
+        symbol: t.symbol,
+        tradeId: t.id,
+        amountUsd: amount,
+        occurredAt,
+      },
+    })
+    await prisma.breakoutLiveTradeC.update({
+      where: { id: t.id },
+      data: {
+        fundingPaidUsd: { increment: -amount },  // funding paid (negative) increases cost basis
+        netPnlUsd: { increment: amount },        // netPnl includes funding
+      },
+    })
+  } else if (openTrades.length > 1) {
+    // Multi-position case — log unattributed, attribute pro-rata by notional
+    // in a later reconciliation pass (TODO). For now, totalFundingUsd on the
+    // config accumulates the aggregate so depo math stays consistent.
+    await prisma.breakoutLiveFundingC.create({
+      data: {
+        symbol: openTrades.map((t) => t.symbol).join(','),
+        tradeId: null,
+        amountUsd: amount,
+        occurredAt,
+      },
+    })
+  }
+  await prisma.breakoutLiveConfigC.update({
+    where: { id: 1 },
+    data: { totalFundingUsd: { increment: amount } },
+  })
+  console.log(`${LOG} funding ${amount > 0 ? '+' : ''}${amount.toFixed(6)} USDT at ${occurredAt.toISOString()}`)
+}
+
 // ============================================================================
 // Market data WS — aggTrade safety net
 // ============================================================================
 
-function handleAggTrade(_sym: string, _price: number, _ts: number): void {
-  // TODO (next commit): safety net for entry limit fill detection — Binance
-  // fills the order on its side authoritatively, and ORDER_TRADE_UPDATE WS will
-  // deliver the event. This aggTrade handler is reserved for virtual TP/SL
-  // trigger logic that we won't use (we use real reduceOnly orders), but the
-  // stream still gives us a fast freshness signal for the UI / cycle.
+// Per-symbol freshness ticker — last seen trade ts. Used by the UI / status
+// endpoint to indicate which symbols are receiving live data; the actual
+// trade lifecycle is driven by ORDER_TRADE_UPDATE events from the user-data
+// stream, not by aggTrade.
+const lastAggTradeAt = new Map<string, number>()
+
+function handleAggTrade(sym: string, _price: number, ts: number): void {
+  lastAggTradeAt.set(sym, ts)
+}
+
+export function getLastAggTradeAt(symbol: string): number | undefined {
+  return lastAggTradeAt.get(symbol)
+}
+
+/**
+ * Diff aggTrade subscriptions to match the symbols with live activity.
+ * Symbols with PENDING_LIMIT or OPEN/TP1_HIT/TP2_HIT rows get subscribed;
+ * everything else gets unsubscribed. Idempotent — the WS layer's
+ * setSubscriptions() handles the actual SUBSCRIBE/UNSUBSCRIBE diffing.
+ */
+async function refreshAggTradeSubscriptions(): Promise<void> {
+  if (!state) return
+  const rows = await prisma.breakoutLiveTradeC.findMany({
+    where: {
+      OR: [
+        { limitOrderState: 'PENDING_LIMIT' },
+        { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+      ],
+    },
+    select: { symbol: true },
+  })
+  const symbols = Array.from(new Set(rows.map((r) => r.symbol)))
+  state.marketDataWs.setSubscriptions(symbols)
 }
