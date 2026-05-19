@@ -13,3 +13,4 @@ export { startBreakoutLiveTraderC, stopBreakoutLiveTraderC, restartBreakoutLiveT
 export { getLiveSnapshot, type LiveSnapshot } from './snapshot'
 export { flattenAllOpenC as flattenAllOpenLiveC, flattenOneOpenLiveC } from './flatten'
 export { getLastAggTradeAt } from './aggTrade'
+export { attachMissingSlTp, type RepairReport } from './repair'

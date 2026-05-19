@@ -22,7 +22,7 @@ import {
 } from '../services/exchanges/binanceFutures'
 import { refreshLiveBalance } from './_liveBalanceShared'
 import { buildSharedReadHandlers } from './breakoutPaper/index'
-import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot } from '../services/dailyBreakoutLiveC'
+import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot, attachMissingSlTp } from '../services/dailyBreakoutLiveC'
 
 // Re-export so existing import paths (`from './breakoutLiveC'`) keep working.
 export { refreshLiveBalance }
@@ -581,6 +581,20 @@ router.post('/kill-switch', async (req, res) => {
     })
 
     res.json({ ok: true, cancelledOrders, closedPositions })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /repair-sltp — backfill missing exchange-side SL / TP algo orders on
+// already-open positions. Idempotent: re-running it after everything is in
+// place is a no-op. Used when hybrid TP shipped after some positions were
+// already open via the pre-hybrid code path (those had SL but no TPs), or
+// when a Binance algo order was cancelled out-of-band.
+router.post('/trades/repair-sltp', async (_req, res) => {
+  try {
+    const report = await attachMissingSlTp()
+    res.json(report)
   } catch (e: any) {
     res.status(500).json({ error: e.message })
   }
