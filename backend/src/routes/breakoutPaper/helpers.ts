@@ -10,7 +10,7 @@
 import { loadHistorical } from '../../scalper/historicalLoader'
 import { fetchPricesBatch } from '../../services/market'
 import { syncSignalStatus } from '../../services/dailyBreakoutPaperTrader'
-import { getLiveSnapshot } from '../../services/dailyBreakoutLiveTraderC'
+import { getLiveSnapshot } from '../../services/dailyBreakoutLiveC'
 import { BreakoutVariant } from '../../services/breakoutVariant'
 
 const CLOSED_STATUSES = new Set(['CLOSED', 'SL_HIT', 'EXPIRED'])

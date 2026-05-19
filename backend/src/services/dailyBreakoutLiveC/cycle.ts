@@ -1,0 +1,92 @@
+/**
+ * Cycle ticks — placement (60s) + EOD-FLAT / orphan cleanup (1min).
+ */
+
+import { prisma } from '../../db/prisma'
+import { LOG, state, cycleGuard, eodGuard } from './state'
+import { placeLimitsForRanges } from './placement'
+import { refreshAggTradeSubscriptions } from './aggTrade'
+import { flattenAllOpenC, cancelOrphanPendingLimits } from './flatten'
+import { pruneOldAttempts } from './attempts'
+
+/**
+ * Placement tick — mirrors paper C cadence. Virtual limits live only in DB;
+ * no exchange order is placed until aggTrade WS observes price cross the
+ * rangeEdge. So cycle frequency only affects how soon a brand-new 3h range
+ * gets pair-PENDING rows in DB after 03:00 UTC — once they're in DB, aggTrade
+ * ticks (50-500/sec on hot symbols) drive fills directly.
+ */
+export async function runLiveCycle(): Promise<void> {
+  if (cycleGuard.busy) {
+    // Re-entrancy guard per feedback_setinterval_reentrancy_guard memory.
+    return
+  }
+  cycleGuard.busy = true
+  try {
+    const cfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
+    if (!cfg) return
+    if (cfg.killSwitchActive) {
+      console.log(`${LOG} kill switch active — cycle no-op`)
+      return
+    }
+    if (!cfg.enabled) {
+      // WS streams stay up for UI, but no trading.
+      return
+    }
+    if (!state.current) return  // service stopped between schedule and tick
+
+    // Pre-emptive limit placement: one BUY + one SELL on rangeEdge for each
+    // tracked symbol that has a formed 3h range today and no open record yet.
+    await placeLimitsForRanges(cfg, state.current.client, state.current.net)
+
+    // Refresh market-data aggTrade subscriptions so we keep an eye on every
+    // symbol with a live row (PENDING or OPEN). Used for freshness signal and
+    // future safety-net logic; SL/TP triggers themselves are real exchange
+    // orders so don't depend on aggTrade.
+    await refreshAggTradeSubscriptions()
+  } catch (e: any) {
+    console.error(`${LOG} cycle threw:`, e.message)
+  } finally {
+    cycleGuard.busy = false
+  }
+}
+
+/**
+ * Runs every minute. Two responsibilities:
+ *   1. If current UTC time is in 23:55-23:56 window AND we haven't flushed
+ *      today yet → flatten all open positions via MARKET reduceOnly.
+ *   2. Around 00:01 UTC, cancel any PENDING_LIMIT entry orders still on the
+ *      book from prior days (cleanup if EOD didn't run, e.g. process restart).
+ */
+export async function runEodTick(): Promise<void> {
+  if (!state.current) return
+  const now = new Date()
+  const utcDate = now.toISOString().slice(0, 10)
+  const hour = now.getUTCHours()
+  const minute = now.getUTCMinutes()
+
+  // EOD flatten window: 23:55 UTC. Idempotent via eodGuard.lastDate.
+  if (hour === 23 && minute >= 55 && eodGuard.lastDate !== utcDate) {
+    eodGuard.lastDate = utcDate
+    console.log(`${LOG} EOD-FLAT window ${utcDate} 23:55 UTC — flattening open positions`)
+    try {
+      await flattenAllOpenC('EOD-FLAT')
+    } catch (e: any) {
+      console.error(`${LOG} EOD-FLAT failed: ${e.message}`)
+    }
+  }
+
+  // Orphan PENDING cleanup just after midnight UTC. Cancels any pre-emptive
+  // limits from yesterday that didn't fill and weren't already cancelled by
+  // EOD (e.g. WS event missed during a brief disconnect).
+  if (hour === 0 && minute === 1) {
+    try {
+      await cancelOrphanPendingLimits()
+    } catch (e: any) {
+      console.warn(`${LOG} orphan cleanup failed: ${e.message}`)
+    }
+    // Prune attempt audit rows from prior UTC days — they belonged to the
+    // last range cycle and aren't useful once a new one starts.
+    await pruneOldAttempts()
+  }
+}

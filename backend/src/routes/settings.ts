@@ -5,7 +5,7 @@ import { encrypt, maskKey } from '../services/encryption'
 import { createBybitClient, validateBybitKeys } from '../services/bybit'
 import { sendTestNotification } from '../services/notifier'
 import { BinanceFuturesClient, BinanceApiError } from '../services/exchanges/binanceFutures'
-import { restartBreakoutLiveTraderC } from '../services/dailyBreakoutLiveTraderC'
+import { restartBreakoutLiveTraderC } from '../services/dailyBreakoutLiveC'
 import { asyncHandler } from './_helpers'
 
 const router = Router()
