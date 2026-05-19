@@ -26,7 +26,11 @@ import SymbolHistoryModal from '../components/SymbolHistoryModal'
 import EquityChart from '../components/EquityChart'
 import { formatDate, pnlColor, fmt2, fmt2Signed, formatPrice } from '../lib/formatters'
 
-function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): PositionChartPosition {
+function paperTradeToPosition(
+  t: PaperTrade,
+  currentPrice: number | null,
+  isLive: boolean = false,
+): PositionChartPosition {
   const closes = t.closes || []
   const effectivePrice = currentPrice != null
     ? currentPrice
@@ -47,6 +51,7 @@ function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): Posit
       isSL: c.reason === 'SL',
     })),
     title: `${t.symbol} ${t.side === 'BUY' ? 'LONG' : 'SHORT'} (DEMO #${t.id})`,
+    source: isLive ? 'binance-futures' : 'bybit',
   }
 }
 
@@ -2018,7 +2023,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
 
       {chartTrade && (
         <PositionChartModal
-          position={paperTradeToPosition(chartTrade, livePrices[chartTrade.id]?.currentPrice ?? null)}
+          position={paperTradeToPosition(chartTrade, livePrices[chartTrade.id]?.currentPrice ?? null, isLive)}
           onClose={() => setChartTrade(null)}
         />
       )}

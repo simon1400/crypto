@@ -35,6 +35,9 @@ export interface PositionChartPosition {
   keyLevels?: KeyLevel[]
   // optional display-only fields
   title?: string                             // modal header override
+  // LIVE C charts pass 'binance-futures' so candles come from the same venue
+  // the trade executed on. Default 'bybit' keeps paper variants unchanged.
+  source?: 'bybit' | 'binance-futures'
 }
 
 // 1h candles: 24 = 1 day forward projection for open positions
@@ -130,6 +133,7 @@ export function usePositionChart(position: PositionChartPosition): UsePositionCh
   const symbol = normalizeSymbol(position.coin)
   const isLong = position.type === 'LONG'
   const precision = pickPrecision(position.entry)
+  const source = position.source ?? 'bybit'
 
   // Stable primitive deps — avoid rebuilding chart when parent re-renders with a new position object.
   const depEntry = position.entry
@@ -148,7 +152,7 @@ export function usePositionChart(position: PositionChartPosition): UsePositionCh
 
     async function fetchKlines(isInitial: boolean) {
       try {
-        const res = await getKlines(symbol, interval, 500)
+        const res = await getKlines(symbol, interval, 500, source)
         if (cancelled) return
         if (isInitial) {
           setKlines(res.data)
@@ -199,7 +203,7 @@ export function usePositionChart(position: PositionChartPosition): UsePositionCh
       cancelled = true
       if (timer) clearInterval(timer)
     }
-  }, [symbol, isPositionOpen, interval])
+  }, [symbol, isPositionOpen, interval, source])
 
   return {
     klines,

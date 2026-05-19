@@ -637,7 +637,7 @@ export default function PositionChartModal({ position, onClose }: Props) {
             <span className={`px-2 py-0.5 rounded text-xs font-bold flex-shrink-0 ${isLong ? 'bg-long/15 text-long' : 'bg-short/15 text-short'}`}>
               {position.type}
             </span>
-            <span className="hidden md:inline text-text-secondary text-xs font-mono">{interval} · Bybit</span>
+            <span className="hidden md:inline text-text-secondary text-xs font-mono">{interval} · {position.source === 'binance-futures' ? 'Binance' : 'Bybit'}</span>
           </div>
           <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
             <div className="flex items-center bg-input rounded overflow-hidden text-xs">

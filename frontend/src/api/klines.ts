@@ -16,9 +16,17 @@ export interface KlinesResponse {
   data: KlineData[]
 }
 
-export async function getKlines(symbol: string, interval: string, count = 500): Promise<KlinesResponse> {
+export type KlineSource = 'bybit' | 'binance-futures'
+
+export async function getKlines(
+  symbol: string,
+  interval: string,
+  count = 500,
+  source: KlineSource = 'bybit',
+): Promise<KlinesResponse> {
+  const sourceParam = source !== 'bybit' ? `&source=${encodeURIComponent(source)}` : ''
   const res = await fetch(
-    `${BASE}/api/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&count=${count}`,
+    `${BASE}/api/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&count=${count}${sourceParam}`,
     { headers: getHeaders() }
   )
   if (!res.ok) {
