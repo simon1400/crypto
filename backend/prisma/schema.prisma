@@ -447,6 +447,11 @@ model BreakoutLiveTradeC {
   fundingPaidUsd Float @default(0)
   netPnlUsd      Float @default(0)
 
+  // Authoritative entry commission from ORDER_TRADE_UPDATE `o.n`. Stored so
+  // recomputeTradeMoney can rebuild feesPaidUsd absolutely from row + closes[]
+  // without depending on prior increments (race-free).
+  entryFeeUsd Float @default(0)
+
   feeTakerPct  Float?
   feeMakerPct  Float?
   slipTakerPct Float?

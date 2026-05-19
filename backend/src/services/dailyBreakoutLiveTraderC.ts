@@ -1628,12 +1628,12 @@ async function handleEntryFillUpdate(tradeId: number, ev: OrderTradeUpdateEvent)
   const exactFee = Number(o.n) || 0  // commission in USDT (N field gives asset)
   const exchangeOrderId = BigInt(o.i)
 
-  // Compute the fee delta vs the optimistic estimate we already wrote. The
-  // estimate ran with feeTakerPct% of (placeholder fillPrice × qty); now we
-  // know the real number from Binance. Net effect on netPnlUsd is delta.
-  const optimisticFee = trade.positionUnits * trade.entryPrice * ((trade.feeTakerPct ?? 0.04) / 100)
-  const feeDelta = exactFee - optimisticFee
-
+  // Cache the exact entry fee on the row itself (entryFeeUsd) so the absolute
+  // recompute helper below can rebuild feesPaidUsd / netPnlUsd from row +
+  // closes[] without depending on any prior increment. This makes the path
+  // idempotent — the same WS event replayed (reconnect) won't double-charge,
+  // and a tryFillVirtualLimit placeholder running before/after this handler
+  // doesn't matter.
   await prisma.breakoutLiveTradeC.update({
     where: { id: tradeId },
     data: {
@@ -1641,13 +1641,44 @@ async function handleEntryFillUpdate(tradeId: number, ev: OrderTradeUpdateEvent)
       positionUnits: exactQty,
       positionSizeUsd: exactPrice * exactQty,
       marginUsd: trade.leverage ? (exactPrice * exactQty) / trade.leverage : trade.marginUsd,
-      feesPaidUsd: { increment: feeDelta },
-      netPnlUsd: { decrement: feeDelta },
+      entryFeeUsd: exactFee,
       binanceOrderId: exchangeOrderId,
     },
   })
+  await recomputeTradeMoney(tradeId)
 
-  console.log(`${LOG} ↻ entry refined #${tradeId} ${trade.symbol} entry ${trade.entryPrice} → ${exactPrice}, fee ${optimisticFee.toFixed(4)} → ${exactFee.toFixed(4)}`)
+  console.log(`${LOG} ↻ entry refined #${tradeId} ${trade.symbol} entry ${trade.entryPrice} → ${exactPrice}, entryFee SET to ${exactFee.toFixed(4)}`)
+}
+
+/**
+ * Rebuild realizedPnlUsd / feesPaidUsd / netPnlUsd as absolute values from the
+ * trade row's authoritative inputs:
+ *   realizedPnlUsd = Σ closes[].pnlUsd  (each entry written by applyVirtualClose
+ *                                        or refined to o.rp by handleExitFillUpdate)
+ *   feesPaidUsd    = entryFeeUsd + Σ closes[].feePaidUsd
+ *   netPnlUsd      = realizedPnlUsd - feesPaidUsd - fundingPaidUsd
+ *
+ * Called after every entry/exit fill update so the money fields converge to
+ * the truth regardless of which path ran first. The legacy `{ increment: x }`
+ * style was race-sensitive — two paths writing optimistic deltas in different
+ * orders produced different totals.
+ */
+async function recomputeTradeMoney(tradeId: number): Promise<void> {
+  const t = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!t) return
+  const closes = (t.closes as any[]) ?? []
+  const realizedPnl = closes.reduce((a, c) => a + (Number(c?.pnlUsd) || 0), 0)
+  const closesFees = closes.reduce((a, c) => a + (Number(c?.feePaidUsd) || 0), 0)
+  const fees = (t.entryFeeUsd ?? 0) + closesFees
+  const netPnl = realizedPnl - fees - (t.fundingPaidUsd ?? 0)
+  await prisma.breakoutLiveTradeC.update({
+    where: { id: tradeId },
+    data: {
+      realizedPnlUsd: realizedPnl,
+      feesPaidUsd: fees,
+      netPnlUsd: netPnl,
+    },
+  })
 }
 
 /**
@@ -1688,11 +1719,11 @@ async function handleExitFillUpdate(
   // from this exact event, skip (Binance may replay on reconnect).
   if ((prev as any).binanceOrderId === exchangeOrderId) return
 
-  const prevFee = (prev as any).feePaidUsd ?? 0
-  const prevNetPnl = prev.pnlUsd ?? 0
-  const pnlDelta = exactRealizedPnl - prevNetPnl
-  const feeDelta = exactFee - prevFee
-
+  // Overwrite the closes[] entry with Binance's authoritative numbers, then
+  // let recomputeTradeMoney rebuild realizedPnlUsd / feesPaidUsd / netPnlUsd
+  // absolutely from the row + closes[]. No more delta arithmetic — if the
+  // event replays or the placeholder differed in qty/price the totals still
+  // converge to truth.
   closes[idx] = {
     ...prev,
     price: exactFillPrice,
@@ -1705,13 +1736,11 @@ async function handleExitFillUpdate(
     where: { id: tradeId },
     data: {
       closes: closes as any,
-      realizedPnlUsd: { increment: pnlDelta },
-      netPnlUsd: { increment: pnlDelta - feeDelta },
-      feesPaidUsd: { increment: feeDelta },
     },
   })
+  await recomputeTradeMoney(tradeId)
 
-  console.log(`${LOG} ↻ exit refined #${tradeId} ${trade.symbol} ${reason} @ ${exactFillPrice} realizedPnl=${exactRealizedPnl.toFixed(4)} fee=${exactFee.toFixed(4)} (delta pnl ${pnlDelta.toFixed(4)} fee ${feeDelta.toFixed(4)})`)
+  console.log(`${LOG} ↻ exit refined #${tradeId} ${trade.symbol} ${reason} @ ${exactFillPrice} realizedPnl=${exactRealizedPnl.toFixed(4)} fee=${exactFee.toFixed(4)}`)
 
   // Telegram is sent here (not in applyVirtualClose) so the user sees the
   // authoritative P&L from Binance instead of the virtual triggerPrice
@@ -1842,7 +1871,20 @@ async function exitLiveTradeSlice(
   if (!f) return
 
   const step = f.stepSize
-  const closeUnits = fresh.positionUnits * frac
+  // For terminal closes (SL / TP3) the slice should empty the position fully.
+  // floor(positionUnits × frac / step) × step truncates downward each TP, so by
+  // the time SL or TP3 fires the planned closeUnits is already smaller than
+  // the actual exchange remainder by 1-2 lot sizes. End result: dust like
+  // 0.001 ETH stuck on the exchange after status='CLOSED' in the DB. Pull the
+  // real remaining positionAmt from the live snapshot for terminal exits.
+  const isTerminal = reason === 'SL' || reason === 'TP3'
+  let closeUnits = fresh.positionUnits * frac
+  if (isTerminal) {
+    const snap = liveSnapshot?.positions.find((p) => p.symbol === fresh.symbol)
+    if (snap && snap.positionAmt !== 0) {
+      closeUnits = Math.abs(snap.positionAmt)
+    }
+  }
   let qty = Math.floor(closeUnits / step) * step
   qty = Number(qty.toFixed(f.quantityPrecision))
   if (qty < f.minQty) {
@@ -1927,13 +1969,20 @@ async function applyVirtualClose(
   feePaid: number = 0,
   notifyImmediately: boolean = false,
 ): Promise<void> {
+  // grossPnl = pnl before fees. We persist gross in closes[].pnlUsd so the
+  // absolute recompute below treats Σ closes[].pnlUsd as gross realized;
+  // closes[].feePaidUsd holds the fee for this slice. handleExitFillUpdate
+  // will later overwrite both fields with Binance's `o.rp` (gross realized
+  // for the fill — this is what `o.rp` is) and `o.n` (commission).
+  const grossPnl = netPnl + feePaid
   const newCloses = [
     ...((fresh.closes as any[]) ?? []),
     {
       price: fillPrice,
       percent: frac * 100,
       pnlR,
-      pnlUsd: netPnl + feePaid,  // gross pnl for reporting; fees split below
+      pnlUsd: grossPnl,
+      feePaidUsd: feePaid,
       closedAt: new Date(ts).toISOString(),
       reason,
     },
@@ -1966,12 +2015,12 @@ async function applyVirtualClose(
       currentStop: newCurrentStop,
       status: newStatus,
       realizedR: { increment: pnlR },
-      realizedPnlUsd: { increment: netPnl + feePaid },
-      feesPaidUsd: { increment: feePaid },
-      netPnlUsd: { increment: netPnl },
       ...(terminal ? { closedAt: new Date(ts) } : {}),
     },
   })
+  // Absolute recompute — replaces the old `{ increment: ... }` math which was
+  // race-sensitive when handleExitFillUpdate ran out of order with this call.
+  await recomputeTradeMoney(fresh.id)
 
   console.log(`${LOG} ${reason === 'SL' ? '🔴' : '✅'} ${reason} hit #${fresh.id} ${fresh.symbol} @ ${fillPrice} pnl ${netPnl.toFixed(4)}`)
 
@@ -2608,7 +2657,6 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
     // (the matching-engine fill hasn't been indexed yet), so we can't trust it.
     let fillPrice = price
     let fillQty = qtyPlanned
-    let feePaid = 0
     const entryCid = `enL${trade.id}`
     try {
       const resp = await state.client.placeOrder({
@@ -2623,8 +2671,10 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
       if (resp.executedQty && Number(resp.executedQty) > 0) {
         fillQty = Number(resp.executedQty)
       }
-      // Best-effort fee estimate; replaced by exact value when WS event arrives.
-      feePaid = fillQty * fillPrice * (cfg.feeTakerPct ?? 0.04) / 100
+      // Fee not estimated here — handleEntryFillUpdate writes the exact
+      // commission from Binance's o.n into entryFeeUsd. Leaving feesPaidUsd=0
+      // briefly until WS arrives is a tiny UI artifact vs the bigger problem
+      // of mis-attributed fees the placeholder used to cause.
     } catch (e: any) {
       // Placement rejected — release the FILLING claim so the next tick can
       // retry, and surface the rejection to the audit log.
@@ -2650,6 +2700,11 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
     // The updateMany only touches the trade row while binanceOrderId is still
     // null (WS hasn't refined yet); if WS already won, this is a no-op and the
     // exact avgPrice / qty / fee stay intact.
+    //
+    // No fees fields here — entry fee is owned by handleEntryFillUpdate
+    // (writes entryFeeUsd from o.n, then recomputeTradeMoney rebuilds total).
+    // The old `{ increment: feePaid }` placeholder caused race-dependent
+    // double-charging / undercharging depending on WS event ordering.
     await prisma.breakoutLiveTradeC.updateMany({
       where: { id: trade.id, binanceOrderId: null },
       data: {
@@ -2657,8 +2712,6 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
         positionUnits: fillQty,
         positionSizeUsd: fillPrice * fillQty,
         marginUsd: (fillPrice * fillQty) / newLev,
-        feesPaidUsd: { increment: feePaid },
-        netPnlUsd: { decrement: feePaid },
       },
     })
 
