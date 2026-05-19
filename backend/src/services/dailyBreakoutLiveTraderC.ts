@@ -186,6 +186,12 @@ export async function startBreakoutLiveTraderC(): Promise<void> {
       console.warn(`${LOG} snapshot seed failed: ${e.message} — /status will return null until first ACCOUNT_UPDATE`)
     }
 
+    // Backfill aggregate stats once on boot — trades closed before this code
+    // shipped never triggered recomputeLiveCStats, so W/L/maxDD sit at 0.
+    // One write here brings the config row in sync with whatever's in trades.
+    await recomputeLiveCStats().catch((e) =>
+      console.warn(`${LOG} boot recomputeLiveCStats failed: ${e?.message ?? e}`))
+
     // Reconcile DB ↔ exchange BEFORE starting the WS handlers — we want to
     // know about any drift (unknown positions, missing orders) before live
     // events start flowing.
@@ -1647,6 +1653,14 @@ async function handleExitFillUpdate(
   })
 
   console.log(`${LOG} ↻ exit refined #${tradeId} ${trade.symbol} ${reason} @ ${exactFillPrice} realizedPnl=${exactRealizedPnl.toFixed(4)} fee=${exactFee.toFixed(4)} (delta pnl ${pnlDelta.toFixed(4)} fee ${feeDelta.toFixed(4)})`)
+
+  // Telegram is sent here (not in applyVirtualClose) so the user sees the
+  // authoritative P&L from Binance instead of the virtual triggerPrice
+  // estimate. notifyExitTelegram reads the freshly-updated row, so realized
+  // PnL, fees and any accrued funding are folded in correctly.
+  const slicePercent = (prev as any)?.percent ?? 100
+  const sliceFrac = slicePercent / 100
+  await notifyExitTelegram(tradeId, reason, exactFillPrice, sliceFrac, exactRealizedPnl, false)
 }
 
 /**
@@ -1798,6 +1812,7 @@ async function exitLiveTradeSlice(
   // handleExitFillUpdate uses the cid to find the trade row + reason and
   // overwrite the closes[] entry with exact avgPrice + commission.
   const exitCid = `exL${fresh.id}_${reason}`
+  let orderRejected = false  // true if exchange refused (-2022) — WS refine won't come
   try {
     const resp = await state.client.placeOrder({
       symbol: trade.symbol,
@@ -1819,6 +1834,7 @@ async function exitLiveTradeSlice(
       // or by the exchange (ADL/liq). Record the virtual close anyway so DB
       // matches reality, mark CLOSED. Better than leaving row OPEN forever.
       console.warn(`${LOG} #${fresh.id} ${trade.symbol} ${reason} MARKET rejected (-2022 reduceOnly) — position already closed`)
+      orderRejected = true
     } else {
       console.error(`${LOG} #${fresh.id} ${trade.symbol} ${reason} MARKET failed: ${e.message}`)
       // Don't write the close — re-try on next tick (slip lock so next tick can).
@@ -1834,7 +1850,11 @@ async function exitLiveTradeSlice(
   // Estimate taker fee (Binance USDT-M VIP0 = 0.04% taker on MARKET).
   feePaid = qty * actualFillPrice * (fresh.feeTakerPct ?? 0.04) / 100
 
-  await applyVirtualClose(fresh, reason, actualFillPrice, frac, pnlR, actualPnlUsd - feePaid, ts, feePaid)
+  // notifyImmediately=true only when the order was rejected — no WS refine
+  // will arrive, so we must send the Telegram now with the virtual estimate.
+  // Otherwise handleExitFillUpdate sends it after Binance reports exact
+  // avgPrice + commission + realizedProfit so Telegram matches UI/exchange.
+  await applyVirtualClose(fresh, reason, actualFillPrice, frac, pnlR, actualPnlUsd - feePaid, ts, feePaid, orderRejected)
 }
 
 async function applyVirtualClose(
@@ -1846,6 +1866,7 @@ async function applyVirtualClose(
   netPnl: number,
   ts: number,
   feePaid: number = 0,
+  notifyImmediately: boolean = false,
 ): Promise<void> {
   const newCloses = [
     ...((fresh.closes as any[]) ?? []),
@@ -1893,21 +1914,17 @@ async function applyVirtualClose(
     },
   })
 
-  // Telegram + trailing console log.
-  const emoji = reason === 'SL' ? '🔴' : '✅'
-  const trailNote = reason === 'TP1' ? 'SL → BE'
-    : reason === 'TP2' ? 'SL → TP1'
-    : reason === 'TP3' ? 'позиция закрыта полностью'
-    : 'позиция закрыта'
-  sendLiveTelegram([
-    `${emoji} <b>${fresh.symbol}</b> <b>${reason}</b>  · ${reason === 'SL' ? 'позиция закрыта' : 'частичное закрытие'}`,
-    `━━━━━━━━━━━━━━━━━━`,
-    `💰 Цена   <code>${fmtPrice(fillPrice)}</code>`,
-    `📊 Закрыто  ${Math.round(frac * 100)}%`,
-    `💵 P&L    <b>${fmtPnl(netPnl)}</b>`,
-    `🛡 ${trailNote}`,
-  ].join('\n'))
-  console.log(`${LOG} ${emoji} ${reason} hit #${fresh.id} ${fresh.symbol} @ ${fillPrice} pnl ${netPnl.toFixed(4)}`)
+  console.log(`${LOG} ${reason === 'SL' ? '🔴' : '✅'} ${reason} hit #${fresh.id} ${fresh.symbol} @ ${fillPrice} pnl ${netPnl.toFixed(4)}`)
+
+  // Telegram. By default we defer to handleExitFillUpdate, which sends the
+  // notification after Binance reports exact avgPrice + commission +
+  // realizedProfit — so the user sees numbers matching UI and the exchange
+  // (including accrued funding). notifyImmediately=true only when the order
+  // was rejected on the exchange (-2022 reduceOnly) — in that case no WS
+  // refine will arrive, so we must send the virtual estimate now.
+  if (notifyImmediately) {
+    await notifyExitTelegram(fresh.id, reason, fillPrice, frac, netPnl, true)
+  }
 
   // Sync the exchange-side SL with the new currentStop / position size.
   //  - TP1/TP2: position shrunk + currentStop trailed (BE / TP1) — replace old
@@ -1928,6 +1945,115 @@ async function applyVirtualClose(
     await seedSnapshotFromRest(state.client, state.net, 'rest-refresh').catch((e) =>
       console.warn(`${LOG} post-close balance refresh failed: ${e?.message ?? e}`))
   }
+
+  // Refresh aggregate stats (W/L count, totalPnL, peak/DD) on every close so
+  // the header cards stop showing 0W/0L/0% DD. Uses walletBalance from the
+  // fresh snapshot as the depo source — same number the user sees in the
+  // "Депозит" block, so peak/DD align with what's on screen.
+  await recomputeLiveCStats().catch((e) =>
+    console.warn(`${LOG} post-close recomputeLiveCStats failed: ${e?.message ?? e}`))
+}
+
+/**
+ * Recompute aggregate stats persisted on BreakoutLiveConfigC after a close.
+ * Mirrors the paper-trader logic (totalTrades/Wins/Losses/PnL) but pulls
+ * peakDepositUsd / maxDrawdownPct from the live walletBalance snapshot — for
+ * LIVE C the canonical depo is the exchange wallet, not currentDepositUsd
+ * (which mirrors availableBalance and excludes locked margin).
+ */
+async function recomputeLiveCStats(): Promise<void> {
+  const cfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
+  if (!cfg) return
+
+  const trades = await prisma.breakoutLiveTradeC.findMany({
+    where: {
+      OR: [
+        { status: { in: ['CLOSED', 'SL_HIT', 'EXPIRED'] } },
+        { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] }, NOT: { closes: { equals: [] } } },
+      ],
+    },
+    select: { status: true, netPnlUsd: true, realizedPnlUsd: true, feesPaidUsd: true, fundingPaidUsd: true },
+  })
+  const closedStatuses = new Set(['CLOSED', 'SL_HIT', 'EXPIRED'])
+  const closedOnly = trades.filter((t) => closedStatuses.has(t.status))
+  const totalTrades = closedOnly.length
+  const totalWins = closedOnly.filter((t) => t.netPnlUsd > 0).length
+  const totalLosses = closedOnly.filter((t) => t.netPnlUsd < 0).length
+  const totalPnLUsd = trades.reduce((a, t) => {
+    const realizedNet = closedStatuses.has(t.status)
+      ? t.netPnlUsd
+      : (t.realizedPnlUsd - t.feesPaidUsd - t.fundingPaidUsd)
+    return a + realizedNet
+  }, 0)
+
+  // Peak/DD anchored on real walletBalance — equity from the exchange, not
+  // the synthetic startingDepositUsd + totalPnLUsd reconstruction (which can
+  // drift on funding / external wallet movements).
+  const wallet = liveSnapshot?.total ?? cfg.currentDepositUsd
+  const newPeak = Math.max(cfg.peakDepositUsd ?? cfg.startingDepositUsd, wallet)
+  const newDD = newPeak > 0 ? Math.max(cfg.maxDrawdownPct, ((newPeak - wallet) / newPeak) * 100) : 0
+
+  await prisma.breakoutLiveConfigC.update({
+    where: { id: 1 },
+    data: {
+      totalTrades, totalWins, totalLosses, totalPnLUsd,
+      peakDepositUsd: newPeak, maxDrawdownPct: newDD,
+    },
+  })
+}
+
+/**
+ * Send the close notification to Telegram. Reads the fresh trade row so the
+ * displayed P&L reflects realized PnL minus fees minus funding accrued during
+ * the position — same number the UI/exchange show. For partial closes (TP1/
+ * TP2) we report the slice P&L; for terminal closes (SL/TP3) we report the
+ * total trade P&L.
+ *
+ * @param virtual  true when sent from -2022 fallback path — adds a hint that
+ *                 the number is a virtual estimate (no WS refine arrived).
+ */
+async function notifyExitTelegram(
+  tradeId: number,
+  reason: 'SL' | 'TP1' | 'TP2' | 'TP3',
+  fillPrice: number,
+  frac: number,
+  virtualPnlFallback: number,
+  virtual: boolean,
+): Promise<void> {
+  const t = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!t) return
+
+  const terminal = reason === 'SL' || reason === 'TP3'
+  // For terminal exits, report the whole trade P&L (matches UI badge + exchange
+  // realized PnL once funding is folded in). For partial exits, report just
+  // this slice's P&L from the closes[] entry written by applyVirtualClose /
+  // refined by handleExitFillUpdate.
+  let displayedPnl: number
+  if (terminal) {
+    displayedPnl = t.realizedPnlUsd - t.feesPaidUsd - t.fundingPaidUsd
+  } else {
+    const closes = (t.closes as any[]) ?? []
+    const slice = [...closes].reverse().find((c) => c?.reason === reason)
+    const slicePnl = slice?.pnlUsd ?? virtualPnlFallback
+    const sliceFee = slice?.feePaidUsd ?? 0
+    displayedPnl = slicePnl - sliceFee
+  }
+
+  const emoji = reason === 'SL' ? '🔴' : '✅'
+  const trailNote = reason === 'TP1' ? 'SL → BE'
+    : reason === 'TP2' ? 'SL → TP1'
+    : reason === 'TP3' ? 'позиция закрыта полностью'
+    : 'позиция закрыта'
+  const headerSuffix = terminal ? 'позиция закрыта' : 'частичное закрытие'
+  const pnlSuffix = virtual ? ' <i>(≈ виртуально)</i>' : ''
+  sendLiveTelegram([
+    `${emoji} <b>${t.symbol}</b> <b>${reason}</b>  · ${headerSuffix}`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `💰 Цена   <code>${fmtPrice(fillPrice)}</code>`,
+    `📊 Закрыто  ${Math.round(frac * 100)}%`,
+    `💵 P&L    <b>${fmtPnl(displayedPnl)}</b>${pnlSuffix}`,
+    `🛡 ${trailNote}`,
+  ].join('\n'))
 }
 
 

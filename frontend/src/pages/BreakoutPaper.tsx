@@ -52,7 +52,7 @@ function paperTradeToPosition(t: PaperTrade, currentPrice: number | null): Posit
 
 // 'SIGNALS' — таб для A/B со списком сигналов сканера.
 // 'PENDING' — таб для C: висящие limit-ордера на rangeEdge до пробоя.
-type StatusFilter = 'OPEN' | 'CLOSED' | 'SIGNALS' | 'PENDING' | 'ATTEMPTS'
+type StatusFilter = 'OPEN' | 'CLOSED' | 'SIGNALS' | 'PENDING' | 'ATTEMPTS' | 'CANCELLED'
 
 const PAPER_STATUS_BADGE: Record<string, { bg: string; text: string; label: string }> = {
   NEW:       { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Новый' },
@@ -311,14 +311,18 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
     try {
       const isSignalsTab = statusFilter === 'SIGNALS'
       const isPendingTab = statusFilter === 'PENDING'
-      // Variant C: "Открытые" — только FILLED-сделки (PENDING вынесли в свой таб).
-      // "Закрытые" дополнительно содержит CANCELLED (limit отменён EOD).
-      // "PENDING" — висящие limit-ордера до пробоя (только для C).
-      const isLimitEdge = variant === 'C' || isLiveVariant(variant)
+      const isCancelledTab = statusFilter === 'CANCELLED'
+      // Variant C / LIVE: "Открытые" — только FILLED-сделки. "Закрытые" — только
+      // реальные закрытия позиций (CLOSED/SL_HIT/EXPIRED/TP3_HIT). "Отменено" —
+      // отдельный таб для CANCELLED (limit отменён EOD или other-side), чтобы
+      // не засорять "Закрытые" десятками лимиток без P&L. "PENDING" — висящие
+      // limit-ордера до пробоя.
       const status = statusFilter === 'OPEN'
         ? ['OPEN', 'TP1_HIT', 'TP2_HIT']
         : statusFilter === 'CLOSED'
-        ? (isLimitEdge ? ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT', 'CANCELLED'] : ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT'])
+        ? ['CLOSED', 'SL_HIT', 'EXPIRED', 'TP3_HIT']
+        : isCancelledTab
+        ? ['CANCELLED']
         : isPendingTab
         ? (isLiveVariant(variant) ? ['PENDING_LIMIT'] : ['PENDING'])
         : undefined
@@ -326,7 +330,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       // страницы шли последовательно по дате выхода (иначе при разнице
       // openedAt vs closedAt порядок между страницами рассыпается).
       // Остальные вкладки — старый лимит 200, сортировка по openedAt по умолчанию.
-      const tradesQuery = statusFilter === 'CLOSED'
+      const tradesQuery = (statusFilter === 'CLOSED' || isCancelledTab)
         ? { status, limit: CLOSED_PAGE_SIZE, offset: (closedPage - 1) * CLOSED_PAGE_SIZE, orderBy: 'closedAt' as const }
         : { status, limit: 200 }
       const [c, sc, su, t, s, sigs] = await Promise.all([
@@ -1177,6 +1181,9 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         ) : (
           <FilterButton active={statusFilter === 'SIGNALS'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('SIGNALS') }}>Сигналы</FilterButton>
         )}
+        {(variant === 'C' || isLive) && (
+          <FilterButton active={statusFilter === 'CANCELLED'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('CANCELLED') }}>Отменено</FilterButton>
+        )}
         {isLive && (
           <FilterButton active={statusFilter === 'ATTEMPTS'} onClick={() => { setClosedPage(1); setSignalsPage(1); setStatusFilter('ATTEMPTS') }}>Отклонённые</FilterButton>
         )}
@@ -1593,7 +1600,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
               </div>
 
               {/* Row 4: progress bar (only if open) */}
-              {isOpen && statusFilter !== 'CLOSED' && (
+              {isOpen && statusFilter !== 'CLOSED' && statusFilter !== 'CANCELLED' && (
                 <div className="mb-2">
                   <TradeProgressBar trade={t} live={live} tps={tps} />
                 </div>
@@ -1627,7 +1634,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           )
         })}
         {/* Pagination on mobile — same logic as table */}
-        {statusFilter === 'CLOSED' && tradesTotal > CLOSED_PAGE_SIZE && (() => {
+        {(statusFilter === 'CLOSED' || statusFilter === 'CANCELLED') && tradesTotal > CLOSED_PAGE_SIZE && (() => {
           const totalPages = Math.ceil(tradesTotal / CLOSED_PAGE_SIZE)
           const from = (closedPage - 1) * CLOSED_PAGE_SIZE + 1
           const to = Math.min(closedPage * CLOSED_PAGE_SIZE, tradesTotal)
@@ -1664,12 +1671,12 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                 <th className="text-left px-3 py-2">⏱</th>
                 <th className="text-left px-3 py-2">Монета</th>
                 <th className="text-right px-3 py-2">Вход</th>
-                {statusFilter !== 'CLOSED' && <th className="text-right px-3 py-2">Цена</th>}
+                {statusFilter !== 'CLOSED' && statusFilter !== 'CANCELLED' && <th className="text-right px-3 py-2">Цена</th>}
                 <th className="text-right px-3 py-2">Маржа</th>
                 <th className="text-center px-3 py-2" title="Рекомендуемое плечо">Плечо</th>
                 <th className="text-right px-3 py-2">Размер</th>
-                {statusFilter !== 'CLOSED' && <th className="text-center px-3 py-2" title="Где цена между SL и ближайшим живым TP">Прогресс</th>}
-                {statusFilter !== 'CLOSED' && <th className="text-right px-3 py-2">Рлз.</th>}
+                {statusFilter !== 'CLOSED' && statusFilter !== 'CANCELLED' && <th className="text-center px-3 py-2" title="Где цена между SL и ближайшим живым TP">Прогресс</th>}
+                {statusFilter !== 'CLOSED' && statusFilter !== 'CANCELLED' && <th className="text-right px-3 py-2">Рлз.</th>}
                 <th className="text-right px-3 py-2">P&L</th>
                 <th className="text-center px-3 py-2">Статус</th>
               </tr>
@@ -1742,7 +1749,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                       </span>
                     </td>
                     <td className="px-3 py-2 text-right font-mono text-text-primary">${fmtPrice(t.entryPrice)}</td>
-                    {statusFilter !== 'CLOSED' && (
+                    {statusFilter !== 'CLOSED' && statusFilter !== 'CANCELLED' && (
                       <td className="px-3 py-2 text-right font-mono">
                         {isOpen && live?.currentPrice != null ? (
                           <span className={pnlColor(live.unrealizedPnl)}>${fmtPrice(live.currentPrice)}</span>
@@ -1785,12 +1792,12 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                         </>
                       )}
                     </td>
-                    {statusFilter !== 'CLOSED' && (
+                    {statusFilter !== 'CLOSED' && statusFilter !== 'CANCELLED' && (
                       <td className="px-3 py-2 align-middle">
                         <TradeProgressBar trade={t} live={live} tps={tps} />
                       </td>
                     )}
-                    {statusFilter !== 'CLOSED' && (
+                    {statusFilter !== 'CLOSED' && statusFilter !== 'CANCELLED' && (
                       <td className="px-3 py-2 text-right font-mono">
                         {closedPctNum > 0 ? (
                           <span className={pnlColor(t.realizedPnlUsd - t.feesPaidUsd)}>
@@ -1832,7 +1839,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           </table>
         </div>
         {/* Pagination — только для вкладки Закрытые (там часто > 20 записей) */}
-        {statusFilter === 'CLOSED' && tradesTotal > CLOSED_PAGE_SIZE && (() => {
+        {(statusFilter === 'CLOSED' || statusFilter === 'CANCELLED') && tradesTotal > CLOSED_PAGE_SIZE && (() => {
           const totalPages = Math.ceil(tradesTotal / CLOSED_PAGE_SIZE)
           const from = (closedPage - 1) * CLOSED_PAGE_SIZE + 1
           const to = Math.min(closedPage * CLOSED_PAGE_SIZE, tradesTotal)

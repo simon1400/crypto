@@ -198,14 +198,14 @@ router.get('/status', async (_req, res) => {
     }
 
     const baseline = cfg.startingDepositUsd
-    // Real equity = walletBalance + sum(unrealizedProfit). This is what Binance
-    // calls "Margin Balance" in the UI — the actual value of the account if all
-    // positions closed at mark right now. Comparing this against baseline
-    // (which was a walletBalance snapshot taken at first /config enable) gives
-    // an apples-to-apples doходность.
     const unrealizedPnl = snap.positions.reduce((a, p) => a + (p.unRealizedProfit ?? 0), 0)
     const marginBalance = snap.total + unrealizedPnl
-    const totalPnlUsd = marginBalance - baseline
+    // "Доходность" / "Total P&L" — только реализованный итог. walletBalance
+    // вбирает в себя realized PnL (Binance прибавляет его к кошельку при
+    // close) минус комиссии минус funding. Сравнение с baseline (snapshot
+    // wallet'а при первом /config enable) даёт чистый доход от закрытых
+    // сделок. Плавающий P&L открытых видно отдельным блоком "Депо с открытыми".
+    const totalPnlUsd = snap.total - baseline
     const totalPnlPct = baseline > 0 ? (totalPnlUsd / baseline) * 100 : 0
 
     // Pending limits live in DB (virtual limits), not on the exchange — count
