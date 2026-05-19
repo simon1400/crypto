@@ -198,7 +198,14 @@ router.get('/status', async (_req, res) => {
     }
 
     const baseline = cfg.startingDepositUsd
-    const totalPnlUsd = snap.available - baseline
+    // Real equity = walletBalance + sum(unrealizedProfit). This is what Binance
+    // calls "Margin Balance" in the UI — the actual value of the account if all
+    // positions closed at mark right now. Comparing this against baseline
+    // (which was a walletBalance snapshot taken at first /config enable) gives
+    // an apples-to-apples doходность.
+    const unrealizedPnl = snap.positions.reduce((a, p) => a + (p.unRealizedProfit ?? 0), 0)
+    const marginBalance = snap.total + unrealizedPnl
+    const totalPnlUsd = marginBalance - baseline
     const totalPnlPct = baseline > 0 ? (totalPnlUsd / baseline) * 100 : 0
 
     res.json({
@@ -209,6 +216,8 @@ router.get('/status', async (_req, res) => {
       killSwitchReason: cfg.killSwitchReason,
       balanceUsdt: snap.available,
       walletBalanceUsdt: snap.total,
+      marginBalanceUsdt: marginBalance,
+      unrealizedPnlUsdt: unrealizedPnl,
       baselineUsd: baseline,
       totalPnlUsd: Math.round(totalPnlUsd * 100) / 100,
       totalPnlPct: Math.round(totalPnlPct * 100) / 100,

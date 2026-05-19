@@ -72,10 +72,12 @@ export interface BreakoutLiveStatus {
   killSwitchActive?: boolean
   killSwitchReason?: string | null
   // Live Binance source of truth.
-  balanceUsdt?: number          // availableBalance — sizing source
-  walletBalanceUsdt?: number    // total wallet including locked margin
-  baselineUsd?: number          // startingDepositUsd snapshot
-  totalPnlUsd?: number          // available - baseline
+  balanceUsdt?: number             // availableBalance — sizing source
+  walletBalanceUsdt?: number       // total wallet (sum of all realized PnL, excl. unrealized)
+  marginBalanceUsdt?: number       // wallet + unrealized — current equity
+  unrealizedPnlUsdt?: number       // sum across all open positions
+  baselineUsd?: number             // startingDepositUsd snapshot taken at first enable
+  totalPnlUsd?: number             // marginBalance - baseline (true PnL incl. open positions)
   totalPnlPct?: number
   baselineSnapshottedAt?: string | null
   openPositions?: number

@@ -955,28 +955,48 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         </div>
       )}
 
-      {/* Top stats */}
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
-        <Stat label="Депозит" value={`$${config.currentDepositUsd.toFixed(2)}`}
-          sub={isLive ? `baseline $${config.startingDepositUsd.toFixed(2)}` : `из $${config.startingDepositUsd}`}
-          tone={config.currentDepositUsd >= config.startingDepositUsd ? 'long' : 'short'} />
-        <Stat
-          label="Депо с открытыми"
-          value={`$${equityWithOpen.toFixed(2)}`}
-          sub={openCount > 0
-            ? `${unrealizedPnlUsd >= 0 ? '+' : ''}$${unrealizedPnlUsd.toFixed(2)} unrealized`
-            : 'нет открытых'}
-          tone={equityWithOpen >= config.startingDepositUsd ? 'long' : 'short'}
-        />
-        <Stat label="Доходность" value={`${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(1)}%`}
-          tone={returnPct > 0 ? 'long' : returnPct < 0 ? 'short' : 'neutral'} />
-        <Stat label="Total P&L" value={fmtUsd(config.totalPnLUsd)}
-          tone={config.totalPnLUsd > 0 ? 'long' : config.totalPnLUsd < 0 ? 'short' : 'neutral'} />
-        <Stat label="Win Rate" value={`${(winRate * 100).toFixed(0)}%`}
-          sub={`${config.totalWins}W / ${config.totalLosses}L`} />
-        <Stat label="Открытых" value={openCount.toString()}
-          sub={openCount > 0 ? `маржа $${activeMarginUsd.toFixed(2)} · Max DD ${config.maxDrawdownPct.toFixed(1)}%` : `Max DD ${config.maxDrawdownPct.toFixed(1)}%`} />
-      </div>
+      {/* Top stats. LIVE uses Binance margin balance (wallet + unrealized) as
+          the canonical "equity" so доходность compares like-for-like with the
+          baseline snapshot (which was a walletBalance at first enable). Paper
+          variants keep using config.currentDepositUsd as before. */}
+      {(() => {
+        const liveMarginBalance = isLive ? (liveStatus?.marginBalanceUsdt ?? config.currentDepositUsd) : null
+        const liveAvailable = isLive ? (liveStatus?.balanceUsdt ?? config.currentDepositUsd) : null
+        const liveUnrealized = isLive ? (liveStatus?.unrealizedPnlUsdt ?? 0) : null
+        const liveTotalPnlPct = isLive ? (liveStatus?.totalPnlPct ?? 0) : null
+        const liveTotalPnlUsd = isLive ? (liveStatus?.totalPnlUsd ?? 0) : null
+
+        const depoValue = isLive ? (liveMarginBalance ?? 0) : config.currentDepositUsd
+        const depoSub = isLive
+          ? `available $${(liveAvailable ?? 0).toFixed(2)} · baseline $${config.startingDepositUsd.toFixed(2)}`
+          : `из $${config.startingDepositUsd}`
+        const depoTone: 'long' | 'short' = (isLive ? depoValue >= config.startingDepositUsd : config.currentDepositUsd >= config.startingDepositUsd) ? 'long' : 'short'
+
+        const equityValue = isLive ? (liveMarginBalance ?? 0) : equityWithOpen
+        const equityUnrealized = isLive ? (liveUnrealized ?? 0) : unrealizedPnlUsd
+        const returnValue = isLive ? (liveTotalPnlPct ?? 0) : returnPct
+        const pnlValue = isLive ? (liveTotalPnlUsd ?? 0) : config.totalPnLUsd
+
+        return (
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
+            <Stat label="Депозит" value={`$${depoValue.toFixed(2)}`}
+              sub={depoSub} tone={depoTone} />
+            <Stat label="Депо с открытыми" value={`$${equityValue.toFixed(2)}`}
+              sub={openCount > 0
+                ? `${equityUnrealized >= 0 ? '+' : ''}$${equityUnrealized.toFixed(2)} unrealized`
+                : 'нет открытых'}
+              tone={equityValue >= config.startingDepositUsd ? 'long' : 'short'} />
+            <Stat label="Доходность" value={`${returnValue >= 0 ? '+' : ''}${returnValue.toFixed(1)}%`}
+              tone={returnValue > 0 ? 'long' : returnValue < 0 ? 'short' : 'neutral'} />
+            <Stat label="Total P&L" value={fmtUsd(pnlValue)}
+              tone={pnlValue > 0 ? 'long' : pnlValue < 0 ? 'short' : 'neutral'} />
+            <Stat label="Win Rate" value={`${(winRate * 100).toFixed(0)}%`}
+              sub={`${config.totalWins}W / ${config.totalLosses}L`} />
+            <Stat label="Открытых" value={openCount.toString()}
+              sub={openCount > 0 ? `маржа $${activeMarginUsd.toFixed(2)} · Max DD ${config.maxDrawdownPct.toFixed(1)}%` : `Max DD ${config.maxDrawdownPct.toFixed(1)}%`} />
+          </div>
+        )
+      })()}
 
       {/* LIVE-only: Binance connectivity + kill switch panel. */}
       {isLive && (
