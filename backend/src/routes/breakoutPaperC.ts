@@ -9,6 +9,6 @@
 //   - C:   PENDING_LIMIT при появлении сигнала, FILLED только когда цена касается
 //          rangeEdge (maker fee, без slip). См. dailyBreakoutLimitTrader.ts.
 
-import { buildBreakoutPaperRouter } from './breakoutPaperRouterFactory'
+import { buildBreakoutPaperRouter } from './breakoutPaper/index'
 
 export default buildBreakoutPaperRouter('C')

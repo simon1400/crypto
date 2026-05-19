@@ -3,6 +3,6 @@
 // but routes all reads/writes to BreakoutPaperConfigB / BreakoutPaperTradeB.
 // Variant B never mutates the shared BreakoutSignal table.
 
-import { buildBreakoutPaperRouter } from './breakoutPaperRouterFactory'
+import { buildBreakoutPaperRouter } from './breakoutPaper/index'
 
 export default buildBreakoutPaperRouter('B')

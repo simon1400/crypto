@@ -21,7 +21,7 @@ import {
   getBinanceClient, getBinanceCreds, BinanceApiError,
 } from '../services/exchanges/binanceFutures'
 import { refreshLiveBalance } from './_liveBalanceShared'
-import { buildSharedReadHandlers } from './breakoutPaperRouterFactory'
+import { buildSharedReadHandlers } from './breakoutPaper/index'
 import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot } from '../services/dailyBreakoutLiveTraderC'
 
 // Re-export so existing import paths (`from './breakoutLiveC'`) keep working.
