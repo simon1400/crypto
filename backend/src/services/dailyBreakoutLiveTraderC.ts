@@ -1474,15 +1474,17 @@ async function handleUserDataEvent(ev: any): Promise<void> {
 }
 
 /**
- * Route an ORDER_TRADE_UPDATE event to the right handler. Categories:
- *   1. Safety-net SL child (clientOrderId='slL{tradeId}') — exchange STOP_MARKET fired
- *   2. Everything else — our MARKET fills (entries via tryFillVirtualLimit,
- *      exits via exitLiveTradeSlice). DB is updated optimistically by the
- *      caller, nothing to do here.
+ * Route an ORDER_TRADE_UPDATE event to the right handler. clientOrderId prefix
+ * convention:
+ *   - 'enL{tradeId}'           → entry MARKET fill (tryFillVirtualLimit)
+ *   - 'exL{tradeId}_{REASON}'  → exit MARKET fill (exitLiveTradeSlice)
+ *   - 'slL{tradeId}'           → safety-net STOP_MARKET fired (exchange-driven SL)
  *
- * Entry limits no longer exist as exchange orders (since virtual-limit
- * refactor 2026-05-19) — 'cL{...}' clientOrderIds are now markers in DB only
- * and never appear in WS events.
+ * The synchronous /fapi/v1/order response for MARKET orders returns
+ * avgPrice="0.00000" because the matching engine fill is indexed asynchronously.
+ * We therefore record the row optimistically with the aggTrade tick price as
+ * a placeholder, and overwrite with exact avgPrice + commission once
+ * ORDER_TRADE_UPDATE X=FILLED arrives.
  */
 async function handleOrderUpdate(ev: OrderTradeUpdateEvent): Promise<void> {
   const o = ev.o
@@ -1501,7 +1503,140 @@ async function handleOrderUpdate(ev: OrderTradeUpdateEvent): Promise<void> {
     return
   }
 
-  // All other fills are recorded optimistically by the call site.
+  // Entry MARKET fill — refine entryPrice + fee on the row.
+  if (cid && cid.startsWith('enL')) {
+    const tradeId = parseInt(cid.slice(3), 10)
+    if (!Number.isFinite(tradeId)) return
+    await handleEntryFillUpdate(tradeId, ev)
+    return
+  }
+
+  // Exit MARKET fill (TP1/TP2/TP3/SL via virtual tracker) — refine the matching
+  // closes[] entry on the row with exact fill price + commission + realized PnL.
+  if (cid && cid.startsWith('exL')) {
+    // Parse 'exL{tradeId}_{REASON}'.
+    const rest = cid.slice(3)
+    const underscoreAt = rest.indexOf('_')
+    if (underscoreAt < 1) return
+    const tradeId = parseInt(rest.slice(0, underscoreAt), 10)
+    const reason = rest.slice(underscoreAt + 1) as 'SL' | 'TP1' | 'TP2' | 'TP3'
+    if (!Number.isFinite(tradeId) || !['SL', 'TP1', 'TP2', 'TP3'].includes(reason)) return
+    await handleExitFillUpdate(tradeId, reason, ev)
+    return
+  }
+
+  // Unknown cid — likely a manual order from another script. Ignore.
+}
+
+/**
+ * Refine the trade row from the entry MARKET fill event. Binance delivers
+ * exact avgPrice (`ap`) and commission (`n`) here. Updates entryPrice,
+ * positionUnits, positionSizeUsd, marginUsd, feesPaidUsd to reality. SL/TP
+ * geometry stays anchored on rangeEdge — they don't shift with fill price.
+ *
+ * Idempotent: filters by X==='FILLED' and runs the update inside a status
+ * guard so duplicate WS events (reconnect replays) don't double-charge fees.
+ */
+async function handleEntryFillUpdate(tradeId: number, ev: OrderTradeUpdateEvent): Promise<void> {
+  const o = ev.o
+  if (o.X !== 'FILLED') return  // PARTIALLY_FILLED ignored — wait for final FILLED
+
+  const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!trade) return
+  if (trade.status !== 'OPEN') return  // not in entry-fill window
+  // Idempotency: binanceOrderId is null after the optimistic write and set
+  // here. If it's already populated, this event is a replay.
+  if (trade.binanceOrderId != null) return
+
+  const exactPrice = Number(o.ap) || Number(o.L) || trade.entryPrice
+  const exactQty = Number(o.z) || trade.positionUnits
+  const exactFee = Number(o.n) || 0  // commission in USDT (N field gives asset)
+  const exchangeOrderId = BigInt(o.i)
+
+  // Compute the fee delta vs the optimistic estimate we already wrote. The
+  // estimate ran with feeTakerPct% of (placeholder fillPrice × qty); now we
+  // know the real number from Binance. Net effect on netPnlUsd is delta.
+  const optimisticFee = trade.positionUnits * trade.entryPrice * ((trade.feeTakerPct ?? 0.04) / 100)
+  const feeDelta = exactFee - optimisticFee
+
+  await prisma.breakoutLiveTradeC.update({
+    where: { id: tradeId },
+    data: {
+      entryPrice: exactPrice,
+      positionUnits: exactQty,
+      positionSizeUsd: exactPrice * exactQty,
+      marginUsd: trade.leverage ? (exactPrice * exactQty) / trade.leverage : trade.marginUsd,
+      feesPaidUsd: { increment: feeDelta },
+      netPnlUsd: { decrement: feeDelta },
+      binanceOrderId: exchangeOrderId,
+    },
+  })
+
+  console.log(`${LOG} ↻ entry refined #${tradeId} ${trade.symbol} entry ${trade.entryPrice} → ${exactPrice}, fee ${optimisticFee.toFixed(4)} → ${exactFee.toFixed(4)}`)
+}
+
+/**
+ * Refine the matching closes[] entry from the exit MARKET fill event. We
+ * overwrite the placeholder (triggerPrice, estimated taker fee) with exact
+ * avgPrice + commission + realized PnL from Binance.
+ *
+ * The 'rp' field on ORDER_TRADE_UPDATE.o carries realizedProfit for this fill.
+ * That's the authoritative figure — entry slippage and exit slippage both
+ * fold into it, no need to recompute.
+ */
+async function handleExitFillUpdate(
+  tradeId: number,
+  reason: 'SL' | 'TP1' | 'TP2' | 'TP3',
+  ev: OrderTradeUpdateEvent,
+): Promise<void> {
+  const o = ev.o
+  if (o.X !== 'FILLED') return
+
+  const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!trade) return
+
+  const exactFillPrice = Number(o.ap) || Number(o.L) || 0
+  const exactFee = Number(o.n) || 0
+  const exactRealizedPnl = Number(o.rp) || 0  // realizedProfit
+  const exchangeOrderId = String(o.i)
+
+  if (exactFillPrice <= 0) return  // can't refine without a price
+
+  // Locate the matching closes[] entry — last one with this reason. Each
+  // (tradeId, reason) pair only fires once, so there should be exactly one.
+  const closes = ((trade.closes as any[]) ?? []).slice()
+  const idx = closes.map((c, i) => ({ c, i })).reverse().find((x) => x.c?.reason === reason)?.i
+  if (idx === undefined) return
+
+  const prev = closes[idx]
+  // Idempotency: each Binance orderId fires this once. If we already refined
+  // from this exact event, skip (Binance may replay on reconnect).
+  if ((prev as any).binanceOrderId === exchangeOrderId) return
+
+  const prevFee = (prev as any).feePaidUsd ?? 0
+  const prevNetPnl = prev.pnlUsd ?? 0
+  const pnlDelta = exactRealizedPnl - prevNetPnl
+  const feeDelta = exactFee - prevFee
+
+  closes[idx] = {
+    ...prev,
+    price: exactFillPrice,
+    pnlUsd: exactRealizedPnl,
+    feePaidUsd: exactFee,
+    binanceOrderId: exchangeOrderId,
+  }
+
+  await prisma.breakoutLiveTradeC.update({
+    where: { id: tradeId },
+    data: {
+      closes: closes as any,
+      realizedPnlUsd: { increment: pnlDelta },
+      netPnlUsd: { increment: pnlDelta - feeDelta },
+      feesPaidUsd: { increment: feeDelta },
+    },
+  })
+
+  console.log(`${LOG} ↻ exit refined #${tradeId} ${trade.symbol} ${reason} @ ${exactFillPrice} realizedPnl=${exactRealizedPnl.toFixed(4)} fee=${exactFee.toFixed(4)} (delta pnl ${pnlDelta.toFixed(4)} fee ${feeDelta.toFixed(4)})`)
 }
 
 /**
@@ -1649,6 +1784,10 @@ async function exitLiveTradeSlice(
   if (reason === 'SL') {
     await cancelSlOnExchange(fresh).catch(() => { /* best-effort */ })
   }
+  // Tagged clientOrderId — when ORDER_TRADE_UPDATE arrives for this MARKET,
+  // handleExitFillUpdate uses the cid to find the trade row + reason and
+  // overwrite the closes[] entry with exact avgPrice + commission.
+  const exitCid = `exL${fresh.id}_${reason}`
   try {
     const resp = await state.client.placeOrder({
       symbol: trade.symbol,
@@ -1656,13 +1795,14 @@ async function exitLiveTradeSlice(
       type: 'MARKET',
       quantity: qty,
       reduceOnly: true,
+      newClientOrderId: exitCid,
     })
-    // Binance MARKET reply may include avgPrice; if not, fall back to trigger.
-    if (resp.avgPrice && Number(resp.avgPrice) > 0) {
-      actualFillPrice = Number(resp.avgPrice)
+    // executedQty is reliable from sync response; avgPrice is not (Binance
+    // returns "0.00000" before the matching engine indexes the fill). We use
+    // triggerPrice as the placeholder and let the WS event correct it.
+    if (resp.executedQty && Number(resp.executedQty) > 0) {
+      // not used directly here, but kept for symmetry; qty already known
     }
-    // ORDER_TRADE_UPDATE will deliver realized pnl + commission via WS — for
-    // now record from trigger as best estimate.
   } catch (e: any) {
     if (e instanceof BinanceApiError && e.code === -2022) {
       // -2022 'ReduceOnly Order is rejected' — position already closed by us
@@ -2266,25 +2406,29 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
       console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} setLeverage(${newLev}) failed: ${e.message}`)
     }
 
+    // Approximate fill — aggTrade tick price as the best initial guess. The
+    // real avgPrice + commission arrives via ORDER_TRADE_UPDATE WS event for
+    // this MARKET order, which handleEntryFillUpdate routes back into the row.
+    // Binance's synchronous placeOrder response for MARKET returns avgPrice="0"
+    // (the matching-engine fill hasn't been indexed yet), so we can't trust it.
     let fillPrice = price
     let fillQty = qtyPlanned
     let feePaid = 0
+    const entryCid = `enL${trade.id}`
     try {
       const resp = await state.client.placeOrder({
         symbol: trade.symbol,
         side: trade.side,
         type: 'MARKET',
         quantity: qtyPlanned,
+        newClientOrderId: entryCid,
         // No reduceOnly — this is the entry, opening a new position.
       })
-      // MARKET response may include avgPrice once the matching engine processed it.
-      if (resp.avgPrice && Number(resp.avgPrice) > 0) {
-        fillPrice = Number(resp.avgPrice)
-      }
+      // executedQty IS available immediately if MARKET filled — use it.
       if (resp.executedQty && Number(resp.executedQty) > 0) {
         fillQty = Number(resp.executedQty)
       }
-      // Estimate taker fee (precise number arrives via ORDER_TRADE_UPDATE).
+      // Best-effort fee estimate; replaced by exact value when WS event arrives.
       feePaid = fillQty * fillPrice * (cfg.feeTakerPct ?? 0.04) / 100
     } catch (e: any) {
       // Placement rejected — release the FILLING claim so the next tick can
