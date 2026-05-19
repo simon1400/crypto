@@ -1001,6 +1001,18 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         const returnValue = isLive ? (liveTotalPnlPct ?? 0) : returnPct
         const pnlValue = isLive ? (liveTotalPnlUsd ?? 0) : config.totalPnLUsd
 
+        // LIVE: pnlValue = walletBalance − baseline (фактическая дельта кошелька
+        // с биржи). Это включает entry-комиссии висящих открытых лимиток и
+        // funding. config.totalPnLUsd = сумма закрытых сделок (recompute после
+        // close). Разница между ними = "прочее" — комиссии открытых + funding.
+        // Показываем расклад в подписи, чтобы число −$75 при одной −$54 сделке
+        // не вызывало вопросов.
+        const closedSum = isLive ? config.totalPnLUsd : null
+        const otherSum = isLive ? (pnlValue - (closedSum ?? 0)) : 0
+        const pnlSub = isLive
+          ? `закрытые ${fmtUsd(closedSum ?? 0)} · прочее ${fmtUsd(otherSum)}`
+          : undefined
+
         return (
           <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
             <Stat label="Депозит" value={`$${depoValue.toFixed(2)}`}
@@ -1013,6 +1025,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
             <Stat label="Доходность" value={`${returnValue >= 0 ? '+' : ''}${returnValue.toFixed(1)}%`}
               tone={returnValue > 0 ? 'long' : returnValue < 0 ? 'short' : 'neutral'} />
             <Stat label="Total P&L" value={fmtUsd(pnlValue)}
+              sub={pnlSub}
               tone={pnlValue > 0 ? 'long' : pnlValue < 0 ? 'short' : 'neutral'} />
             <Stat label="Win Rate" value={`${(winRate * 100).toFixed(0)}%`}
               sub={`${config.totalWins}W / ${config.totalLosses}L`} />
