@@ -221,23 +221,14 @@ export async function startBreakoutLiveTraderC(): Promise<void> {
     })
     marketDataWs.start()
 
-    // Placement tick — every 30s. Cadence chosen to catch the brief windows when
-    // the book drifts back from rangeEdge. Narrow ranges (0.4-2%) only stay
-    // book-non-marketable for seconds; the previous 5min cycle missed ~99.8% of
-    // those windows (audit 2026-05-18: 1 PLACED / ~500 attempts). Paper C runs
-    // 60s but doesn't fight a real order book, so live needs to be tighter.
-    //
-    // Re-entrancy guarded by `cycleBusy` (line ~274) — overlapping ticks no-op.
-    //
-    // Rate-limit headroom at 30s × 23 symbols:
-    //   - getMarkPrice: ~23 * 2/min = 46 weight/min (limit: 2400 weight/min)
-    //   - placeOrder (SIGNED): worst case ~46 * 2 = ~92/min when many ranges
-    //     have viable non-marketable windows; in practice most cycles hit the
-    //     existing markPrice gate before reaching placeOrder. Binance signed
-    //     limit is 1200/min — well within budget.
+    // Placement tick — every 60s, mirrors paper C cadence. Virtual limits live
+    // only in DB; no exchange order is placed until aggTrade WS observes price
+    // cross the rangeEdge. So cycle frequency only affects how soon a brand-new
+    // 3h range gets pair-PENDING rows in DB after 03:00 UTC — once they're
+    // in DB, aggTrade ticks (50-500/sec on hot symbols) drive fills directly.
     const tickTimer = setInterval(() => {
       runLiveCycle().catch((e) => console.error(`${LOG} cycle error:`, e.message))
-    }, 30 * 1000)
+    }, 60 * 1000)
 
     // EOD-FLAT tick — every minute, fires once at 23:55 UTC to flatten any
     // still-open positions. Independent from the 5min cycle so we don't miss
@@ -493,43 +484,28 @@ async function flattenAllOpenC(reason: string): Promise<{ closed: number; failed
 }
 
 /**
- * Cancel any BreakoutLiveTradeC rows still PENDING_LIMIT from before today's
- * UTC midnight — both in DB and on the exchange. Defensive cleanup so the
- * book doesn't accumulate stale limits across restarts/EOD failures.
+ * Cancel virtual PENDING_LIMIT rows from prior UTC days. Since virtual-limit
+ * refactor 2026-05-19 these are DB-only rows with no exchange orders behind
+ * them, so cleanup is a simple updateMany.
  */
 async function cancelOrphanPendingLimits(): Promise<void> {
-  if (!state) return
   const todayStart = new Date()
   todayStart.setUTCHours(0, 0, 0, 0)
 
-  const orphans = await prisma.breakoutLiveTradeC.findMany({
+  const r = await prisma.breakoutLiveTradeC.updateMany({
     where: {
       limitOrderState: 'PENDING_LIMIT',
       limitPlacedAt: { lt: todayStart },
     },
+    data: {
+      limitOrderState: 'CANCELLED_EOD',
+      status: 'EXPIRED',
+      closedAt: new Date(),
+    },
   })
-  if (orphans.length === 0) return
-
-  for (const o of orphans) {
-    try {
-      if (o.binanceClientOrderId) {
-        await state.client.cancelOrder(o.symbol, { origClientOrderId: o.binanceClientOrderId })
-      }
-    } catch (e: any) {
-      if (!(e instanceof BinanceApiError) || (e.code !== -2011 && e.code !== -2013)) {
-        console.warn(`${LOG} orphan cancel ${o.symbol} failed: ${e.message}`)
-      }
-    }
-    await prisma.breakoutLiveTradeC.update({
-      where: { id: o.id },
-      data: {
-        limitOrderState: 'CANCELLED_EOD',
-        status: 'EXPIRED',
-        closedAt: new Date(),
-      },
-    })
+  if (r.count > 0) {
+    console.log(`${LOG} cancelled ${r.count} orphan virtual PENDING_LIMIT from prior days`)
   }
-  console.log(`${LOG} cancelled ${orphans.length} orphan PENDING_LIMIT from prior days`)
 }
 
 // Exposed for the kill-switch route (POST /api/breakout-live-c/kill-switch).
@@ -626,7 +602,6 @@ interface ReconcileReport {
   details: {
     untrackedPositions: Array<{ symbol: string; amt: number }>
     untrackedOrders: Array<{ symbol: string; orderId: number; cid: string; type: string }>
-    missingOrdersForDbPending: number
     missingPositionsForDbOpen: number
   }
 }
@@ -634,18 +609,17 @@ interface ReconcileReport {
 /**
  * Compare DB BreakoutLiveTradeC rows against the exchange. Used at startup to
  * detect drift caused by:
- *   - Process down while orders filled/expired (orders don't match DB state)
+ *   - Process down while positions closed (DB still says OPEN)
  *   - Manual trading on the same account (positions/orders we never placed)
- *   - Successful EOD flatten right before restart (positions gone, DB rows
- *     not yet marked CLOSED in some edge cases)
+ *   - Pre-virtual-limit refactor leftover orders ('cL' LIMITs still on book)
  *
  * Policy:
- *   - Our PENDING_LIMIT with no matching exchange order → fetch via getOrder()
- *     to learn the final state, update DB accordingly.
- *   - Our OPEN with no matching exchange position → mark CLOSED (filled by
+ *   - Migration: cancel any pre-existing 'cL' LIMIT exchange orders + mark their
+ *     DB rows CANCELLED so the new virtual cycle places fresh pairs.
+ *   - DB OPEN with no matching exchange position → mark CLOSED (filled by
  *     SL/TP while we were down); exact P&L will be reconciled later.
- *   - Exchange position/order without matching DB row → flag as untracked,
- *     caller decides what to do.
+ *   - Exchange position without matching DB row → flag as untracked, caller
+ *     decides what to do (typically: kill switch + manual review).
  */
 async function reconcileWithExchange(client: BinanceFuturesClient): Promise<ReconcileReport> {
   const report: ReconcileReport = {
@@ -655,7 +629,6 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
     details: {
       untrackedPositions: [],
       untrackedOrders: [],
-      missingOrdersForDbPending: 0,
       missingPositionsForDbOpen: 0,
     },
   }
@@ -673,74 +646,53 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
   }
 
   // --- DB side ---
-  const dbPending = await prisma.breakoutLiveTradeC.findMany({
-    where: { limitOrderState: 'PENDING_LIMIT' },
-  })
   const dbOpen = await prisma.breakoutLiveTradeC.findMany({
     where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
   })
 
-  // Index exchange data for fast lookup.
-  const orderIdsOnExchange = new Set<number>()
-  const cidsOnExchange = new Set<string>()
-  for (const o of openOrders) {
-    orderIdsOnExchange.add(o.orderId)
-    if (o.clientOrderId) cidsOnExchange.add(o.clientOrderId)
-  }
   const positionsBySymbol = new Map<string, number>()
   for (const p of positions) {
     positionsBySymbol.set(p.symbol, Number(p.positionAmt))
   }
 
-  // --- DB PENDING_LIMIT vs exchange openOrders ---
-  // Our DB says PENDING. If exchange has no matching openOrder, find out what
-  // happened via getOrder() (FILLED, CANCELED, EXPIRED).
-  for (const t of dbPending) {
-    if (!t.binanceClientOrderId || !t.binanceOrderId) continue
-    if (orderIdsOnExchange.has(Number(t.binanceOrderId))) continue  // still pending — fine
-
-    report.details.missingOrdersForDbPending++
+  // --- Migration cleanup: cancel any leftover 'cL' LIMIT entry orders on the
+  // exchange (from the pre-virtual-limit version) and finalize their DB rows.
+  // Virtual-limit refactor 2026-05-19: entries no longer publish to the book.
+  // Any 'cL' order found on the exchange is a relic of the prior code path —
+  // safe to cancel without checking DB state because we don't open new ones.
+  let migrationCancelled = 0
+  for (const o of openOrders) {
+    if (!o.clientOrderId?.startsWith('cL')) continue
+    if (o.type !== 'LIMIT') continue  // safety check; cL* is only used for LIMIT entries
     try {
-      const o = await client.getOrder(t.symbol, { orderId: Number(t.binanceOrderId) })
-      if (o.status === 'FILLED') {
-        // Late fill — we missed the WS event. Synthesize one so the fill
-        // handler runs (places SL/TPs, cancels pair). Note: WS would normally
-        // deliver this; for safety we mark FILLED via direct DB update.
-        const fillPrice = Number(o.avgPrice) || t.entryPrice
-        await prisma.breakoutLiveTradeC.update({
-          where: { id: t.id },
-          data: {
-            status: 'OPEN',
-            limitOrderState: 'FILLED',
-            limitFilledAt: new Date(),
-            entryPrice: fillPrice,
-            positionUnits: Number(o.executedQty) || t.positionUnits,
-            positionSizeUsd: fillPrice * (Number(o.executedQty) || t.positionUnits),
-          },
-        })
-        // Pair cancel: best-effort (if pair filled too, we'll catch on next loop).
-        if (t.pairOrderId) await cancelPairOrder(t.pairOrderId).catch(() => { /* noop */ })
-        // Virtual tracker handles the exit once aggTrade resubs include the
-        // symbol; safety-net SL gets attached too (hybrid model).
-        await refreshAggTradeSubscriptions().catch(() => { /* noop */ })
-        await attachSlAfterEntry(t.id).catch(() => { /* noop */ })
-        console.log(`${LOG} reconcile: #${t.id} ${t.symbol} late FILL detected, recovered`)
-      } else if (o.status === 'CANCELED' || o.status === 'EXPIRED') {
-        await prisma.breakoutLiveTradeC.update({
-          where: { id: t.id },
-          data: {
-            limitOrderState: o.status === 'EXPIRED' ? 'CANCELLED_EOD' : 'CANCELLED_OTHER_SIDE',
-            status: 'CANCELLED',
-            closedAt: new Date(),
-          },
-        })
-        console.log(`${LOG} reconcile: #${t.id} ${t.symbol} ${o.status} — finalized`)
-      }
-      // else: NEW/PARTIALLY_FILLED — orderIdsOnExchange should've caught it,
-      // weird race; leave alone for next cycle to retry.
+      await client.cancelOrder(o.symbol, { orderId: o.orderId })
+      migrationCancelled++
     } catch (e: any) {
-      console.warn(`${LOG} reconcile: getOrder for #${t.id} ${t.symbol} failed: ${e.message}`)
+      if (!(e instanceof BinanceApiError) || (e.code !== -2011 && e.code !== -2013)) {
+        console.warn(`${LOG} migration cancel ${o.symbol} cid=${o.clientOrderId} failed: ${e.message}`)
+      }
     }
+  }
+  if (migrationCancelled > 0) {
+    console.log(`${LOG} migration: cancelled ${migrationCancelled} leftover exchange LIMIT order(s) from pre-virtual era`)
+  }
+
+  // Finalize any DB PENDING_LIMIT row that has binanceOrderId set (i.e. was
+  // placed on the exchange under the old model). Mark them CANCELLED so the
+  // new virtual cycle places a fresh pair on its next tick.
+  const oldPlaced = await prisma.breakoutLiveTradeC.updateMany({
+    where: {
+      limitOrderState: 'PENDING_LIMIT',
+      binanceOrderId: { not: null },
+    },
+    data: {
+      limitOrderState: 'CANCELLED_OTHER_SIDE',
+      status: 'CANCELLED',
+      closedAt: new Date(),
+    },
+  })
+  if (oldPlaced.count > 0) {
+    console.log(`${LOG} migration: marked ${oldPlaced.count} stale exchange-backed PENDING rows as CANCELLED`)
   }
 
   // --- DB OPEN vs exchange positions ---
@@ -748,15 +700,6 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
   // SL or TP fully closed it while we were down.
   // Also: if position is still there, make sure the safety-net SL exists on
   // the exchange — bot restart shouldn't leave positions exposed.
-  const slAlgoIdsOnExchange = new Set<number>()
-  for (const o of openOrders) {
-    if (o.clientOrderId?.startsWith('slL') && o.type === 'STOP_MARKET') {
-      // openOrders includes triggered/transformed algo orders by orderId, but
-      // pre-trigger algos live on the algo endpoint. We approximate by trusting
-      // binanceSlOrderId in DB and only re-place when DB says null.
-      slAlgoIdsOnExchange.add(o.orderId)
-    }
-  }
   for (const t of dbOpen) {
     const exchangeAmt = positionsBySymbol.get(t.symbol)
     if (exchangeAmt && exchangeAmt !== 0) {
@@ -801,32 +744,18 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
     report.hasUntrackedPositions = true
   }
 
-  // --- Exchange orders without DB row ---
-  // Our orders use cID prefix 'cL'. Anything else is foreign (manual, other
-  // bot, leftover from test placement, etc.).
-  const dbCidsKnown = new Set<string>()
-  for (const t of [...dbPending, ...dbOpen]) {
-    if (t.binanceClientOrderId) dbCidsKnown.add(t.binanceClientOrderId)
-  }
-  for (const o of openOrders) {
-    if (!o.clientOrderId?.startsWith('cL')) continue  // not ours by cID convention
-    if (dbCidsKnown.has(o.clientOrderId)) continue
-    report.details.untrackedOrders.push({
-      symbol: o.symbol, orderId: o.orderId, cid: o.clientOrderId, type: o.type,
-    })
-    report.hasUntrackedOrders = true
-  }
+  // (Exchange-orders-without-DB-row check removed 2026-05-19 — entry orders
+  // are no longer placed on the exchange. The migration block above already
+  // cancels any pre-existing 'cL' relics. Algo SL orders are tracked via
+  // attachSlAfterEntry / cancelSlOnExchange which are id-based.)
 
   // Build human-readable summary for the kill-switch reason.
   const parts: string[] = []
   if (report.details.untrackedPositions.length > 0) {
     parts.push(`${report.details.untrackedPositions.length} untracked position(s): ${report.details.untrackedPositions.map((p) => `${p.symbol}=${p.amt}`).join(', ')}`)
   }
-  if (report.details.untrackedOrders.length > 0) {
-    parts.push(`${report.details.untrackedOrders.length} untracked order(s)`)
-  }
-  if (report.details.missingOrdersForDbPending > 0) {
-    parts.push(`${report.details.missingOrdersForDbPending} PENDING resolved from exchange`)
+  if (migrationCancelled > 0 || oldPlaced.count > 0) {
+    parts.push(`migration: cancelled ${migrationCancelled} exchange order(s), ${oldPlaced.count} stale DB PENDING`)
   }
   if (report.details.missingPositionsForDbOpen > 0) {
     parts.push(`${report.details.missingPositionsForDbOpen} OPEN reconciled to closed`)
@@ -1167,76 +1096,51 @@ async function placeLimitsForRanges(
         continue
       }
 
-      // Live price from Binance markPrice (exchange-aligned). We need it to
-      // decide whether each side of the pair would post non-marketable.
-      //
-      // Breakout entries are placed AT rangeEdge with cross direction:
-      //   BUY @ rangeHigh: waits for an upward break. Must post BELOW current
-      //     price (price < rangeHigh) or it's marketable and Binance fills it
-      //     instantly at the current ask — exactly what burned us 18.05 evening
-      //     (entries got filled far away from rangeEdge → SL hit on the same
-      //     tick).
-      //   SELL @ rangeLow: waits for a downward break. Must post ABOVE current
-      //     price (price > rangeLow) for the same reason.
-      // If livePrice is unknown we refuse to place — better miss a day than
-      // open a position we can't price-check.
+      // Virtual placement — DB only, no exchange order. We use markPrice purely
+      // to skip the "price already broke out" case (paper wouldn't open either
+      // since paper requires `candle.high >= rangeHigh` AFTER placement to fill).
+      // We do NOT use it for marketable check — there's no exchange order to be
+      // marketable against.
       let livePrice: number | null = null
       try {
         livePrice = await client.getMarkPrice(symbol)
       } catch {
-        console.warn(`${LOG} ${symbol} — markPrice fetch failed, skipping placement (need it for marketable check)`)
-        await recordAttempt({
-          symbol, side: 'BUY', rangeDate: utcDate,
-          status: 'SKIPPED_FILTER',
-          reasonCode: 'markPrice', reasonText: 'markPrice fetch failed',
-          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
-        })
-        continue
-      }
-      if (livePrice == null || !isFinite(livePrice) || livePrice <= 0) continue
-
-      // Small buffer: if price is within 1 tick (or 0.05% — whichever larger)
-      // of the level, skip too. Even if technically non-marketable, the next
-      // micro-move would cross it before our LIMIT registers in the book and
-      // we'd end up with a marketable taker fill. Mirrors the spirit of
-      // paper C's "wait until price actually crosses the level" model.
-      const safetyAbs = Math.max(f.tickSize, livePrice * 0.0005)
-      const canPlaceBuy = livePrice < range.rangeHigh - safetyAbs
-      const canPlaceSell = livePrice > range.rangeLow + safetyAbs
-
-      // Record any side the gate refused. Both directions get their own audit
-      // row so the UI can show 'BUY skipped marketable / SELL placed' pairs.
-      if (!canPlaceBuy) {
-        await recordAttempt({
-          symbol, side: 'BUY', rangeDate: utcDate,
-          status: 'SKIPPED_GATE',
-          reasonCode: 'marketable',
-          reasonText: `markPrice ${livePrice} >= rangeHigh ${range.rangeHigh} − buffer (would be marketable)`,
-          limitPrice: range.rangeHigh,
-          markPrice: livePrice,
-          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
-        })
-      }
-      if (!canPlaceSell) {
-        await recordAttempt({
-          symbol, side: 'SELL', rangeDate: utcDate,
-          status: 'SKIPPED_GATE',
-          reasonCode: 'marketable',
-          reasonText: `markPrice ${livePrice} <= rangeLow ${range.rangeLow} + buffer (would be marketable)`,
-          limitPrice: range.rangeLow,
-          markPrice: livePrice,
-          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
-        })
+        // markPrice unavailable — proceed anyway. Virtual placement doesn't
+        // need price; the only risk is opening past a level that already broke
+        // out far. Acceptable on the margin.
       }
 
-      if (!canPlaceBuy && !canPlaceSell) {
-        // Either price already broke out (no point chasing) or sits squarely
-        // inside the range tight to one edge — paper C wouldn't open either.
-        continue
+      // Hopeless-chase skip: if price is more than 1× rangeSize past either
+      // edge, this signal is already burnt — paper wouldn't open either since
+      // the breakout candle has already closed beyond the level.
+      if (livePrice != null && isFinite(livePrice) && livePrice > 0) {
+        if (livePrice > range.rangeHigh + range.rangeSize) {
+          await recordAttempt({
+            symbol, side: 'BUY', rangeDate: utcDate,
+            status: 'SKIPPED_GATE',
+            reasonCode: 'farBreakout',
+            reasonText: `price ${livePrice} > rangeHigh ${range.rangeHigh} + rangeSize ${range.rangeSize} — already broke out`,
+            limitPrice: range.rangeHigh, markPrice: livePrice,
+            rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+          })
+          continue
+        }
+        if (livePrice < range.rangeLow - range.rangeSize) {
+          await recordAttempt({
+            symbol, side: 'SELL', rangeDate: utcDate,
+            status: 'SKIPPED_GATE',
+            reasonCode: 'farBreakout',
+            reasonText: `price ${livePrice} < rangeLow ${range.rangeLow} - rangeSize ${range.rangeSize} — already broke out`,
+            limitPrice: range.rangeLow, markPrice: livePrice,
+            rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+          })
+          continue
+        }
       }
 
-      // Ensure leverage + margin type per symbol. Idempotent: setMarginType
-      // swallows -4046 (already isolated), setLeverage just returns ok if same.
+      // Set leverage + isolated margin ONCE per symbol per day. Even though
+      // there's no order yet, the eventual MARKET fill will use these settings.
+      // setLeverage / setMarginType are idempotent (swallow -4046 already-set).
       try {
         await client.setMarginType(symbol, 'ISOLATED')
       } catch (e: any) {
@@ -1259,32 +1163,29 @@ async function placeLimitsForRanges(
       const placedRows: any[] = []
       const placedAt = new Date()
 
-      // Place BUY @ rangeHigh
-      if (canPlaceBuy) {
-        const row = await placeOneSide({
-          client, net, cfg, f, symbol, side: 'BUY',
-          entryPrice: range.rangeHigh, stopLoss: range.rangeLow,
-          tpLadder: buyTpLadder, rangeDate: utcDate, placedAt,
-          markPrice: livePrice,
-          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
-        })
-        if (row) placedRows.push(row)
-      }
+      // Place BUY @ rangeHigh (virtual — DB only)
+      const buyRow = await placeOneSide({
+        client, net, cfg, f, symbol, side: 'BUY',
+        entryPrice: range.rangeHigh, stopLoss: range.rangeLow,
+        tpLadder: buyTpLadder, rangeDate: utcDate, placedAt,
+        markPrice: livePrice ?? range.rangeHigh,
+        rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+      })
+      if (buyRow) placedRows.push(buyRow)
 
-      // Place SELL @ rangeLow
-      if (canPlaceSell) {
-        const row = await placeOneSide({
-          client, net, cfg, f, symbol, side: 'SELL',
-          entryPrice: range.rangeLow, stopLoss: range.rangeHigh,
-          tpLadder: sellTpLadder, rangeDate: utcDate, placedAt,
-          markPrice: livePrice,
-          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
-        })
-        if (row) placedRows.push(row)
-      }
+      // Place SELL @ rangeLow (virtual — DB only)
+      const sellRow = await placeOneSide({
+        client, net, cfg, f, symbol, side: 'SELL',
+        entryPrice: range.rangeLow, stopLoss: range.rangeHigh,
+        tpLadder: sellTpLadder, rangeDate: utcDate, placedAt,
+        markPrice: livePrice ?? range.rangeLow,
+        rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+      })
+      if (sellRow) placedRows.push(sellRow)
 
-      // Link the pair so cancel cascade on fill works (one fill triggers cancel
-      // of the other via REST DELETE).
+      // Link the pair so cancel cascade on fill works (one fill marks the
+      // other CANCELLED_OTHER_SIDE in DB — no exchange call needed since the
+      // pair is virtual).
       if (placedRows.length === 2) {
         await prisma.breakoutLiveTradeC.update({
           where: { id: placedRows[0].id }, data: { pairOrderId: placedRows[1].id },
@@ -1297,7 +1198,7 @@ async function placeLimitsForRanges(
       if (placedRows.length > 0) {
         const sides = placedRows.map(r => `${r.side}@${r.limitOrderPrice}`).join(', ')
         const adjusted = filters.get(symbol)?.quantityPrecision
-        console.log(`${LOG} ${symbol} placed ${placedRows.length} limit(s) [range ${range.rangeHigh}/${range.rangeLow}, slDist ${slDistPct.toFixed(2)}%, prec ${adjusted}]: ${sides}`)
+        console.log(`${LOG} ${symbol} placed ${placedRows.length} virtual limit(s) [range ${range.rangeHigh}/${range.rangeLow}, slDist ${slDistPct.toFixed(2)}%, prec ${adjusted}]: ${sides}`)
       }
     } catch (e: any) {
       console.warn(`${LOG} ${symbol} placement failed: ${e.message}`)
@@ -1325,14 +1226,17 @@ interface PlaceOneSideArgs {
 }
 
 /**
- * Single-side placement helper. Computes sizing, rounds to tick/step, places
- * the LIMIT order on Binance, and writes a PENDING_LIMIT row with the captured
- * exchange identifiers. Returns the row or null if placement was rejected.
+ * Virtual limit — writes a PENDING_LIMIT row to DB. No order is placed on the
+ * exchange. The order is filled by the aggTrade WS watcher (tryFillVirtualLimit)
+ * which sends MARKET reduceOnly=false when price crosses limitOrderPrice.
+ *
+ * This mirrors paper C 1:1: paper holds limits in DB and "fills" them when the
+ * candle high/low crosses the level. We do the same with WS aggTrade for sub-
+ * second latency. The previous design used GTX post-only on the exchange but
+ * narrow ranges had book spread overlapping rangeEdge → 99%+ -5022 rejection.
  */
 async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
   // Sizing — uses the configured risk/margin knobs and current balance.
-  // Balance has already been refreshed for this cycle (passed into the cfg by
-  // refreshLiveBalance via currentDepositUsd cache).
   const sizing = computeSizing({
     symbol: a.symbol,
     deposit: a.cfg.currentDepositUsd,
@@ -1354,20 +1258,12 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
     return null
   }
 
-  // Free margin guard. Even though computeSizing aims for targetMarginPct of
-  // deposit, that's the IDEAL — when the symbol's maxLeverage caps us below
-  // the ideal lev, marginUsd inflates well past targetMarginPct (e.g. SIREN
-  // with default maxLev=25 needed lev=32 → margin ~11% of depo instead of 5%).
-  // Multiply that across 20 pre-emptive pairs and we lock 200%+ of the
-  // available balance, leaving open positions one tick from liquidation.
-  //
-  // Skip placement when total margin used (existing pending + open) plus this
-  // trade's required margin would exceed availableBalance × safety factor.
+  // Free margin guard. The same rationale as before but now we're reserving
+  // margin against virtual PENDING limits as well as open positions — if both
+  // sides of every pair filled simultaneously (impossible but worst case for
+  // budgeting) we'd still stay within budget.
   const existingMargin = await sumExistingMarginC()
   const required = sizing.marginUsd
-  // 90% of balance reserved for sizing. Leaves 10% buffer for funding fees,
-  // slippage on exits, and the safety margin Binance itself requires for
-  // initial-margin checks (it'll reject -2019 if we get too close to balance).
   const budget = a.cfg.currentDepositUsd * 0.90
   if (existingMargin + required > budget) {
     const msg = `margin used ${existingMargin.toFixed(2)} + new ${required.toFixed(2)} > budget ${budget.toFixed(2)} (depo ${a.cfg.currentDepositUsd.toFixed(2)})`
@@ -1382,31 +1278,20 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
     return null
   }
 
-  // Apply requested leverage. Cap at the exchange's maxLeverage for this
-  // symbol — Binance rejects setLeverage above tier limits, and we'd rather
-  // size down than have the placement fail. setLeverage is idempotent.
   const targetLev = Math.max(1, Math.round(sizing.leverage))
-  try {
-    await a.client.setLeverage(a.symbol, targetLev)
-  } catch (e: any) {
-    console.warn(`${LOG} ${a.symbol} setLeverage(${targetLev}) failed: ${e.message} — placement may use exchange default`)
-  }
 
-  // Round price to tick. For maker BUY we want price <= target (won't cross);
-  // for maker SELL price >= target. Binance LIMIT GTC sits in the book and
-  // pays maker fee on fill.
+  // Round price to tick (limitOrderPrice is the trigger level; we use exactly
+  // rangeHigh/rangeLow, no offsets, no spread compensation — mirrors paper).
   const tick = a.f.tickSize
   const priceRounded = a.side === 'BUY'
     ? Math.floor(a.entryPrice / tick) * tick
     : Math.ceil(a.entryPrice / tick) * tick
 
-  // Round qty DOWN to step (Binance rejects qty above step granularity).
+  // Round qty DOWN to step.
   const step = a.f.stepSize
   let qty = Math.floor(sizing.positionUnits / step) * step
   qty = Number(qty.toFixed(a.f.quantityPrecision))
 
-  // Enforce min notional with $1 margin above the published floor (some testnet
-  // pairs enforce a stricter floor than the filter advertises).
   const notional = qty * priceRounded
   const minNotional = Math.max(a.f.minNotional || 5, 5) + 1
   if (notional < minNotional || qty < a.f.minQty) {
@@ -1424,16 +1309,6 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
 
   const cid = buildEntryCid(a.net, a.rangeDate, a.symbol, a.side)
 
-  // CRITICAL: pre-insert the row with binanceClientOrderId BEFORE calling
-  // placeOrder(). On thin/testnet pairs the LIMIT can fill instantly, and the
-  // ORDER_TRADE_UPDATE WS event will arrive while we're still awaiting
-  // placeOrder().then(). If the row doesn't exist yet, the fill handler can't
-  // match by cID and logs the event as 'untracked' — leaving the position
-  // open on the exchange WITHOUT SL/TP children and with no DB pair-cancel.
-  // The pre-inserted row has placeholder values that get filled in once the
-  // placement response comes back.
-  const expectedQty = qty
-  const expectedPrice = priceRounded
   let row: any
   try {
     row = await prisma.breakoutLiveTradeC.create({
@@ -1441,20 +1316,20 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
         signalId: 0,
         symbol: a.symbol,
         side: a.side,
-        entryPrice: expectedPrice,
+        entryPrice: priceRounded,
         stopLoss: a.stopLoss,
         initialStop: a.stopLoss,
         currentStop: a.stopLoss,
         tpLadder: a.tpLadder as any,
         depositAtEntryUsd: a.cfg.currentDepositUsd,
         riskUsd: sizing.riskUsd,
-        positionSizeUsd: expectedPrice * expectedQty,
-        positionUnits: expectedQty,
+        positionSizeUsd: priceRounded * qty,
+        positionUnits: qty,
         leverage: targetLev,
-        marginUsd: (expectedPrice * expectedQty) / targetLev,
+        marginUsd: (priceRounded * qty) / targetLev,
         status: 'PENDING_LIMIT',
         limitOrderState: 'PENDING_LIMIT',
-        limitOrderPrice: expectedPrice,
+        limitOrderPrice: priceRounded,
         limitPlacedAt: a.placedAt,
         openedAt: a.placedAt,
         feeTakerPct: a.cfg.feeTakerPct,
@@ -1462,82 +1337,21 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
         slipTakerPct: a.cfg.slipTakerPct,
         autoTrailingSL: a.cfg.autoTrailingSL,
         binanceClientOrderId: cid,
-        // binanceOrderId set after placement response.
+        // binanceOrderId stays null — entry is filled via MARKET on aggTrade
+        // crossing, not via a real LIMIT order on the exchange.
       },
     })
   } catch (e: any) {
-    // Duplicate cID in DB (unique constraint) → row from a prior cycle
-    // already exists. Skip silently — placement won't be attempted.
+    // Duplicate cID — row from prior cycle already exists. Skip silently.
     if (e.code === 'P2002') return null
     throw e
   }
-
-  let orderId: number
-  let exchangePrice: number
-  let exchangeQty: number
-  try {
-    const order = await a.client.placeOrder({
-      symbol: a.symbol,
-      side: a.side,
-      type: 'LIMIT',
-      // GTX = post-only. Binance refuses to publish the order if it would
-      // immediately match (returns -5022). Backstop for the marketable-check
-      // in placeLimitsForRanges — if that check ever misses an edge case,
-      // GTX guarantees we never accidentally pay taker on entry.
-      timeInForce: 'GTX',
-      quantity: qty,
-      price: Number(priceRounded.toFixed(a.f.pricePrecision)),
-      newClientOrderId: cid,
-    })
-    orderId = order.orderId
-    exchangePrice = Number(order.price)
-    exchangeQty = Number(order.origQty)
-  } catch (e: any) {
-    // Placement failed — roll back the placeholder row so the cycle can retry
-    // (or be retried on the next placement run) without leaving a ghost
-    // PENDING_LIMIT in DB that never had an order on the exchange.
-    await prisma.breakoutLiveTradeC.delete({ where: { id: row.id } }).catch(() => { /* noop */ })
-    if (e instanceof BinanceApiError && e.code === -2014) {
-      // Duplicate cID — order from a prior tick already exists. Skip silently.
-      return null
-    }
-    console.warn(`${LOG} ${a.symbol} ${a.side} placement REJECTED: ${e.message}`)
-    const code = e instanceof BinanceApiError ? String(e.code) : 'unknown'
-    await recordAttempt({
-      symbol: a.symbol, side: a.side, rangeDate: a.rangeDate,
-      status: 'REJECTED_EXCHANGE',
-      reasonCode: code, reasonText: e.message,
-      limitPrice: priceRounded, markPrice: a.markPrice,
-      rangeHigh: a.rangeHigh, rangeLow: a.rangeLow,
-    })
-    return null
-  }
-
-  // Fill in the exchange-assigned fields. The WS fill handler may have already
-  // moved this row past PENDING_LIMIT by now (in which case we leave its state
-  // alone and just back-fill binanceOrderId for reconciliation).
-  await prisma.breakoutLiveTradeC.update({
-    where: { id: row.id },
-    data: {
-      binanceOrderId: BigInt(orderId),
-      // Only correct entry numbers if WS hasn't filled the row yet. Once
-      // status moves to OPEN/FILLED, the fill handler manages these fields.
-      ...(exchangePrice !== expectedPrice
-        ? { entryPrice: exchangePrice, limitOrderPrice: exchangePrice, positionSizeUsd: exchangePrice * exchangeQty }
-        : {}),
-      ...(exchangeQty !== expectedQty
-        ? { positionUnits: exchangeQty }
-        : {}),
-    },
-  }).catch((e) => {
-    console.warn(`${LOG} ${a.symbol} ${a.side} post-place update failed: ${e.message}`)
-  })
 
   await recordAttempt({
     symbol: a.symbol, side: a.side, rangeDate: a.rangeDate,
     status: 'PLACED',
     reasonCode: null, reasonText: null,
-    limitPrice: exchangePrice, markPrice: a.markPrice,
+    limitPrice: priceRounded, markPrice: a.markPrice,
     rangeHigh: a.rangeHigh, rangeLow: a.rangeLow,
   })
 
@@ -1566,30 +1380,19 @@ async function handleUserDataEvent(ev: any): Promise<void> {
 }
 
 /**
- * Route an ORDER_TRADE_UPDATE event to the right handler based on which trade
- * row owns the order. Three categories:
- *   1. Entry limit (binanceClientOrderId or binanceOrderId match)
- *   2. SL child (binanceSlOrderId match)
- *   3. TP child (binanceTpOrderIds array contains the orderId)
+ * Route an ORDER_TRADE_UPDATE event to the right handler. Categories:
+ *   1. Safety-net SL child (clientOrderId='slL{tradeId}') — exchange STOP_MARKET fired
+ *   2. Everything else — our MARKET fills (entries via tryFillVirtualLimit,
+ *      exits via exitLiveTradeSlice). DB is updated optimistically by the
+ *      caller, nothing to do here.
  *
- * We use clientOrderId where possible (text, deterministic) and fall back to
- * orderId (numeric, exchange-assigned) for children since we don't generate
- * cIDs for SL/TP children — Binance assigns them.
+ * Entry limits no longer exist as exchange orders (since virtual-limit
+ * refactor 2026-05-19) — 'cL{...}' clientOrderIds are now markers in DB only
+ * and never appear in WS events.
  */
 async function handleOrderUpdate(ev: OrderTradeUpdateEvent): Promise<void> {
   const o = ev.o
   const cid = o.c
-
-  // Entry limit — match by clientOrderId (deterministic 'cL...' prefix).
-  if (cid && cid.startsWith('cL')) {
-    const trade = await prisma.breakoutLiveTradeC.findUnique({
-      where: { binanceClientOrderId: cid },
-    })
-    if (trade) {
-      await handleEntryOrderUpdate(trade, ev)
-    }
-    return
-  }
 
   // Safety-net SL — when the exchange STOP_MARKET fires before our virtual
   // tracker, the resulting MARKET fill arrives here with clientOrderId equal
@@ -1604,153 +1407,26 @@ async function handleOrderUpdate(ev: OrderTradeUpdateEvent): Promise<void> {
     return
   }
 
-  // Other MARKET reduceOnly fills (our virtual exits, manual closes) have
-  // exchange-generated cIDs — DB is already updated optimistically by the
-  // caller, nothing to do here.
+  // All other fills are recorded optimistically by the call site.
 }
 
 /**
- * Handle update for the entry LIMIT order. We care primarily about FILLED
- * (mark trade OPEN, cancel pair, place SL+TPs) and CANCELED/EXPIRED (mark
- * trade as cancelled if it never filled).
- */
-async function handleEntryOrderUpdate(trade: any, ev: OrderTradeUpdateEvent): Promise<void> {
-  const o = ev.o
-  const X = o.X
-
-  if (X === 'FILLED') {
-    // Idempotency: if we've already processed this fill (status moved past
-    // PENDING_LIMIT), don't re-place children. Binance can deliver the same
-    // event twice on reconnects.
-    if (trade.limitOrderState !== 'PENDING_LIMIT') {
-      return
-    }
-
-    const fillPrice = Number(o.ap) || Number(o.L) || trade.entryPrice
-    const fillTime = new Date(o.T || ev.E)
-    const cumQty = Number(o.z) || trade.positionUnits
-    const feePaid = Number(o.n) || 0
-
-    // Atomic claim — flip PENDING_LIMIT → FILLING, then to OPEN. Without this,
-    // a duplicate WS event could double-place TP/SL children.
-    const claim = await prisma.breakoutLiveTradeC.updateMany({
-      where: { id: trade.id, limitOrderState: 'PENDING_LIMIT' },
-      data: { limitOrderState: 'FILLING' },
-    })
-    if (claim.count !== 1) return  // someone else handling
-
-    try {
-      await prisma.breakoutLiveTradeC.update({
-        where: { id: trade.id },
-        data: {
-          status: 'OPEN',
-          limitOrderState: 'FILLED',
-          limitFilledAt: fillTime,
-          openedAt: fillTime,
-          entryPrice: fillPrice,
-          positionUnits: cumQty,
-          positionSizeUsd: fillPrice * cumQty,
-          feesPaidUsd: { increment: feePaid },
-          netPnlUsd: { decrement: feePaid },
-        },
-      })
-
-      console.log(`${LOG} ✓ entry filled #${trade.id} ${trade.symbol} ${trade.side} @ ${fillPrice} qty ${cumQty}`)
-
-      const sideText = trade.side === 'BUY' ? 'LONG' : 'SHORT'
-      const sideEmoji = trade.side === 'BUY' ? '🟢' : '🔴'
-      sendLiveTelegram([
-        `${sideEmoji} <b>${trade.symbol}</b> <b>${sideText}</b>  · entry filled`,
-        `━━━━━━━━━━━━━━━━━━`,
-        `💰 Цена   <code>${fmtPrice(fillPrice)}</code>`,
-        `📐 Размер <code>$${(fillPrice * cumQty).toFixed(2)}</code>  · ${cumQty} ед.`,
-        `⚡ Плечо  <code>${trade.leverage ?? '?'}x</code>`,
-        `🛑 SL    <code>${fmtPrice(trade.stopLoss)}</code>`,
-      ].join('\n'))
-
-      // Cancel the pair limit (if any) — one side filled, other no longer needed.
-      // Best-effort: if cancel fails (e.g. already filled itself), surface but don't crash.
-      if (trade.pairOrderId) {
-        await cancelPairOrder(trade.pairOrderId)
-      }
-
-      // SL: hybrid model. Place STOP_MARKET reduceOnly on the exchange as a
-      // safety net (so a dead bot doesn't orphan the position), but the
-      // virtual tracker (trackLiveTrade) is still the primary exit path.
-      // TPs stay fully virtual — trailing simpler that way.
-      // Refresh aggTrade subscriptions FIRST so the virtual tracker is live
-      // even if SL placement is slow/fails.
-      await refreshAggTradeSubscriptions().catch(() => { /* noop */ })
-      await attachSlAfterEntry(trade.id).catch((e) =>
-        console.warn(`${LOG} attachSlAfterEntry threw: ${e?.message ?? e}`))
-    } catch (e: any) {
-      console.error(`${LOG} entry fill handler failed for #${trade.id}: ${e.message}`)
-      // Try to rollback claim so next event can retry.
-      await prisma.breakoutLiveTradeC.updateMany({
-        where: { id: trade.id, limitOrderState: 'FILLING' },
-        data: { limitOrderState: 'PENDING_LIMIT' },
-      }).catch(() => { /* noop */ })
-    }
-    return
-  }
-
-  if (X === 'CANCELED' || X === 'EXPIRED') {
-    // Only finalize if we haven't already (cancel cascade from pair fill may
-    // have moved us to CANCELLED_OTHER_SIDE already).
-    if (trade.limitOrderState === 'PENDING_LIMIT') {
-      const reason = X === 'EXPIRED' ? 'CANCELLED_EOD' : 'CANCELLED_OTHER_SIDE'
-      await prisma.breakoutLiveTradeC.update({
-        where: { id: trade.id },
-        data: {
-          limitOrderState: reason,
-          status: 'CANCELLED',
-          closedAt: new Date(),
-        },
-      })
-      console.log(`${LOG} entry ${X.toLowerCase()} #${trade.id} ${trade.symbol} ${trade.side}`)
-    }
-    return
-  }
-}
-
-/**
- * Cancel the paired entry LIMIT order on Binance. Uses the live trader's
- * client (state.client) — caller should ensure state is set.
+ * Cancel the paired entry virtual limit (DB-only — no exchange call). When one
+ * side fills, the other side is no longer needed. Atomic — only flips state
+ * if still PENDING_LIMIT (skip if already filled or cancelled).
  */
 async function cancelPairOrder(pairTradeId: number): Promise<void> {
-  if (!state) return
-  const pair = await prisma.breakoutLiveTradeC.findUnique({ where: { id: pairTradeId } })
-  if (!pair || pair.limitOrderState !== 'PENDING_LIMIT') return  // already gone or filled
-
-  try {
-    await state.client.cancelOrder(pair.symbol, {
-      origClientOrderId: pair.binanceClientOrderId ?? undefined,
-    })
-    // WS will deliver the CANCELED event which finalizes the row; but we mark
-    // it now optimistically so the UI catches up immediately.
-    await prisma.breakoutLiveTradeC.updateMany({
-      where: { id: pairTradeId, limitOrderState: 'PENDING_LIMIT' },
-      data: {
-        limitOrderState: 'CANCELLED_OTHER_SIDE',
-        status: 'CANCELLED',
-        closedAt: new Date(),
-      },
-    })
-    console.log(`${LOG} cancelled pair #${pairTradeId} ${pair.symbol} ${pair.side}`)
-  } catch (e: any) {
-    if (e instanceof BinanceApiError && (e.code === -2011 || e.code === -2013)) {
-      // -2011 unknown order (already cancelled), -2013 order does not exist — ok
-      await prisma.breakoutLiveTradeC.updateMany({
-        where: { id: pairTradeId, limitOrderState: 'PENDING_LIMIT' },
-        data: {
-          limitOrderState: 'CANCELLED_OTHER_SIDE',
-          status: 'CANCELLED',
-          closedAt: new Date(),
-        },
-      })
-      return
-    }
-    console.warn(`${LOG} cancel pair #${pairTradeId} failed: ${e.message}`)
+  const r = await prisma.breakoutLiveTradeC.updateMany({
+    where: { id: pairTradeId, limitOrderState: 'PENDING_LIMIT' },
+    data: {
+      limitOrderState: 'CANCELLED_OTHER_SIDE',
+      status: 'CANCELLED',
+      closedAt: new Date(),
+    },
+  })
+  if (r.count > 0) {
+    const pair = await prisma.breakoutLiveTradeC.findUnique({ where: { id: pairTradeId } })
+    console.log(`${LOG} cancelled pair #${pairTradeId} ${pair?.symbol ?? '?'} ${pair?.side ?? '?'}`)
   }
 }
 
@@ -2292,6 +1968,17 @@ function handleAggTrade(sym: string, price: number, ts: number): void {
 
 async function processAggTradeForSymbol(sym: string, price: number, ts: number): Promise<void> {
   try {
+    // 1. Virtual limit fill — check PENDING_LIMIT rows; if price crossed the
+    //    limit level, send MARKET to open the position.
+    const pending = await prisma.breakoutLiveTradeC.findMany({
+      where: { symbol: sym, limitOrderState: 'PENDING_LIMIT' },
+    })
+    for (const t of pending) {
+      await tryFillVirtualLimit(t, price, ts)
+    }
+
+    // 2. Virtual SL/TP — check OPEN/TP1_HIT/TP2_HIT rows; if price crossed any
+    //    exit level, send MARKET reduceOnly.
     const openTrades = await prisma.breakoutLiveTradeC.findMany({
       where: {
         symbol: sym,
@@ -2303,6 +1990,204 @@ async function processAggTradeForSymbol(sym: string, price: number, ts: number):
     }
   } catch (e: any) {
     console.warn(`${LOG} aggTrade tracker ${sym} threw: ${e.message}`)
+  }
+}
+
+// Per-trade fill lock — prevents two aggTrade ticks racing on the same PENDING.
+const fillBusy = new Set<number>()
+
+/**
+ * Try to fill a virtual PENDING_LIMIT row. Called from aggTrade WS handler.
+ * For BUY: price must reach or exceed limitOrderPrice (= rangeHigh).
+ * For SELL: price must drop to or below limitOrderPrice (= rangeLow).
+ *
+ * On cross:
+ *   1. Atomic claim PENDING_LIMIT → FILLING via updateMany count check.
+ *   2. Send MARKET reduceOnly=false for the stored qty.
+ *   3. Move row to OPEN with the actual fill price from the MARKET response.
+ *   4. Cancel the paired side (DB-only, mark CANCELLED_OTHER_SIDE).
+ *   5. Place exchange-side STOP_MARKET safety-net (handled by attachSlAfterEntry).
+ *
+ * If MARKET placement fails (e.g. -2019 insufficient margin, -2027 max position),
+ * we record the rejection and release the claim so a later tick can retry —
+ * but if it's a structural rejection (sizing mismatch with current balance) the
+ * retry will likely fail too. Mirrors paper C's fillLimitInner flow.
+ */
+async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promise<void> {
+  if (fillBusy.has(trade.id)) return
+  if (!state) return
+
+  const isLong = trade.side === 'BUY'
+  const crossed = isLong ? price >= trade.limitOrderPrice : price <= trade.limitOrderPrice
+  if (!crossed) return
+
+  fillBusy.add(trade.id)
+  try {
+    // Atomic claim — prevent double-fill if two ticks fire concurrently.
+    const claim = await prisma.breakoutLiveTradeC.updateMany({
+      where: { id: trade.id, limitOrderState: 'PENDING_LIMIT' },
+      data: { limitOrderState: 'FILLING' },
+    })
+    if (claim.count !== 1) return  // someone else got here first
+
+    const filters = await getFilters(state.client)
+    const f = filters.get(trade.symbol)
+    if (!f) {
+      console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} — no symbol filter; rolling back to PENDING`)
+      await prisma.breakoutLiveTradeC.updateMany({
+        where: { id: trade.id, limitOrderState: 'FILLING' },
+        data: { limitOrderState: 'PENDING_LIMIT' },
+      })
+      return
+    }
+
+    // Re-size at fill time using current deposit (paper C does this too — sizing
+    // computed at placement may be stale if other C trades opened/closed since).
+    // Use the limit level as the reference entry for risk calc — actual market
+    // fill may be 0-2 ticks away.
+    const cfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
+    if (!cfg) {
+      await prisma.breakoutLiveTradeC.updateMany({
+        where: { id: trade.id, limitOrderState: 'FILLING' },
+        data: { limitOrderState: 'PENDING_LIMIT' },
+      })
+      return
+    }
+    const sizing = computeSizing({
+      symbol: trade.symbol,
+      deposit: cfg.currentDepositUsd,
+      riskPct: cfg.riskPctPerTrade,
+      targetMarginPct: cfg.targetMarginPct,
+      entry: trade.limitOrderPrice,
+      sl: trade.stopLoss,
+    })
+    if (!sizing || sizing.positionUnits <= 0) {
+      console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} sizing failed at fill — cancelling`)
+      await prisma.breakoutLiveTradeC.update({
+        where: { id: trade.id },
+        data: {
+          limitOrderState: 'CANCELLED_OTHER_SIDE',
+          status: 'CANCELLED',
+          closedAt: new Date(ts),
+        },
+      })
+      return
+    }
+
+    // Round qty DOWN to step (Binance rejects qty above step granularity).
+    const step = f.stepSize
+    let qtyPlanned = Math.floor(sizing.positionUnits / step) * step
+    qtyPlanned = Number(qtyPlanned.toFixed(f.quantityPrecision))
+    if (qtyPlanned < f.minQty) {
+      console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} qty below minQty — cancelling`)
+      await prisma.breakoutLiveTradeC.update({
+        where: { id: trade.id },
+        data: {
+          limitOrderState: 'CANCELLED_OTHER_SIDE',
+          status: 'CANCELLED',
+          closedAt: new Date(ts),
+        },
+      })
+      return
+    }
+
+    const newLev = Math.max(1, Math.round(sizing.leverage))
+    try {
+      await state.client.setLeverage(trade.symbol, newLev)
+    } catch (e: any) {
+      console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} setLeverage(${newLev}) failed: ${e.message}`)
+    }
+
+    let fillPrice = price
+    let fillQty = qtyPlanned
+    let feePaid = 0
+    try {
+      const resp = await state.client.placeOrder({
+        symbol: trade.symbol,
+        side: trade.side,
+        type: 'MARKET',
+        quantity: qtyPlanned,
+        // No reduceOnly — this is the entry, opening a new position.
+      })
+      // MARKET response may include avgPrice once the matching engine processed it.
+      if (resp.avgPrice && Number(resp.avgPrice) > 0) {
+        fillPrice = Number(resp.avgPrice)
+      }
+      if (resp.executedQty && Number(resp.executedQty) > 0) {
+        fillQty = Number(resp.executedQty)
+      }
+      // Estimate taker fee (precise number arrives via ORDER_TRADE_UPDATE).
+      feePaid = fillQty * fillPrice * (cfg.feeTakerPct ?? 0.04) / 100
+    } catch (e: any) {
+      // Placement rejected — release the FILLING claim so the next tick can
+      // retry, and surface the rejection to the audit log.
+      console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} MARKET rejected: ${e.message}`)
+      await prisma.breakoutLiveTradeC.updateMany({
+        where: { id: trade.id, limitOrderState: 'FILLING' },
+        data: { limitOrderState: 'PENDING_LIMIT' },
+      })
+      const code = e instanceof BinanceApiError ? String(e.code) : 'unknown'
+      await recordAttempt({
+        symbol: trade.symbol, side: trade.side, rangeDate: new Date(ts).toISOString().slice(0, 10),
+        status: 'REJECTED_EXCHANGE',
+        reasonCode: code, reasonText: e.message,
+        limitPrice: trade.limitOrderPrice, markPrice: price,
+      })
+      return
+    }
+
+    const fillTime = new Date(ts)
+    await prisma.breakoutLiveTradeC.update({
+      where: { id: trade.id },
+      data: {
+        status: 'OPEN',
+        limitOrderState: 'FILLED',
+        limitFilledAt: fillTime,
+        openedAt: fillTime,
+        entryPrice: fillPrice,
+        positionUnits: fillQty,
+        positionSizeUsd: fillPrice * fillQty,
+        depositAtEntryUsd: cfg.currentDepositUsd,
+        riskUsd: sizing.riskUsd,
+        leverage: newLev,
+        marginUsd: (fillPrice * fillQty) / newLev,
+        feesPaidUsd: { increment: feePaid },
+        netPnlUsd: { decrement: feePaid },
+      },
+    })
+
+    console.log(`${LOG} ✓ virtual limit filled #${trade.id} ${trade.symbol} ${trade.side} @ ${fillPrice} (limit ${trade.limitOrderPrice}) qty ${fillQty}`)
+
+    const sideText = trade.side === 'BUY' ? 'LONG' : 'SHORT'
+    const sideEmoji = trade.side === 'BUY' ? '🟢' : '🔴'
+    sendLiveTelegram([
+      `${sideEmoji} <b>${trade.symbol}</b> <b>${sideText}</b>  · entry filled`,
+      `━━━━━━━━━━━━━━━━━━`,
+      `💰 Цена   <code>${fmtPrice(fillPrice)}</code>  · лимит <code>${fmtPrice(trade.limitOrderPrice)}</code>`,
+      `📐 Размер <code>$${(fillPrice * fillQty).toFixed(2)}</code>  · ${fillQty} ед.`,
+      `⚡ Плечо  <code>${newLev}x</code>`,
+      `🛑 SL    <code>${fmtPrice(trade.stopLoss)}</code>`,
+    ].join('\n'))
+
+    // Cancel pair (DB-only).
+    if (trade.pairOrderId) {
+      await cancelPairOrder(trade.pairOrderId).catch(() => { /* noop */ })
+    }
+
+    // Subscribe aggTrade for this symbol (likely already subscribed via the
+    // PENDING phase but idempotent) and attach safety-net SL on the exchange.
+    await refreshAggTradeSubscriptions().catch(() => { /* noop */ })
+    await attachSlAfterEntry(trade.id).catch((e) =>
+      console.warn(`${LOG} attachSlAfterEntry threw: ${e?.message ?? e}`))
+  } catch (e: any) {
+    console.error(`${LOG} tryFillVirtualLimit threw for #${trade.id}: ${e.message}`)
+    // Best-effort rollback so a stuck FILLING doesn't lock the trade forever.
+    await prisma.breakoutLiveTradeC.updateMany({
+      where: { id: trade.id, limitOrderState: 'FILLING' },
+      data: { limitOrderState: 'PENDING_LIMIT' },
+    }).catch(() => { /* noop */ })
+  } finally {
+    fillBusy.delete(trade.id)
   }
 }
 
