@@ -872,14 +872,21 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
  * fraction (remaining notional / leverage).
  */
 async function sumExistingMarginC(): Promise<number> {
+  // Only count OPEN/TP1_HIT/TP2_HIT — margin that's ACTUALLY locked on Binance.
+  // PENDING_LIMIT rows are virtual since the 2026-05-19 refactor — no exchange
+  // order, no real margin lock. Including them in the budget guard was double-
+  // counting against budget when paired BUY+SELL waited for a fill: each pair
+  // contributed 2x its margin while reality would lock only one side once one
+  // arm filled (the other gets pair-cancelled).
+  //
+  // 10% safety buffer on the budget (currentDepositUsd × 0.90 in caller)
+  // already covers the worst-case scenario of a pair fill happening before
+  // the cancel cascade runs.
   const rows = await prisma.breakoutLiveTradeC.findMany({
     where: {
-      OR: [
-        { limitOrderState: 'PENDING_LIMIT' },
-        { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
-      ],
+      status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] },
     },
-    select: { marginUsd: true, closes: true, positionSizeUsd: true, leverage: true },
+    select: { marginUsd: true, closes: true },
   })
   let sum = 0
   for (const r of rows) {
@@ -1352,15 +1359,18 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
     return null
   }
 
-  // Free margin guard. The same rationale as before but now we're reserving
-  // margin against virtual PENDING limits as well as open positions — if both
-  // sides of every pair filled simultaneously (impossible but worst case for
-  // budgeting) we'd still stay within budget.
-  const existingMargin = await sumExistingMarginC()
+  // Free margin guard. `currentDepositUsd` IS available balance — Binance
+  // already subtracted margin locked in OPEN positions from it. So we just
+  // compare the new trade's required margin against 90% of available, no
+  // need to add existingMargin again (that was a double-count bug pre-2026-05-19).
+  //
+  // 10% buffer covers: funding fees, exit slippage on existing positions,
+  // and the pair-fill race window where both sides could fill before the
+  // cancel cascade runs (paper-equivalent worst case).
   const required = sizing.marginUsd
   const budget = a.cfg.currentDepositUsd * 0.90
-  if (existingMargin + required > budget) {
-    const msg = `margin used ${existingMargin.toFixed(2)} + new ${required.toFixed(2)} > budget ${budget.toFixed(2)} (depo ${a.cfg.currentDepositUsd.toFixed(2)})`
+  if (required > budget) {
+    const msg = `new margin ${required.toFixed(2)} > available × 0.9 = ${budget.toFixed(2)} (avail ${a.cfg.currentDepositUsd.toFixed(2)})`
     console.log(`${LOG} ${a.symbol} ${a.side} — skip: ${msg}`)
     await recordAttempt({
       symbol: a.symbol, side: a.side, rangeDate: a.rangeDate,
