@@ -47,6 +47,16 @@ export async function placeSlOnExchange(trade: any): Promise<PlaceSlResult> {
   const closeSide: 'BUY' | 'SELL' = trade.side === 'BUY' ? 'SELL' : 'BUY'
   const tick = f.tickSize
   const triggerPrice = Number((Math.round(trade.currentStop / tick) * tick).toFixed(f.pricePrecision))
+  // Round quantity DOWN to stepSize — retrailSlOnExchange passes the remaining
+  // position fraction (e.g. 8375 × 0.5 = 4187.5 after TP1), which Binance rejects
+  // with -1111 Precision when stepSize=1 (UBUSDT bug 2026-05-19 #4898). Apply
+  // the same floor-to-step that placeOrder uses for entries / exit slices.
+  const step = f.stepSize
+  let qty = Math.floor(trade.positionUnits / step) * step
+  qty = Number(qty.toFixed(f.quantityPrecision))
+  if (qty < f.minQty) {
+    return { ok: false, error: `qty ${qty} below minQty ${f.minQty} after step rounding` }
+  }
   const slClientId = `slL${trade.id}`
 
   let lastErr = ''
@@ -57,7 +67,7 @@ export async function placeSlOnExchange(trade: any): Promise<PlaceSlResult> {
         side: closeSide,
         type: 'STOP_MARKET',
         triggerPrice,
-        quantity: trade.positionUnits,
+        quantity: qty,
         reduceOnly: true,
         workingType: 'MARK_PRICE',
         clientAlgoId: slClientId,
