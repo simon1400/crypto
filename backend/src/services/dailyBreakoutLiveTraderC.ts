@@ -319,7 +319,11 @@ let liveSnapshot: LiveSnapshot | null = null
 // in the snapshot without an extra REST call.
 const lastMarkPriceWs = new Map<string, number>()
 
-const SNAPSHOT_STALE_MS = 5 * 60 * 1000  // 5 min — refresh REST if older
+const SNAPSHOT_STALE_MS = 30 * 1000  // 30s — refresh REST. WS approximation
+// drifts (it doesn't get an availableBalance value, only walletBalance, and we
+// subtract entry-price-based margin which doesn't match Binance's mark-based
+// internal calc). 30s REST keeps currentDepositUsd within $0.01 of reality
+// without burning weight (weight 5 per refresh × 2/min = 10 weight/min).
 
 export async function getLiveSnapshot(forceRefresh = false): Promise<LiveSnapshot | null> {
   if (!state) return null
@@ -1766,6 +1770,14 @@ async function applyVirtualClose(
     await retrailSlOnExchange(fresh.id).catch((e) =>
       console.warn(`${LOG} retrailSlOnExchange threw: ${e?.message ?? e}`))
   }
+
+  // Force-refresh balance from REST after any exit. Realized PnL just hit the
+  // wallet — without a refresh, sizing/UI keeps reading stale currentDepositUsd
+  // until the next 30s tick. One weight=5 call per close.
+  if (state) {
+    await seedSnapshotFromRest(state.client, state.net, 'rest-refresh').catch((e) =>
+      console.warn(`${LOG} post-close balance refresh failed: ${e?.message ?? e}`))
+  }
 }
 
 
@@ -2005,13 +2017,13 @@ async function handleAccountUpdate(ev: AccountUpdateEvent): Promise<void> {
   liveSnapshot.updatedAt = Date.now()
   liveSnapshot.source = 'ws-account-update'
 
-  // Reflect available balance into config for sizing alignment.
-  if (usdt) {
-    await prisma.breakoutLiveConfigC.update({
-      where: { id: 1 },
-      data: { currentDepositUsd: liveSnapshot.available },
-    }).catch(() => { /* noop */ })
-  }
+  // NOTE: currentDepositUsd in DB is NOT updated from this WS event. The
+  // available value we derived above is an approximation (wb - entry-price-based
+  // margin lock) that drifts from Binance's mark-price-based availableBalance.
+  // Writing it to DB poisoned the UI 'Депозит' figure. Instead, the periodic
+  // REST refresh (every 30s via SNAPSHOT_STALE_MS) syncs currentDepositUsd with
+  // the exact value from /fapi/v2/account. The WS event still keeps the
+  // in-memory snapshot fresh for /status latency.
 }
 
 /**
@@ -2335,6 +2347,13 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
     await refreshAggTradeSubscriptions().catch(() => { /* noop */ })
     await attachSlAfterEntry(trade.id).catch((e) =>
       console.warn(`${LOG} attachSlAfterEntry threw: ${e?.message ?? e}`))
+
+    // Refresh balance — fee was just charged, margin was just locked, next
+    // sizing cycle needs accurate currentDepositUsd.
+    if (state) {
+      await seedSnapshotFromRest(state.client, state.net, 'rest-refresh').catch((e) =>
+        console.warn(`${LOG} post-fill balance refresh failed: ${e?.message ?? e}`))
+    }
   } catch (e: any) {
     console.error(`${LOG} tryFillVirtualLimit threw for #${trade.id}: ${e.message}`)
     // Best-effort rollback so a stuck FILLING doesn't lock the trade forever.
