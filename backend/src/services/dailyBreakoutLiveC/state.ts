@@ -103,7 +103,6 @@ export const lastAggTradeAt = new Map<string, number>()
 export const TICK_THROTTLE_MS = 100
 export const lastTickProcessedAt = new Map<string, number>()
 
-// === Constants shared across modules. ===
+// === Constants shared across modules — see breakoutCommon/constants.ts. ===
 
-export const SPLITS = [0.5, 0.3, 0.2]  // TP1/TP2/TP3 fractions of position units
-export const ACTIVE_STATUSES = ['OPEN', 'TP1_HIT', 'TP2_HIT'] as const
+export { SPLITS, ACTIVE_STATUSES, CLOSED_STATUSES } from '../breakoutCommon/constants'

@@ -9,14 +9,13 @@
 
 import { loadHistorical } from '../../scalper/historicalLoader'
 import { fetchPricesBatch } from '../../services/market'
-import { syncSignalStatus } from '../../services/dailyBreakoutPaperTrader'
+import { syncSignalStatus } from '../../services/dailyBreakoutPaper'
 import { getLiveSnapshot } from '../../services/dailyBreakoutLiveC'
 import { BreakoutVariant } from '../../services/breakoutVariant'
 
-const CLOSED_STATUSES = new Set(['CLOSED', 'SL_HIT', 'EXPIRED'])
-const ACTIVE_STATUSES = ['OPEN', 'TP1_HIT', 'TP2_HIT'] as const
-
-export { CLOSED_STATUSES, ACTIVE_STATUSES }
+export { CLOSED_STATUSES, ACTIVE_STATUSES } from '../../services/breakoutCommon/constants'
+// Re-import for local use:
+import { CLOSED_STATUSES } from '../../services/breakoutCommon/constants'
 
 export async function getCurrentPrice(symbol: string): Promise<number | null> {
   try {

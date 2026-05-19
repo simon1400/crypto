@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import {
   getRealisticRates, takerFillPrice, isMakerFill,
-} from '../../services/dailyBreakoutPaperTrader'
+} from '../../services/dailyBreakoutPaper'
 import { fetchPricesBatch } from '../../services/market'
 import { BreakoutVariant } from '../../services/breakoutVariant'
 import {

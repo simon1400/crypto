@@ -19,11 +19,10 @@ import { prisma } from '../db/prisma'
 import { OHLCV } from './market'
 import { loadHistorical } from '../scalper/historicalLoader'
 import {
-  detectRange, generateBreakoutSignal, utcDateOf, endOfDayUTC,
-  DEFAULT_BREAKOUT_CFG, BreakoutEngineConfig, BreakoutSignal,
+  detectRange, generateBreakoutSignal, utcDateOf, endOfDayUTC, BreakoutEngineConfig, BreakoutSignal,
 } from '../scalper/dailyBreakoutEngine'
 import { sendNotification, VariantOpenInfo } from './notifier'
-import { runBreakoutPaperCycle, OpenedTradeInfo, isVariantBusyOnSymbol } from './dailyBreakoutPaperTrader'
+import { runBreakoutPaperCycle, OpenedTradeInfo, isVariantBusyOnSymbol } from './dailyBreakoutPaper'
 import { getBtcAdx1h, BTC_ADX_THRESHOLD } from './btcRegime'
 
 // Default setups (23 monetах) — refreshed 2026-05-09 after re-running universe backtest

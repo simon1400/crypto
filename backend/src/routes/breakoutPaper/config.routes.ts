@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { prisma } from '../../db/prisma'
-import { resetBreakoutPaperAccount } from '../../services/dailyBreakoutPaperTrader'
+import { resetBreakoutPaperAccount } from '../../services/dailyBreakoutPaper'
 import { BreakoutVariant } from '../../services/breakoutVariant'
 
 export function registerConfigRoutes(router: Router, variant: BreakoutVariant, cm: any, tm: any): void {

@@ -47,7 +47,7 @@ import {
 import {
   getRealisticRates, syncSignalStatus, isVariantBusyOnSymbol, runTrackForSymbol,
   applyDepositDelta, isCircuitBreakerTripped,
-} from './dailyBreakoutPaperTrader'
+} from './dailyBreakoutPaper'
 import { detectRange, endOfDayUTC, BreakoutEngineConfig } from '../scalper/dailyBreakoutEngine'
 import { loadHistorical } from '../scalper/historicalLoader'
 import { DEFAULT_BREAKOUT_SETUPS } from './dailyBreakoutLiveScanner'

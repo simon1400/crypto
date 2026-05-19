@@ -13,7 +13,7 @@
 
 import { WebsocketClient } from 'bybit-api'
 import { OHLCV } from './market'
-import { runTrackForSymbol } from './dailyBreakoutPaperTrader'
+import { runTrackForSymbol } from './dailyBreakoutPaper'
 import { processWsTradeForLimits } from './dailyBreakoutLimitTrader'
 import { prisma } from '../db/prisma'
 

@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { prisma } from '../../db/prisma'
-import { forceOpenSignal } from '../../services/dailyBreakoutPaperTrader'
+import { forceOpenSignal } from '../../services/dailyBreakoutPaper'
 import { BreakoutVariant } from '../../services/breakoutVariant'
 import { applySignalOverlay } from './helpers'
 

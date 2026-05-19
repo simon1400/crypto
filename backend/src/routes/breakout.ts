@@ -3,7 +3,7 @@ import { prisma } from '../db/prisma'
 import {
   runBreakoutScanCycleNow, DEFAULT_BREAKOUT_SETUPS,
 } from '../services/dailyBreakoutLiveScanner'
-import { runBreakoutPaperCycle, forceOpenSignal } from '../services/dailyBreakoutPaperTrader'
+import { runBreakoutPaperCycle, forceOpenSignal } from '../services/dailyBreakoutPaper'
 
 const router = Router()
 
