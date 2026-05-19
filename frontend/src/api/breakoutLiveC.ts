@@ -216,7 +216,20 @@ export interface BreakoutLiveAttempt {
   attemptedAt: string
 }
 
-export async function getLiveAttempts(rangeDate?: string): Promise<{ data: BreakoutLiveAttempt[]; rangeDate: string; total: number }> {
+export interface BreakoutLiveAttemptsResponse {
+  data: BreakoutLiveAttempt[]
+  rangeDate: string
+  shown: number               // rows.length — visible in the table
+  total: number               // real count across the whole rangeDate
+  counts: {
+    placed: number
+    rejected: number
+    gated: number
+    filtered: number
+  }
+}
+
+export async function getLiveAttempts(rangeDate?: string): Promise<BreakoutLiveAttemptsResponse> {
   const q = rangeDate ? `?rangeDate=${encodeURIComponent(rangeDate)}` : ''
   return req(`${BP}/attempts${q}`)
 }

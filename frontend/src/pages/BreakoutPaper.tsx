@@ -294,6 +294,16 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
   // LIVE-only: placement-attempt audit log (today's UTC bucket). Fetched when
   // the 'Отклонённые' tab is active. Refreshed on every loadAll().
   const [attempts, setAttempts] = useState<BreakoutLiveAttempt[]>([])
+  // Real totals across the full rangeDate — `attempts.length` only reflects the
+  // visible window (default limit 500). API now returns counts + total from a
+  // groupBy on the DB so headers stay honest.
+  const [attemptsTotals, setAttemptsTotals] = useState<{
+    total: number
+    placed: number
+    rejected: number
+    gated: number
+    filtered: number
+  } | null>(null)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -369,6 +379,13 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         try {
           const a = await getLiveAttempts()
           setAttempts(a.data)
+          setAttemptsTotals({
+            total: a.total,
+            placed: a.counts.placed,
+            rejected: a.counts.rejected,
+            gated: a.counts.gated,
+            filtered: a.counts.filtered,
+          })
         } catch { /* keep stale */ }
       }
     } catch (e: any) {
@@ -1392,14 +1409,18 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
             <div className="text-xs text-text-secondary">
               {loading ? 'Загрузка...' : (
                 <>
-                  Сегодня (UTC): <span className="text-text-primary font-medium">{attempts.length}</span> попыток
-                  {attempts.length > 0 && (() => {
-                    const placed = attempts.filter(a => a.status === 'PLACED').length
-                    const rejected = attempts.filter(a => a.status === 'REJECTED_EXCHANGE').length
-                    const gated = attempts.filter(a => a.status === 'SKIPPED_GATE').length
-                    const filtered = attempts.filter(a => a.status === 'SKIPPED_FILTER').length
-                    return <span className="text-text-secondary"> · {placed} placed · {rejected} rejected · {gated} gated · {filtered} filtered</span>
-                  })()}
+                  Сегодня (UTC): <span className="text-text-primary font-medium">{attemptsTotals?.total ?? attempts.length}</span> попыток
+                  {attemptsTotals && attemptsTotals.total > 0 && (
+                    <span className="text-text-secondary">
+                      {' · '}{attemptsTotals.placed} placed
+                      {' · '}{attemptsTotals.rejected} rejected
+                      {' · '}{attemptsTotals.gated} gated
+                      {' · '}{attemptsTotals.filtered} filtered
+                    </span>
+                  )}
+                  {attemptsTotals && attemptsTotals.total > attempts.length && (
+                    <span className="text-text-secondary"> · показаны последние {attempts.length}</span>
+                  )}
                 </>
               )}
             </div>
@@ -1410,6 +1431,7 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
                 try {
                   await clearLiveAttempts()
                   setAttempts([])
+                  setAttemptsTotals({ total: 0, placed: 0, rejected: 0, gated: 0, filtered: 0 })
                 } catch (e: any) {
                   alert(`Не удалось очистить: ${e.message}`)
                 }

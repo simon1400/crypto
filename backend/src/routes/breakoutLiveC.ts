@@ -454,12 +454,39 @@ router.get('/attempts', async (req, res) => {
       ? req.query.rangeDate
       : todayUtc
     const limit = Math.min(parseInt(String(req.query.limit ?? '500'), 10) || 500, 2000)
-    const rows = await prisma.breakoutLiveAttemptC.findMany({
-      where: { rangeDate },
-      orderBy: { attemptedAt: 'desc' },
-      take: limit,
+
+    // Real totals come from groupBy + count — not from rows.length, which only
+    // reflects the limited window we return for the table.
+    const [rows, statusGroups, totalCount] = await Promise.all([
+      prisma.breakoutLiveAttemptC.findMany({
+        where: { rangeDate },
+        orderBy: { attemptedAt: 'desc' },
+        take: limit,
+      }),
+      prisma.breakoutLiveAttemptC.groupBy({
+        by: ['status'],
+        where: { rangeDate },
+        _count: { _all: true },
+      }),
+      prisma.breakoutLiveAttemptC.count({ where: { rangeDate } }),
+    ])
+
+    // statusGroups is an array of { status, _count: { _all: N } }. Flatten.
+    const counts: Record<string, number> = {}
+    for (const g of statusGroups) counts[g.status] = (g._count?._all ?? 0)
+
+    res.json({
+      data: rows,
+      rangeDate,
+      shown: rows.length,
+      total: totalCount,
+      counts: {
+        placed:    counts['PLACED']            ?? 0,
+        rejected:  counts['REJECTED_EXCHANGE'] ?? 0,
+        gated:     counts['SKIPPED_GATE']      ?? 0,
+        filtered:  counts['SKIPPED_FILTER']    ?? 0,
+      },
     })
-    res.json({ data: rows, rangeDate, total: rows.length })
   } catch (e: any) {
     res.status(500).json({ error: e.message })
   }
