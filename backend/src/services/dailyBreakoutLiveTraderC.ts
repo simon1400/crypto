@@ -356,15 +356,30 @@ async function seedSnapshotFromRest(
   const total = usdt ? Number(usdt.walletBalance) : 0
   const positions = (acc.positions ?? [])
     .filter((p) => Number(p.positionAmt) !== 0)
-    .map((p) => ({
-      symbol: p.symbol,
-      positionAmt: Number(p.positionAmt),
-      entryPrice: Number(p.entryPrice),
-      markPrice: lastMarkPriceWs.get(p.symbol) ?? Number(p.markPrice ?? p.entryPrice),
-      unRealizedProfit: Number(p.unRealizedProfit ?? 0),
-      leverage: Number(p.leverage ?? 1),
-      marginType: (p.marginType === 'isolated' ? 'isolated' : 'cross') as 'isolated' | 'cross',
-    }))
+    .map((p) => {
+      const positionAmt = Number(p.positionAmt)
+      const entryPrice = Number(p.entryPrice)
+      const markPrice = lastMarkPriceWs.get(p.symbol) ?? Number(p.markPrice ?? p.entryPrice)
+      const rawUpnl = Number(p.unRealizedProfit ?? 0)
+      // Binance testnet's /fapi/v2/account intermittently returns
+      // unRealizedProfit=0 for every position while mark prices are perfectly
+      // valid. Don't trust the field if it's literally 0 — recompute from
+      // markPrice × positionAmt so /status doesn't flash $0.00 for every P&L
+      // cell each REST refresh. Honor Binance's value when non-zero so we
+      // don't fight its rounding.
+      const unRealizedProfit = rawUpnl !== 0
+        ? rawUpnl
+        : (markPrice - entryPrice) * positionAmt
+      return {
+        symbol: p.symbol,
+        positionAmt,
+        entryPrice,
+        markPrice,
+        unRealizedProfit,
+        leverage: Number(p.leverage ?? 1),
+        marginType: (p.marginType === 'isolated' ? 'isolated' : 'cross') as 'isolated' | 'cross',
+      }
+    })
   liveSnapshot = { net, available, total, positions, updatedAt: Date.now(), source }
   // Mirror into BreakoutLiveConfigC.currentDepositUsd so sizing/cycle reads
   // stay in sync with the snapshot — same effect as the old refreshLiveBalance.
@@ -753,9 +768,12 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
     where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
   })
 
-  const positionsBySymbol = new Map<string, number>()
+  const positionsBySymbol = new Map<string, { amt: number; entryPrice: number }>()
   for (const p of positions) {
-    positionsBySymbol.set(p.symbol, Number(p.positionAmt))
+    positionsBySymbol.set(p.symbol, {
+      amt: Number(p.positionAmt),
+      entryPrice: Number(p.entryPrice),
+    })
   }
 
   // --- Migration cleanup: cancel any leftover 'cL' LIMIT entry orders on the
@@ -804,12 +822,34 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
   // Also: if position is still there, make sure the safety-net SL exists on
   // the exchange — bot restart shouldn't leave positions exposed.
   for (const t of dbOpen) {
-    const exchangeAmt = positionsBySymbol.get(t.symbol)
-    if (exchangeAmt && exchangeAmt !== 0) {
+    const exchangePos = positionsBySymbol.get(t.symbol)
+    if (exchangePos && exchangePos.amt !== 0) {
       // Position alive — ensure the safety-net SL is in place.
       if (!t.binanceSlOrderId) {
         await attachSlAfterEntry(t.id).catch((e) =>
           console.warn(`${LOG} reconcile: attachSl #${t.id} threw: ${e?.message ?? e}`))
+      }
+
+      // Heal entryPrice drift. Earlier rows may have been written with the
+      // aggTrade placeholder price (rangeEdge) when ORDER_TRADE_UPDATE was
+      // missed or lost the race to tryFillVirtualLimit's update. The exchange
+      // has the authoritative avg fill — copy it in so UI / trackers stop
+      // showing the wrong entry. Threshold 0.05% to ignore rounding noise.
+      if (exchangePos.entryPrice > 0 && t.entryPrice > 0) {
+        const driftPct = Math.abs(exchangePos.entryPrice - t.entryPrice) / t.entryPrice
+        if (driftPct > 0.0005) {
+          const newSize = exchangePos.entryPrice * t.positionUnits
+          const newMargin = t.leverage ? newSize / t.leverage : t.marginUsd
+          await prisma.breakoutLiveTradeC.update({
+            where: { id: t.id },
+            data: {
+              entryPrice: exchangePos.entryPrice,
+              positionSizeUsd: newSize,
+              marginUsd: newMargin,
+            },
+          }).catch((e) => console.warn(`${LOG} reconcile: heal entryPrice #${t.id} failed: ${e?.message ?? e}`))
+          console.log(`${LOG} reconcile: #${t.id} ${t.symbol} entryPrice drift ${t.entryPrice} → ${exchangePos.entryPrice} (${(driftPct * 100).toFixed(2)}%) — healed`)
+        }
       }
       continue
     }
@@ -840,10 +880,10 @@ async function reconcileWithExchange(client: BinanceFuturesClient): Promise<Reco
   // --- Exchange positions without DB row ---
   // Symbols where we have a non-zero position on exchange but no OPEN row.
   const dbSymbolsOpen = new Set(dbOpen.map((t) => t.symbol))
-  for (const [sym, amt] of positionsBySymbol) {
-    if (amt === 0) continue
+  for (const [sym, pos] of positionsBySymbol) {
+    if (pos.amt === 0) continue
     if (dbSymbolsOpen.has(sym)) continue
-    report.details.untrackedPositions.push({ symbol: sym, amt })
+    report.details.untrackedPositions.push({ symbol: sym, amt: pos.amt })
     report.hasUntrackedPositions = true
   }
 
@@ -1559,7 +1599,12 @@ async function handleEntryFillUpdate(tradeId: number, ev: OrderTradeUpdateEvent)
 
   const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
   if (!trade) return
-  if (trade.status !== 'OPEN') return  // not in entry-fill window
+  // Don't gate on trade.status — Binance can deliver ORDER_TRADE_UPDATE
+  // milliseconds after our synchronous placeOrder returns, sometimes before
+  // tryFillVirtualLimit finishes flipping the row to OPEN. If we bailed on
+  // 'PENDING_LIMIT' / 'FILLING' here the entryPrice would stay frozen at the
+  // aggTrade placeholder and never get refined to the actual MARKET avgPrice
+  // (we saw up to ~1% slippage on hot symbols, e.g. POL 0.0902 → 0.0912).
   // Idempotency: binanceOrderId is null after the optimistic write and set
   // here. If it's already populated, this event is a replay.
   if (trade.binanceOrderId != null) return
@@ -2585,6 +2630,25 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
     }
 
     const fillTime = new Date(ts)
+    // Race protection: handleEntryFillUpdate can fire (via WS ORDER_TRADE_UPDATE)
+    // before this row update completes — it sets binanceOrderId + exact entryPrice
+    // from o.ap. Don't overwrite those exact fields with our aggTrade placeholder.
+    // The updateMany only touches the trade row while binanceOrderId is still
+    // null (WS hasn't refined yet); if WS already won, this is a no-op and the
+    // exact avgPrice / qty / fee stay intact.
+    await prisma.breakoutLiveTradeC.updateMany({
+      where: { id: trade.id, binanceOrderId: null },
+      data: {
+        entryPrice: fillPrice,
+        positionUnits: fillQty,
+        positionSizeUsd: fillPrice * fillQty,
+        marginUsd: (fillPrice * fillQty) / newLev,
+        feesPaidUsd: { increment: feePaid },
+        netPnlUsd: { decrement: feePaid },
+      },
+    })
+
+    // These fields are owned by the trader, not the WS refine — always set them.
     await prisma.breakoutLiveTradeC.update({
       where: { id: trade.id },
       data: {
@@ -2592,15 +2656,9 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
         limitOrderState: 'FILLED',
         limitFilledAt: fillTime,
         openedAt: fillTime,
-        entryPrice: fillPrice,
-        positionUnits: fillQty,
-        positionSizeUsd: fillPrice * fillQty,
         depositAtEntryUsd: cfg.currentDepositUsd,
         riskUsd: sizing.riskUsd,
         leverage: newLev,
-        marginUsd: (fillPrice * fillQty) / newLev,
-        feesPaidUsd: { increment: feePaid },
-        netPnlUsd: { decrement: feePaid },
       },
     })
 
