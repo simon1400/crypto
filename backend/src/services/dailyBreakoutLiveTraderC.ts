@@ -352,8 +352,22 @@ async function seedSnapshotFromRest(
   // getAccount + getOpenPositions double-hit. Weight: 5 (vs 5+5 before).
   const acc = await client.getAccount()
   const usdt = acc.assets.find((a) => a.asset === 'USDT')
-  const available = usdt ? Number(usdt.availableBalance) : 0
-  const total = usdt ? Number(usdt.walletBalance) : 0
+  // Prefer the account-wide totals — for a USDT-M wallet they equal the USDT
+  // asset row, but `totalWalletBalance` / `totalMarginBalance` are the same
+  // figures Binance's own UI surfaces (testnet UI labels them "Balance" /
+  // "Margin Balance"). Falling back to the asset row keeps a degraded mode
+  // alive if Binance ever omits the rolled-up totals.
+  const totalFromAccount = Number(acc.totalWalletBalance)
+  const totalFromAsset = usdt ? Number(usdt.walletBalance) : 0
+  const total = Number.isFinite(totalFromAccount) && totalFromAccount > 0 ? totalFromAccount : totalFromAsset
+  const available = Number(acc.availableBalance ?? (usdt?.availableBalance ?? 0))
+  // Sanity-check: log any drift between rolled-up totals and the USDT asset
+  // row so we have a trail next time the user reports "depo in app ≠ depo on
+  // exchange". Most-common cause: a non-USDT margin asset got credited (bonus
+  // promo, gift, etc.).
+  if (usdt && Math.abs(totalFromAccount - totalFromAsset) > 0.01) {
+    console.warn(`${LOG} wallet drift: totalWalletBalance=${totalFromAccount.toFixed(4)} vs assets.USDT.walletBalance=${totalFromAsset.toFixed(4)}`)
+  }
   const positions = (acc.positions ?? [])
     .filter((p) => Number(p.positionAmt) !== 0)
     .map((p) => {
