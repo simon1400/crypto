@@ -15,7 +15,7 @@ import {
   type BreakoutVariant,
 } from '../api/breakoutPaper'
 import {
-  getLiveStatus, killSwitch, releaseKillSwitch,
+  getLiveStatus, killSwitch, releaseKillSwitch, wipeAllLive,
   getLiveAttempts, clearLiveAttempts,
   type BreakoutLiveStatus, type BreakoutLiveAttempt,
 } from '../api/breakoutLiveC'
@@ -472,6 +472,39 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
   }
 
   const handleWipeAll = async () => {
+    // LIVE has its own wipe endpoint — deletes BreakoutLiveTradeC + Funding + Attempts
+    // and resets baseline so the next 'enable' takes a fresh snapshot from Binance.
+    if (isLive) {
+      const isProd = liveStatus?.net === 'prod'
+      const baseWarn = 'Удалить ВСЕ записи live-сделок, funding, attempts и сбросить baseline?\n\nПозиции на бирже не трогаются — Kill switch выше сделай ДО этого если они открыты.\n\nПри следующем включении стратегии baseline возьмётся свежим из Binance.'
+      if (isProd) {
+        const ack = prompt('ПРОДАКШН WIPE.\n\n' + baseWarn + '\n\nВведи PROD_WIPE_ACK для подтверждения:')
+        if (ack !== 'PROD_WIPE_ACK') {
+          if (ack !== null) alert('Отменено: не введён PROD_WIPE_ACK.')
+          return
+        }
+        try {
+          const r = await wipeAllLive('PROD_WIPE_ACK')
+          alert(`Удалено: ${r.deletedTrades} сделок, ${r.deletedAttempts} attempts, ${r.deletedFunding} funding.\nДепо сброшено в $${r.config.currentDepositUsd.toFixed(2)} (подхватится с биржи при включении).`)
+          const s = await getLiveStatus(); setLiveStatus(s)
+          await loadAll()
+        } catch (e: any) {
+          alert(`Ошибка: ${e.message}`)
+        }
+        return
+      }
+      if (!confirm(baseWarn)) return
+      try {
+        const r = await wipeAllLive()
+        alert(`Удалено: ${r.deletedTrades} сделок, ${r.deletedAttempts} attempts, ${r.deletedFunding} funding.\nДепо сброшено в $${r.config.currentDepositUsd.toFixed(2)} (подхватится с биржи при включении).`)
+        const s = await getLiveStatus(); setLiveStatus(s)
+        await loadAll()
+      } catch (e: any) {
+        alert(`Ошибка: ${e.message}`)
+      }
+      return
+    }
+
     const note = variant === 'B'
       ? 'УДАЛИТЬ все B-сделки и сбросить B-депо? Сигналы и A-сделки не трогаются.'
       : 'УДАЛИТЬ ВСЕ сигналы и paper-сделки? Это нельзя отменить.'
@@ -981,6 +1014,16 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
               <button onClick={handleKillSwitch}
                 className="px-3 py-1 bg-short/10 border border-short/40 text-short rounded text-xs font-medium hover:bg-short/20">
                 🛑 Kill switch
+              </button>
+            )}
+            {/* Wipe — only when strategy is OFF and no open positions on exchange.
+                Refuses anyway on backend if positions != 0, but hiding the button
+                keeps the UI honest. */}
+            {!config.enabled && (liveStatus?.openPositions ?? 0) === 0 && (
+              <button onClick={handleWipeAll}
+                title="Удалить все live-записи (сделки/funding/attempts) и сбросить baseline. Позиции на бирже не трогаются."
+                className="px-3 py-1 bg-card border border-input rounded text-xs font-medium hover:bg-input text-text-secondary hover:text-text-primary">
+                🗑 Очистить
               </button>
             )}
           </div>

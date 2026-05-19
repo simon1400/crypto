@@ -173,6 +173,21 @@ export async function resetBaseline(): Promise<{ ok: boolean; baselineUsd: numbe
   return req(`${BP}/baseline/reset`, { method: 'POST' })
 }
 
+export interface WipeAllResponse {
+  ok: boolean
+  deletedTrades: number
+  deletedFunding: number
+  deletedAttempts: number
+  config: BreakoutLiveConfig
+}
+
+export async function wipeAllLive(confirmation?: string): Promise<WipeAllResponse> {
+  return req(`${BP}/wipe-all`, {
+    method: 'POST',
+    body: JSON.stringify(confirmation ? { confirmation } : {}),
+  })
+}
+
 export async function testPlaceOrder(p: { symbol: string; side: 'BUY' | 'SELL'; priceOffsetPct?: number; quantity?: number }): Promise<any> {
   return req(`${BP}/test-place-order`, { method: 'POST', body: JSON.stringify(p) })
 }
