@@ -21,6 +21,7 @@ import {
 import { loadHistorical } from '../scalper/historicalLoader'
 import { fetchPricesBatch } from '../services/market'
 import { BreakoutVariant, configModel, tradeModel } from '../services/breakoutVariant'
+import { getLiveSnapshot } from '../services/dailyBreakoutLiveTraderC'
 
 /**
  * Build shared read-only handlers parameterised by variant. Used by the live
@@ -43,11 +44,29 @@ export function buildSharedReadHandlers(variant: BreakoutVariant) {
       })
       if (trades.length === 0) return res.json([])
 
-      const symbols: string[] = trades.map((t: any) => String(t.symbol))
-      const prices = await fetchPricesBatch(symbols)
+      // LIVE: pull mark price + unrealized PnL straight from the Binance
+      // account snapshot (refreshed every 30s via REST and on every WS
+      // ACCOUNT_UPDATE). Same numbers the user sees on binance.com — no
+      // Bybit/BingX ticker drift, no synthetic exit-fee deduction. Falls
+      // back to the ticker-based estimate only when a position is missing
+      // from the snapshot (transient race before reconcile).
+      const snapshot = variant === 'LIVE' ? await getLiveSnapshot() : null
+      const snapshotBySymbol = new Map<string, { markPrice: number; unRealizedProfit: number }>()
+      if (snapshot) {
+        for (const p of snapshot.positions) {
+          snapshotBySymbol.set(p.symbol, { markPrice: p.markPrice, unRealizedProfit: p.unRealizedProfit })
+        }
+      }
+
+      // Symbols not represented in the snapshot still need a fallback price.
+      const symbols: string[] = trades
+        .map((t: any) => String(t.symbol))
+        .filter((s: string) => !snapshotBySymbol.has(s))
+      const prices = symbols.length > 0 ? await fetchPricesBatch(symbols) : {}
 
       const result = await Promise.all(trades.map(async (t: any) => {
-        const price: number | null = prices[t.symbol] ?? null
+        const snap = snapshotBySymbol.get(t.symbol)
+        const price: number | null = snap?.markPrice ?? prices[t.symbol] ?? null
         if (price == null) {
           return { id: t.id, status: t.status, currentPrice: null, unrealizedPnl: 0, unrealizedPnlPct: 0 }
         }
@@ -57,13 +76,22 @@ export function buildSharedReadHandlers(variant: BreakoutVariant) {
         if (remainingFrac < 1e-6) {
           return { id: t.id, status: t.status, currentPrice: price, unrealizedPnl: 0, unrealizedPnlPct: 0, remainingUnrealizedPnl: 0, remainingUnrealizedPnlPct: 0 }
         }
-        const isLong = t.side === 'BUY'
-        const fillUnits = t.positionUnits * remainingFrac
-        const unrealizedGross = (isLong ? price - t.entryPrice : t.entryPrice - price) * fillUnits
-        const takerPct = t.feeTakerPct ?? null
-        const feeRatePct = takerPct ?? t.feesRoundTripPct ?? 0.08
-        const exitFeesIfClosedNow = t.positionUnits * price * remainingFrac * (feeRatePct / 100)
-        const remainingUnrealized = unrealizedGross - exitFeesIfClosedNow
+
+        let remainingUnrealized: number
+        if (snap) {
+          // Use Binance's own unrealizedProfit on the position. It's already
+          // (markPrice − entry) × positionAmt, signed by side. No exit fee
+          // deduction — match exactly what the exchange UI shows.
+          remainingUnrealized = snap.unRealizedProfit
+        } else {
+          const isLong = t.side === 'BUY'
+          const fillUnits = t.positionUnits * remainingFrac
+          const unrealizedGross = (isLong ? price - t.entryPrice : t.entryPrice - price) * fillUnits
+          const takerPct = t.feeTakerPct ?? null
+          const feeRatePct = takerPct ?? t.feesRoundTripPct ?? 0.08
+          const exitFeesIfClosedNow = t.positionUnits * price * remainingFrac * (feeRatePct / 100)
+          remainingUnrealized = unrealizedGross - exitFeesIfClosedNow
+        }
         const remainingUnrealizedPnlPct = t.depositAtEntryUsd > 0
           ? (remainingUnrealized / t.depositAtEntryUsd) * 100 : 0
         return {
