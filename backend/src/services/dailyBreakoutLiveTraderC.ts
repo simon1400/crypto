@@ -221,10 +221,23 @@ export async function startBreakoutLiveTraderC(): Promise<void> {
     })
     marketDataWs.start()
 
-    // Slow tick — every 5 min, mirrors paper C cycle (placement + safety net).
+    // Placement tick — every 30s. Cadence chosen to catch the brief windows when
+    // the book drifts back from rangeEdge. Narrow ranges (0.4-2%) only stay
+    // book-non-marketable for seconds; the previous 5min cycle missed ~99.8% of
+    // those windows (audit 2026-05-18: 1 PLACED / ~500 attempts). Paper C runs
+    // 60s but doesn't fight a real order book, so live needs to be tighter.
+    //
+    // Re-entrancy guarded by `cycleBusy` (line ~274) — overlapping ticks no-op.
+    //
+    // Rate-limit headroom at 30s × 23 symbols:
+    //   - getMarkPrice: ~23 * 2/min = 46 weight/min (limit: 2400 weight/min)
+    //   - placeOrder (SIGNED): worst case ~46 * 2 = ~92/min when many ranges
+    //     have viable non-marketable windows; in practice most cycles hit the
+    //     existing markPrice gate before reaching placeOrder. Binance signed
+    //     limit is 1200/min — well within budget.
     const tickTimer = setInterval(() => {
       runLiveCycle().catch((e) => console.error(`${LOG} cycle error:`, e.message))
-    }, 5 * 60 * 1000)
+    }, 30 * 1000)
 
     // EOD-FLAT tick — every minute, fires once at 23:55 UTC to flatten any
     // still-open positions. Independent from the 5min cycle so we don't miss
