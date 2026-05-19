@@ -12,13 +12,11 @@ import breakoutPaperRouter from './routes/breakoutPaper'
 import breakoutPaperBRouter from './routes/breakoutPaperB'
 import breakoutPaperCRouter from './routes/breakoutPaperC'
 import breakoutLiveCRouter from './routes/breakoutLiveC'
-import binaryRouter from './routes/binary'
 import { startBreakoutLiveScanner, stopBreakoutLiveScanner } from './services/dailyBreakoutLiveScanner'
 import { startBreakoutPaperTrader, stopBreakoutPaperTrader, startBreakoutEodSummary, stopBreakoutEodSummary } from './services/dailyBreakoutPaperTrader'
 import { startBreakoutLimitTraderC, stopBreakoutLimitTraderC } from './services/dailyBreakoutLimitTrader'
 import { startBreakoutLiveTraderC, stopBreakoutLiveTraderC } from './services/dailyBreakoutLiveTraderC'
 import { startBreakoutWsTracker, stopBreakoutWsTracker } from './services/breakoutWsTracker'
-import { startForexHelper, stopForexHelper } from './services/forexHelperService'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -46,7 +44,6 @@ app.use('/api/breakout-paper', breakoutPaperRouter)
 app.use('/api/breakout-paper-b', breakoutPaperBRouter)
 app.use('/api/breakout-paper-c', breakoutPaperCRouter)
 app.use('/api/breakout-live-c', breakoutLiveCRouter)
-app.use('/api/binary', binaryRouter)
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
@@ -70,9 +67,6 @@ const server = app.listen(PORT, () => {
   // configured yet, start() is a no-op — restart triggered when /settings saves
   // new keys.
   startBreakoutLiveTraderC().catch((e) => console.error('[BreakoutLiveC] start failed:', e.message))
-
-  // === Forex Binary Helper — BB-touch signals for Pocket Option forex pairs ===
-  startForexHelper().catch((e) => console.error('[ForexHelper] start failed:', e))
 })
 
 async function gracefulShutdown(signal: string) {
@@ -88,7 +82,6 @@ async function gracefulShutdown(signal: string) {
   stopBreakoutLiveTraderC()
   stopBreakoutWsTracker()
   stopBreakoutEodSummary()
-  stopForexHelper()
 
   await prisma.$disconnect()
 

@@ -35,11 +35,3 @@ body {
   background: #2b3139;
   border-radius: 3px;
 }
-
-.scrollbar-hide {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-.scrollbar-hide::-webkit-scrollbar {
-  display: none;
-}

@@ -7,7 +7,7 @@ import {
   closeBreakoutPaperTradeMarket as closePaperTradeMarket, closeBreakoutPaperTradeManual as closePaperTradeManual,
   simulateBreakoutPaperFill, isLiveVariant,
 } from '../api/breakoutPaper'
-import { formatPrice } from '../lib/formatters'
+import { formatPrice, fmtUsd } from '../lib/formatters'
 
 interface Props {
   trade: PaperTrade
@@ -32,9 +32,6 @@ function fmtDuration(fromIso: string, toIso?: string | null): string {
   return `${m}м`
 }
 
-function fmtUsd(n: number): string {
-  return `${n >= 0 ? '+' : ''}$${Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2)}`
-}
 // Шаг для <input type="number"> от величины цены — соответствует точности formatPrice.
 function priceStep(ref: number): number {
   const a = Math.abs(ref)

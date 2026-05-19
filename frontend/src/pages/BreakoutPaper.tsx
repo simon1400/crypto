@@ -24,7 +24,7 @@ import BreakoutSignalModal from '../components/BreakoutSignalModal'
 import PositionChartModal, { PositionChartPosition } from '../components/PositionChartModal'
 import SymbolHistoryModal from '../components/SymbolHistoryModal'
 import EquityChart from '../components/EquityChart'
-import { formatDate, pnlColor, fmt2, fmt2Signed, formatPrice } from '../lib/formatters'
+import { formatDate, pnlColor, fmt2, fmt2Signed, formatPrice, fmtUsd } from '../lib/formatters'
 
 function paperTradeToPosition(
   t: PaperTrade,
@@ -218,9 +218,6 @@ function TradeProgressBar({ trade, live, tps }: { trade: PaperTrade; live: Paper
   )
 }
 
-function fmtUsd(n: number): string {
-  return `${n >= 0 ? '+' : ''}$${Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2)}`
-}
 function fmtPrice(n: number, _symbol?: string, _market?: string): string {
   return formatPrice(n)
 }
