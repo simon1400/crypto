@@ -208,6 +208,12 @@ router.get('/status', async (_req, res) => {
     const totalPnlUsd = marginBalance - baseline
     const totalPnlPct = baseline > 0 ? (totalPnlUsd / baseline) * 100 : 0
 
+    // Pending limits live in DB (virtual limits), not on the exchange — count
+    // PENDING_LIMIT rows so the header reflects what the "Pending" tab shows.
+    const pendingOrders = await prisma.breakoutLiveTradeC.count({
+      where: { status: 'PENDING_LIMIT' },
+    })
+
     res.json({
       connected: true,
       net: creds.net,
@@ -223,11 +229,7 @@ router.get('/status', async (_req, res) => {
       totalPnlPct: Math.round(totalPnlPct * 100) / 100,
       baselineSnapshottedAt: cfg.resetAt,
       openPositions: snap.positions.length,
-      // openOrders no longer fetched per /status — virtual limits live in DB,
-      // not on the exchange. Real algo SL orders are tracked by binanceSlOrderId
-      // on the trade row. Always 0 from the UI's perspective unless WS reports
-      // a foreign order, which gets handled by reconciliation, not status.
-      openOrders: 0,
+      openOrders: pendingOrders,
       snapshotAge: Date.now() - snap.updatedAt,
       snapshotSource: snap.source,
       positions: snap.positions.map((p) => ({

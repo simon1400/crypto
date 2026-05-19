@@ -977,13 +977,16 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           baseline snapshot (which was a walletBalance at first enable). Paper
           variants keep using config.currentDepositUsd as before. */}
       {(() => {
+        const liveWalletBalance = isLive ? (liveStatus?.walletBalanceUsdt ?? config.currentDepositUsd) : null
         const liveMarginBalance = isLive ? (liveStatus?.marginBalanceUsdt ?? config.currentDepositUsd) : null
         const liveAvailable = isLive ? (liveStatus?.balanceUsdt ?? config.currentDepositUsd) : null
         const liveUnrealized = isLive ? (liveStatus?.unrealizedPnlUsdt ?? 0) : null
         const liveTotalPnlPct = isLive ? (liveStatus?.totalPnlPct ?? 0) : null
         const liveTotalPnlUsd = isLive ? (liveStatus?.totalPnlUsd ?? 0) : null
 
-        const depoValue = isLive ? (liveMarginBalance ?? 0) : config.currentDepositUsd
+        // "Депозит" = только реализованный итог (walletBalance растёт/падает на close).
+        // "Депо с открытыми" = walletBalance + unrealized (margin balance в Binance UI).
+        const depoValue = isLive ? (liveWalletBalance ?? 0) : config.currentDepositUsd
         const depoSub = isLive
           ? `available $${(liveAvailable ?? 0).toFixed(2)} · baseline $${config.startingDepositUsd.toFixed(2)}`
           : `из $${config.startingDepositUsd}`
