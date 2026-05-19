@@ -771,17 +771,14 @@ curl -X POST http://localhost:3001/api/analyze \
 ## Cross-Cutting Concerns
 <!-- GSD:architecture-end -->
 
-<!-- GSD:workflow-start source:GSD defaults -->
-## GSD Workflow Enforcement
+<!-- GSD:workflow-start source:user override 2026-05-19 -->
+## Workflow — НЕ использовать GSD
 
-Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
+Никогда не запускай GSD скиллы (`/gsd:quick`, `/gsd:execute-phase`, `/gsd:debug`, `/gsd:fast`, `/gsd:plan-phase` и т.д.) для работы в этом репозитории.
 
-Use these entry points:
-- `/gsd:quick` for small fixes, doc updates, and ad-hoc tasks
-- `/gsd:debug` for investigation and bug fixing
-- `/gsd:execute-phase` for planned phase work
+Делай всё напрямую: Read / Edit / Write / Bash. Никаких planner/executor агентов, никаких PLAN.md/SUMMARY.md/CONTEXT.md артефактов, никаких записей в STATE.md или ROADMAP.md.
 
-Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
+Если пользователь явно попросит запустить GSD — тогда можно. По умолчанию — напрямую.
 <!-- GSD:workflow-end -->
 
 <!-- GSD:profile-start -->
