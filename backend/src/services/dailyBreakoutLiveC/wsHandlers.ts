@@ -5,12 +5,14 @@
  *   - 'enL{tradeId}'           → entry MARKET fill (tryFillVirtualLimit)
  *   - 'exL{tradeId}_{REASON}'  → exit MARKET fill (exitLiveTradeSlice)
  *   - 'slL{tradeId}'           → safety-net STOP_MARKET fired (exchange-driven SL)
+ *   - 'tpL{tradeId}_{idx}'     → exchange TAKE_PROFIT_MARKET fired (exchange-driven TP)
  */
 
 import { prisma } from '../../db/prisma'
 import type { OrderTradeUpdateEvent, AccountUpdateEvent } from '../exchanges/binanceFuturesWs'
 import { LOG, snapshot, lastMarkPriceWs, ACTIVE_STATUSES } from './state'
 import { applyVirtualClose, notifyExitTelegram, recomputeTradeMoney } from './virtualSltp'
+import { SPLITS } from '../breakoutCommon/constants'
 
 export async function handleUserDataEvent(ev: any): Promise<void> {
   switch (ev.e) {
@@ -52,6 +54,21 @@ async function handleOrderUpdate(ev: OrderTradeUpdateEvent): Promise<void> {
     if (trade) {
       await handleSlOrderUpdate(trade, ev)
     }
+    return
+  }
+
+  // Exchange-side TP fired — clientOrderId='tpL{tradeId}_{tpIdx}'. We don't
+  // bother with the synthetic 'exL' route here; the algo order already carries
+  // exact fill price + commission + realizedPnl, so we run applyVirtualClose
+  // directly and let the existing trailing/cancel hooks fire.
+  if (cid && cid.startsWith('tpL')) {
+    const rest = cid.slice(3)
+    const underscoreAt = rest.indexOf('_')
+    if (underscoreAt < 1) return
+    const tradeId = parseInt(rest.slice(0, underscoreAt), 10)
+    const tpIdx = parseInt(rest.slice(underscoreAt + 1), 10) as 1 | 2 | 3
+    if (!Number.isFinite(tradeId) || ![1, 2, 3].includes(tpIdx)) return
+    await handleTpOrderUpdate(tradeId, tpIdx, ev)
     return
   }
 
@@ -249,6 +266,91 @@ async function handleSlOrderUpdate(trade: any, ev: OrderTradeUpdateEvent): Promi
   const feePaid = Number(o.n) || 0
   await applyVirtualClose(fresh, 'SL', fillPrice, remainingFrac, pnlR, grossPnl - feePaid, ev.T || ev.E, feePaid)
   console.log(`${LOG} 🛑 exchange SL triggered #${fresh.id} ${fresh.symbol} @ ${fillPrice}`)
+}
+
+/**
+ * Handle exchange TAKE_PROFIT_MARKET fill. The algo order delivers the same
+ * o.ap/o.n/o.rp fields as a regular fill, so we have authoritative numbers
+ * here — no need for the "placeholder then refine" dance the virtual tracker
+ * uses (placeholder is needed when the synchronous order response returns
+ * avgPrice='0' but the WS event then refines; here the WS event is the only
+ * event, no placeholder needed).
+ *
+ * Idempotency: ACTIVE_STATUSES gate + closes[] reason guard. If the virtual
+ * tracker beat the exchange (its MARKET went out first), the row is no longer
+ * in an active status for this slice — we just bail.
+ *
+ * Trailing/cancellation: applyVirtualClose already handles SL retrail on TP1/
+ * TP2 and SL cancel on TP3. It also calls our retrailSlOnExchange. We add
+ * cancelAllTpsOnExchange explicitly for the terminal TP3 case so any other
+ * hanging algo orders are cleared.
+ */
+async function handleTpOrderUpdate(
+  tradeId: number,
+  tpIdx: 1 | 2 | 3,
+  ev: OrderTradeUpdateEvent,
+): Promise<void> {
+  const o = ev.o
+  if (o.X !== 'FILLED') return
+
+  const fresh = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!fresh) return
+  if (!ACTIVE_STATUSES.includes(fresh.status as any)) return
+  const reason = `TP${tpIdx}` as 'TP1' | 'TP2' | 'TP3'
+  const closesArr = ((fresh.closes as any[]) ?? []) as Array<{ reason?: string; percent?: number }>
+  if (closesArr.some((c) => c.reason === reason)) return  // virtual tracker won the race
+
+  const fillPrice = Number(o.ap) || Number(o.L) || 0
+  if (fillPrice <= 0) return
+  const fee = Number(o.n) || 0
+  const exactRealizedPnl = Number(o.rp) || 0  // Binance's authoritative realizedProfit
+
+  // Slice fraction for this TP. Note: the SL trailing logic in applyVirtualClose
+  // reads only the `reason`, not the fraction, to decide where the new currentStop
+  // should sit — so passing the exact split here is correct even though Binance
+  // could in theory deliver a partial fill (which we already gate against above
+  // by requiring X === 'FILLED').
+  const splitFrac = SPLITS[tpIdx - 1] ?? 0
+  const isLong = fresh.side === 'BUY'
+  const initialRisk = Math.abs(fresh.entryPrice - fresh.initialStop)
+  // pnlR rebuilt from triggerPrice for consistency with virtual path; the
+  // grossPnl figure persisted to closes[].pnlUsd is the Binance realizedProfit
+  // so it matches the exchange exactly (recomputeTradeMoney rebuilds the row
+  // from this).
+  const triggerPrice = (fresh.tpLadder as number[])[tpIdx - 1] ?? fillPrice
+  const pnlR = ((isLong ? triggerPrice - fresh.entryPrice : fresh.entryPrice - triggerPrice) / initialRisk) * splitFrac
+
+  // applyVirtualClose expects netPnl (= gross - fee); it reconstructs grossPnl
+  // internally and writes it to closes[].pnlUsd. o.rp is Binance's GROSS
+  // realizedProfit for this fill, so we subtract the fee here to keep the
+  // contract consistent with how handleSlOrderUpdate calls applyVirtualClose.
+  //
+  // Telegram path differs from the virtual MARKET case: virtual path defers
+  // Telegram to handleExitFillUpdate (which fires from cid='exL...'). Exchange
+  // TP fills don't generate an 'exL' event — they ARE the fill — so we send
+  // Telegram directly here. notifyImmediately=false on applyVirtualClose so
+  // it doesn't also fire the Telegram before the row has the close in it.
+  await applyVirtualClose(fresh, reason, fillPrice, splitFrac, pnlR, exactRealizedPnl - fee, ev.T || ev.E, fee)
+  await notifyExitTelegram(tradeId, reason, fillPrice, splitFrac, exactRealizedPnl - fee, false)
+
+  // Drop the fired TP from binanceTpOrderIds so cancelAllTpsOnExchange on a
+  // later terminal exit doesn't try to cancel an already-filled algo (it would
+  // just get -2011 swallowed, but keeping the array tidy is nicer for any
+  // reconcile / UI logic that reads it).
+  // applyVirtualClose may have already cleared the array on terminal=true via
+  // cancelAllTpsOnExchange — re-read to avoid clobbering that with a stale list.
+  const t2 = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (t2) {
+    const remaining = ((t2.binanceTpOrderIds as any[]) ?? []).filter((e: any) => Number(e.tpIdx) !== tpIdx)
+    if (remaining.length !== ((t2.binanceTpOrderIds as any[]) ?? []).length) {
+      await prisma.breakoutLiveTradeC.update({
+        where: { id: tradeId },
+        data: { binanceTpOrderIds: remaining as any },
+      }).catch(() => { /* noop */ })
+    }
+  }
+
+  console.log(`${LOG} 🎯 exchange ${reason} triggered #${fresh.id} ${fresh.symbol} @ ${fillPrice} realizedPnl=${exactRealizedPnl.toFixed(4)} fee=${fee.toFixed(4)}`)
 }
 
 async function handleAccountUpdate(ev: AccountUpdateEvent): Promise<void> {

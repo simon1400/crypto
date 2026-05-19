@@ -22,6 +22,7 @@ import { fmtPrice, fmtPnl } from './formatters'
 import { getFilters } from './filters'
 import { sendLiveTelegram } from './telegram'
 import { cancelSlOnExchange, retrailSlOnExchange } from './exchangeSl'
+import { cancelTpOnExchange, cancelAllTpsOnExchange } from './exchangeTp'
 import { seedSnapshotFromRest } from './snapshot'
 
 /**
@@ -269,10 +270,14 @@ async function exitLiveTradeSlice(
   let feePaid = 0
   // If we're about to close on SL, cancel the exchange-side STOP_MARKET first
   // so the two paths don't race (both would try to reduceOnly, second one
-  // gets -2022). For TP exits the SL is *not* at this price level — leaving
-  // it is fine, retrailSlOnExchange below repositions it after the partial.
+  // gets -2022). Same race protection for TPs: cancel the matching exchange
+  // TAKE_PROFIT_MARKET so our MARKET reduceOnly doesn't get -2022 when the
+  // exchange algo fires a millisecond later.
   if (reason === 'SL') {
     await cancelSlOnExchange(fresh).catch(() => { /* best-effort */ })
+  } else if (reason === 'TP1' || reason === 'TP2' || reason === 'TP3') {
+    const tpIdx = reason === 'TP1' ? 1 : reason === 'TP2' ? 2 : 3
+    await cancelTpOnExchange(fresh, tpIdx).catch(() => { /* best-effort */ })
   }
   // Tagged clientOrderId — when ORDER_TRADE_UPDATE arrives for this MARKET,
   // handleExitFillUpdate uses the cid to find the trade row + reason and
@@ -402,10 +407,13 @@ export async function applyVirtualClose(
   // Sync the exchange-side SL with the new currentStop / position size.
   //  - TP1/TP2: position shrunk + currentStop trailed (BE / TP1) — replace old
   //    STOP_MARKET with a fresh one at the new trigger.
-  //  - SL / TP3: position is closed (terminal) — cancel the safety-net SL so
-  //    it doesn't dangle on the book.
+  //  - SL / TP3: position is closed (terminal) — cancel the safety-net SL AND
+  //    any remaining exchange TPs so nothing dangles on the book.
   if (terminal) {
     await cancelSlOnExchange(fresh).catch(() => { /* best-effort */ })
+    // Re-read the row so binanceTpOrderIds reflects whichever TP fired (if any).
+    const t2 = await prisma.breakoutLiveTradeC.findUnique({ where: { id: fresh.id } })
+    if (t2) await cancelAllTpsOnExchange(t2).catch(() => { /* best-effort */ })
   } else if (reason === 'TP1' || reason === 'TP2') {
     await retrailSlOnExchange(fresh.id).catch((e) =>
       console.warn(`${LOG} retrailSlOnExchange threw: ${e?.message ?? e}`))

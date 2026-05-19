@@ -21,6 +21,7 @@ import type { BinanceFuturesClient } from '../exchanges/binanceFutures'
 import { BinanceApiError } from '../exchanges/binanceFutures'
 import { LOG } from './state'
 import { attachSlAfterEntry } from './exchangeSl'
+import { attachTpsAfterEntry } from './exchangeTp'
 
 export interface ReconcileReport {
   hasUntrackedPositions: boolean
@@ -122,6 +123,18 @@ export async function reconcileWithExchange(client: BinanceFuturesClient): Promi
       if (!t.binanceSlOrderId) {
         await attachSlAfterEntry(t.id).catch((e) =>
           console.warn(`${LOG} reconcile: attachSl #${t.id} threw: ${e?.message ?? e}`))
+      }
+
+      // Ensure exchange-side TP ladder is in place for fresh OPEN positions
+      // that don't have it yet (typically: post-migration or restart between
+      // entry-fill and attachTpsAfterEntry). Only place when status === 'OPEN'
+      // AND binanceTpOrderIds is empty — for TP1_HIT/TP2_HIT, partial TPs
+      // were already executed and re-placing them would double-close on the
+      // next price touch. Those continue to exit via the virtual tracker.
+      const tpAlgos = ((t.binanceTpOrderIds as any[]) ?? []) as Array<unknown>
+      if (t.status === 'OPEN' && tpAlgos.length === 0) {
+        await attachTpsAfterEntry(t.id).catch((e) =>
+          console.warn(`${LOG} reconcile: attachTps #${t.id} threw: ${e?.message ?? e}`))
       }
 
       // Heal entryPrice drift. Earlier rows may have been written with the

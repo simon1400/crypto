@@ -23,6 +23,7 @@ export interface RunningState {
   marketDataWs: BinanceMarketDataStream
   tickTimer: NodeJS.Timeout | null
   eodTimer: NodeJS.Timeout | null
+  watchdogTimer: NodeJS.Timeout | null
   net: 'testnet' | 'prod'
 }
 

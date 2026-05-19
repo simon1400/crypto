@@ -6,6 +6,7 @@ import { prisma } from '../../db/prisma'
 import { LOG, state, ACTIVE_STATUSES } from './state'
 import { getFilters } from './filters'
 import { cancelSlOnExchange } from './exchangeSl'
+import { cancelAllTpsOnExchange } from './exchangeTp'
 import { sendLiveTelegram } from './telegram'
 
 /**
@@ -72,9 +73,11 @@ export async function flattenAllOpenC(reason: string): Promise<{ closed: number;
 
       const closeSide: 'BUY' | 'SELL' = t.side === 'BUY' ? 'SELL' : 'BUY'
 
-      // Cancel the safety-net SL on the exchange before sending our MARKET —
-      // otherwise both could race and one gets -2022 ReduceOnly rejected.
+      // Cancel the safety-net SL AND any remaining exchange TPs before sending
+      // our MARKET — otherwise the next algo trigger races our MARKET and the
+      // loser gets -2022 ReduceOnly rejected.
       await cancelSlOnExchange(t).catch(() => { /* best-effort */ })
+      await cancelAllTpsOnExchange(t).catch(() => { /* best-effort */ })
 
       // MARKET reduceOnly to close.
       try {
@@ -101,6 +104,7 @@ export async function flattenAllOpenC(reason: string): Promise<{ closed: number;
               },
             ] as any,
             binanceSlOrderId: null,
+            binanceTpOrderIds: [] as any,
           },
         })
         closed++
@@ -198,8 +202,10 @@ export async function flattenOneOpenLiveC(tradeId: number, reason: string): Prom
   }
 
   const closeSide: 'BUY' | 'SELL' = t.side === 'BUY' ? 'SELL' : 'BUY'
-  // Cancel the safety-net SL first — see flattenAllOpenC for rationale.
+  // Cancel the safety-net SL + any remaining exchange TPs first — see
+  // flattenAllOpenC for rationale.
   await cancelSlOnExchange(t).catch(() => { /* best-effort */ })
+  await cancelAllTpsOnExchange(t).catch(() => { /* best-effort */ })
   try {
     await state.current.client.placeOrder({
       symbol: t.symbol,
@@ -224,6 +230,7 @@ export async function flattenOneOpenLiveC(tradeId: number, reason: string): Prom
           },
         ] as any,
         binanceSlOrderId: null,
+        binanceTpOrderIds: [] as any,
       },
     })
     console.log(`${LOG} flattened #${t.id} ${t.symbol} ${t.side} qty ${qty} via MARKET (${reason})`)

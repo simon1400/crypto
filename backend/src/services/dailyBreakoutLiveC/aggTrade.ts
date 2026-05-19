@@ -23,6 +23,7 @@ import { trackLiveTrade } from './virtualSltp'
 import { recordAttempt } from './attempts'
 import { cancelPairOrder } from './wsHandlers'
 import { attachSlAfterEntry } from './exchangeSl'
+import { attachTpsAfterEntry } from './exchangeTp'
 import { seedSnapshotFromRest } from './snapshot'
 
 export function handleAggTrade(sym: string, price: number, ts: number): void {
@@ -282,6 +283,8 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
     await refreshAggTradeSubscriptions().catch(() => { /* noop */ })
     await attachSlAfterEntry(trade.id).catch((e) =>
       console.warn(`${LOG} attachSlAfterEntry threw: ${e?.message ?? e}`))
+    await attachTpsAfterEntry(trade.id).catch((e) =>
+      console.warn(`${LOG} attachTpsAfterEntry threw: ${e?.message ?? e}`))
 
     // Refresh balance — fee was just charged, margin was just locked, next
     // sizing cycle needs accurate currentDepositUsd.
