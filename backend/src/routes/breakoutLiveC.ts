@@ -277,6 +277,7 @@ router.post('/wipe-all', async (req, res) => {
 
     const deletedTrades = await prisma.breakoutLiveTradeC.deleteMany({})
     const deletedFunding = await prisma.breakoutLiveFundingC.deleteMany({})
+    const deletedAttempts = await prisma.breakoutLiveAttemptC.deleteMany({})
     const reset = await prisma.breakoutLiveConfigC.update({
       where: { id: 1 },
       data: {
@@ -300,6 +301,7 @@ router.post('/wipe-all', async (req, res) => {
       ok: true,
       deletedTrades: deletedTrades.count,
       deletedFunding: deletedFunding.count,
+      deletedAttempts: deletedAttempts.count,
       config: reset,
     })
   } catch (e: any) {
