@@ -5,6 +5,8 @@ import {
   type BreakoutVariant,
 } from '../api/breakoutPaper'
 import { formatDate, fmt2, fmt2Signed, fmtPrice, pnlColor } from '../lib/formatters'
+import PaperStatusBadge from './breakoutPaper/PaperStatusBadge'
+import { isOpenStatus } from './breakoutPaper/constants'
 
 interface Props {
   symbol: string
@@ -12,26 +14,6 @@ interface Props {
   onSelectTrade?: (trade: PaperTrade) => void
   /** Which paper-trader variant the history is read from. Defaults to 'A'. */
   variant?: BreakoutVariant
-}
-
-const STATUS_LABEL: Record<string, string> = {
-  OPEN: 'Открыта',
-  TP1_HIT: 'TP1 ✓',
-  TP2_HIT: 'TP2 ✓',
-  TP3_HIT: 'TP3 ✓',
-  CLOSED: 'Закрыта',
-  SL_HIT: 'SL',
-  EXPIRED: 'Истёк',
-}
-
-function statusBadgeClasses(status: string, pnl: number): string {
-  if (status === 'OPEN' || status === 'TP1_HIT' || status === 'TP2_HIT') {
-    return 'bg-accent/15 text-accent'
-  }
-  if (status === 'SL_HIT') return 'bg-short/15 text-short'
-  if (pnl > 0) return 'bg-long/15 text-long'
-  if (pnl < 0) return 'bg-short/10 text-short'
-  return 'bg-neutral/15 text-neutral'
 }
 
 export default function SymbolHistoryModal({ symbol, onClose, onSelectTrade, variant = 'A' }: Props) {
@@ -113,7 +95,7 @@ export default function SymbolHistoryModal({ symbol, onClose, onSelectTrade, var
               </thead>
               <tbody>
                 {trades.map(t => {
-                  const isOpen = ['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(t.status)
+                  const isOpen = isOpenStatus(t.status)
                   const sideText = t.side === 'BUY' ? 'LONG' : 'SHORT'
                   const sideCls = t.side === 'BUY' ? 'text-long' : 'text-short'
                   const closes = t.closes ?? []
@@ -177,9 +159,7 @@ export default function SymbolHistoryModal({ symbol, onClose, onSelectTrade, var
                         )}
                       </td>
                       <td className="px-3 py-2 text-center">
-                        <span className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${statusBadgeClasses(t.status, t.netPnlUsd)}`}>
-                          {STATUS_LABEL[t.status] ?? t.status}
-                        </span>
+                        <PaperStatusBadge status={t.status} pnl={t.netPnlUsd} closes={t.closes} />
                       </td>
                     </tr>
                   )

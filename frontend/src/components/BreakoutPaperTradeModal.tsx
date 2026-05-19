@@ -8,6 +8,8 @@ import {
   simulateBreakoutPaperFill, isLiveVariant,
 } from '../api/breakoutPaper'
 import { formatPrice, fmtUsd } from '../lib/formatters'
+import { formatElapsed } from './breakoutPaper/helpers'
+import { isOpenStatus } from './breakoutPaper/constants'
 
 interface Props {
   trade: PaperTrade
@@ -18,18 +20,6 @@ interface Props {
   onDelete?: (id: number) => void
   /** Which paper-trader variant this modal acts on. Defaults to 'A'. */
   variant?: BreakoutVariant
-}
-
-function fmtDuration(fromIso: string, toIso?: string | null): string {
-  const from = new Date(fromIso).getTime()
-  const to = toIso ? new Date(toIso).getTime() : Date.now()
-  const sec = Math.max(0, Math.round((to - from) / 1000))
-  const d = Math.floor(sec / 86400)
-  const h = Math.floor((sec % 86400) / 3600)
-  const m = Math.floor((sec % 3600) / 60)
-  if (d > 0) return `${d}д ${h}ч`
-  if (h > 0) return `${h}ч ${m}м`
-  return `${m}м`
 }
 
 // Шаг для <input type="number"> от величины цены — соответствует точности formatPrice.
@@ -45,7 +35,6 @@ function pct(from: number, to: number, side: 'BUY' | 'SELL'): string {
   return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
 }
 
-const isOpen = (status: string) => ['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(status)
 const STATUS_OPTIONS = ['OPEN', 'TP1_HIT', 'TP2_HIT', 'TP3_HIT', 'CLOSED', 'SL_HIT', 'EXPIRED']
 
 export default function PaperTradeModal({ trade: initialTrade, live = null, onClose, onUpdate, onDelete, variant = 'A' }: Props) {
@@ -59,7 +48,7 @@ export default function PaperTradeModal({ trade: initialTrade, live = null, onCl
   const sideColor = trade.side === 'BUY' ? 'text-long' : 'text-short'
   const sideEmoji = trade.side === 'BUY' ? '🟢' : '🔴'
   const splits = [50, 30, 20]
-  const isStillOpen = isOpen(trade.status)
+  const isStillOpen = isOpenStatus(trade.status)
   const tpFillsCount = trade.closes.filter(c => c.reason === 'TP1' || c.reason === 'TP2' || c.reason === 'TP3').length
   const closedFrac = trade.closes.reduce((a, c) => a + c.percent, 0) / 100
   const remainingPositionUsd = trade.positionSizeUsd * Math.max(0, 1 - closedFrac)
@@ -193,7 +182,7 @@ export default function PaperTradeModal({ trade: initialTrade, live = null, onCl
     }])
   }
 
-  const canEdit = isOpen(trade.status)
+  const canEdit = isOpenStatus(trade.status)
 
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -213,7 +202,7 @@ export default function PaperTradeModal({ trade: initialTrade, live = null, onCl
             <p className="text-sm text-text-secondary">
               открыто {new Date(trade.openedAt).toLocaleString('ru-RU')}
               <span className="mx-2 text-text-secondary/50">·</span>
-              <span title="Длительность сделки">⏱ {fmtDuration(trade.openedAt, trade.closedAt)}</span>
+              <span title="Длительность сделки">⏱ {formatElapsed(trade.openedAt, trade.closedAt)}</span>
               {trade.closedAt && (
                 <>
                   <span className="mx-2 text-text-secondary/50">·</span>
