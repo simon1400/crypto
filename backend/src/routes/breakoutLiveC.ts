@@ -22,7 +22,7 @@ import {
 } from '../services/exchanges/binanceFutures'
 import { refreshLiveBalance } from './_liveBalanceShared'
 import { buildSharedReadHandlers } from './breakoutPaperRouterFactory'
-import { flattenAllOpenLiveC, flattenOneOpenLiveC } from '../services/dailyBreakoutLiveTraderC'
+import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot } from '../services/dailyBreakoutLiveTraderC'
 
 // Re-export so existing import paths (`from './breakoutLiveC'`) keep working.
 export { refreshLiveBalance }
@@ -179,18 +179,26 @@ router.get('/status', async (_req, res) => {
       })
     }
 
-    const client = getBinanceClient(creds)
-    await client.syncTime()
-    const [bal, positions, openOrders] = await Promise.all([
-      refreshLiveBalance(client),
-      client.getOpenPositions(),
-      client.getOpenOrders(),
-    ])
-    // Baseline for P&L is startingDepositUsd, snapshotted at first enable (see PUT /config).
-    // If Strategy has never been turned on, baseline == default ($100) — UI will
-    // show that visually (it's expected).
+    // WS-driven snapshot — no REST call here in the hot path. getLiveSnapshot()
+    // refreshes itself via REST only when older than 5 min. UI polls /status
+    // every 10s — at 6 polls/min that's zero exchange traffic 99% of the time.
+    // (Was burning 50+ weight/min on the old getAccount/getOpenPositions/
+    //  getOpenOrders trio, triggering 418/-1003 IP bans.)
+    const snap = await getLiveSnapshot()
+    if (!snap) {
+      // Trader not running (WS not connected) — return safe defaults.
+      return res.json({
+        connected: false,
+        net: creds.net,
+        reason: 'Live trader is not running. Check backend logs.',
+        enabled: cfg.enabled,
+        killSwitchActive: cfg.killSwitchActive,
+        killSwitchReason: cfg.killSwitchReason,
+      })
+    }
+
     const baseline = cfg.startingDepositUsd
-    const totalPnlUsd = bal.available - baseline
+    const totalPnlUsd = snap.available - baseline
     const totalPnlPct = baseline > 0 ? (totalPnlUsd / baseline) * 100 : 0
 
     res.json({
@@ -199,38 +207,30 @@ router.get('/status', async (_req, res) => {
       enabled: cfg.enabled,
       killSwitchActive: cfg.killSwitchActive,
       killSwitchReason: cfg.killSwitchReason,
-      // Use 'balanceUsdt' as the canonical current deposit (live Binance source of truth).
-      balanceUsdt: bal.available,
-      walletBalanceUsdt: bal.total,
+      balanceUsdt: snap.available,
+      walletBalanceUsdt: snap.total,
       baselineUsd: baseline,
       totalPnlUsd: Math.round(totalPnlUsd * 100) / 100,
       totalPnlPct: Math.round(totalPnlPct * 100) / 100,
       baselineSnapshottedAt: cfg.resetAt,
-      openPositions: positions.length,
-      openOrders: openOrders.length,
-      usedWeight1m: client.usedWeight1m,
-      orderCount1m: client.orderCount1m,
-      positions: positions.map((p) => ({
+      openPositions: snap.positions.length,
+      // openOrders no longer fetched per /status — virtual limits live in DB,
+      // not on the exchange. Real algo SL orders are tracked by binanceSlOrderId
+      // on the trade row. Always 0 from the UI's perspective unless WS reports
+      // a foreign order, which gets handled by reconciliation, not status.
+      openOrders: 0,
+      snapshotAge: Date.now() - snap.updatedAt,
+      snapshotSource: snap.source,
+      positions: snap.positions.map((p) => ({
         symbol: p.symbol,
-        positionAmt: Number(p.positionAmt),
-        entryPrice: Number(p.entryPrice),
-        markPrice: Number(p.markPrice),
-        unRealizedProfit: Number(p.unRealizedProfit),
-        leverage: Number(p.leverage),
+        positionAmt: p.positionAmt,
+        entryPrice: p.entryPrice,
+        markPrice: p.markPrice,
+        unRealizedProfit: p.unRealizedProfit,
+        leverage: p.leverage,
         marginType: p.marginType,
       })),
-      orders: openOrders.map((o) => ({
-        orderId: o.orderId,
-        clientOrderId: o.clientOrderId,
-        symbol: o.symbol,
-        side: o.side,
-        type: o.type,
-        price: Number(o.price),
-        stopPrice: Number(o.stopPrice),
-        origQty: Number(o.origQty),
-        status: o.status,
-        reduceOnly: o.reduceOnly,
-      })),
+      orders: [],
     })
   } catch (e: any) {
     const msg = e instanceof BinanceApiError ? e.message : e.message

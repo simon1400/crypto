@@ -39,7 +39,8 @@ import { detectRange, BreakoutEngineConfig } from '../scalper/dailyBreakoutEngin
 import { loadHistorical } from '../scalper/historicalLoader'
 import { computeSizing } from './marginGuard'
 import { DEFAULT_BREAKOUT_SETUPS } from './dailyBreakoutLiveScanner'
-import { refreshLiveBalance } from '../routes/_liveBalanceShared'
+// refreshLiveBalance removed 2026-05-19 — superseded by getLiveSnapshot which
+// pulls balance from the WS-driven snapshot instead of a per-cycle REST hit.
 
 const LOG = '[BreakoutLiveC]'
 const TG_PREFIX = '⚠️ <b>[LIVE C]</b> '
@@ -175,6 +176,16 @@ export async function startBreakoutLiveTraderC(): Promise<void> {
       return
     }
 
+    // Seed the live snapshot once via REST so /status has data immediately
+    // (before the first ACCOUNT_UPDATE arrives). After this, the snapshot is
+    // maintained by WS handlers; REST is only used as a 5-min staleness backup.
+    try {
+      await seedSnapshotFromRest(client, creds.net, 'rest-seed')
+      console.log(`${LOG} snapshot seeded — bal $${liveSnapshot?.available?.toFixed(2) ?? '?'} · positions ${liveSnapshot?.positions?.length ?? 0}`)
+    } catch (e: any) {
+      console.warn(`${LOG} snapshot seed failed: ${e.message} — /status will return null until first ACCOUNT_UPDATE`)
+    }
+
     // Reconcile DB ↔ exchange BEFORE starting the WS handlers — we want to
     // know about any drift (unknown positions, missing orders) before live
     // events start flowing.
@@ -270,6 +281,88 @@ export async function restartBreakoutLiveTraderC(): Promise<void> {
 
 export function isRunning(): boolean { return state !== null }
 export function currentNet(): 'testnet' | 'prod' | null { return state?.net ?? null }
+
+// ============================================================================
+// Live snapshot — WS-driven account state (replaces REST polling from /status)
+//
+// Why: the UI polls /status every 10s for connectivity + balance + positions.
+// Hitting Binance with 3 SIGNED REST calls × 6/min (getAccount + getOpenPositions
+// + getOpenOrders) burned through rate-limit weight and triggered 418/-1003
+// IP bans (2026-05-19). Solution: keep an in-memory snapshot driven by
+// ACCOUNT_UPDATE WS events. REST is only used to seed the snapshot on start
+// and as a stale-data refresh (>= 5 min old).
+//
+// ACCOUNT_UPDATE delivers full asset balances and position deltas on every
+// trade event, so the snapshot stays current without polling.
+// ============================================================================
+
+export interface LiveSnapshot {
+  net: 'testnet' | 'prod' | null
+  available: number   // free USDT balance (USDT-M futures wallet)
+  total: number       // wallet balance (including unrealized)
+  positions: Array<{
+    symbol: string
+    positionAmt: number
+    entryPrice: number
+    markPrice: number       // last seen via aggTrade; null if no recent tick
+    unRealizedProfit: number
+    leverage: number
+    marginType: 'isolated' | 'cross'
+  }>
+  updatedAt: number   // ms epoch; consumer can compare with Date.now() for staleness
+  source: 'rest-seed' | 'ws-account-update' | 'rest-refresh'
+}
+
+let liveSnapshot: LiveSnapshot | null = null
+
+// Per-symbol last mark price from aggTrade WS — used to compute unrealized PnL
+// in the snapshot without an extra REST call.
+const lastMarkPriceWs = new Map<string, number>()
+
+const SNAPSHOT_STALE_MS = 5 * 60 * 1000  // 5 min — refresh REST if older
+
+export async function getLiveSnapshot(forceRefresh = false): Promise<LiveSnapshot | null> {
+  if (!state) return null
+  if (forceRefresh || !liveSnapshot || Date.now() - liveSnapshot.updatedAt > SNAPSHOT_STALE_MS) {
+    try {
+      await seedSnapshotFromRest(state.client, state.net, forceRefresh ? 'rest-refresh' : 'rest-refresh')
+    } catch (e: any) {
+      console.warn(`${LOG} snapshot refresh failed: ${e.message} — returning stale snapshot`)
+    }
+  }
+  return liveSnapshot
+}
+
+async function seedSnapshotFromRest(
+  client: BinanceFuturesClient,
+  net: 'testnet' | 'prod',
+  source: 'rest-seed' | 'rest-refresh',
+): Promise<void> {
+  // Single getAccount call covers balance + positions. Saves us from the old
+  // getAccount + getOpenPositions double-hit. Weight: 5 (vs 5+5 before).
+  const acc = await client.getAccount()
+  const usdt = acc.assets.find((a) => a.asset === 'USDT')
+  const available = usdt ? Number(usdt.availableBalance) : 0
+  const total = usdt ? Number(usdt.walletBalance) : 0
+  const positions = (acc.positions ?? [])
+    .filter((p) => Number(p.positionAmt) !== 0)
+    .map((p) => ({
+      symbol: p.symbol,
+      positionAmt: Number(p.positionAmt),
+      entryPrice: Number(p.entryPrice),
+      markPrice: lastMarkPriceWs.get(p.symbol) ?? Number(p.markPrice ?? p.entryPrice),
+      unRealizedProfit: Number(p.unRealizedProfit ?? 0),
+      leverage: Number(p.leverage ?? 1),
+      marginType: (p.marginType === 'isolated' ? 'isolated' : 'cross') as 'isolated' | 'cross',
+    }))
+  liveSnapshot = { net, available, total, positions, updatedAt: Date.now(), source }
+  // Mirror into BreakoutLiveConfigC.currentDepositUsd so sizing/cycle reads
+  // stay in sync with the snapshot — same effect as the old refreshLiveBalance.
+  await prisma.breakoutLiveConfigC.update({
+    where: { id: 1 },
+    data: { currentDepositUsd: available },
+  }).catch(() => { /* noop — config row absent at very first boot */ })
+}
 
 // ============================================================================
 // Cycle (5 min) — placement / safety net / EOD
@@ -1012,19 +1105,16 @@ async function placeLimitsForRanges(
   const utcDate = new Date().toISOString().slice(0, 10)
   const todayStartUtc = new Date(`${utcDate}T00:00:00.000Z`)
 
-  // Fresh balance snapshot for sizing — pulled once per cycle, all symbols share it.
-  let available: number
-  try {
-    const bal = await refreshLiveBalance(client)
-    available = bal.available
-  } catch (e: any) {
-    console.warn(`${LOG} skip cycle — balance fetch failed: ${e.message}`)
+  // Pull available balance from the WS-driven snapshot. No REST call — the
+  // snapshot is updated by ACCOUNT_UPDATE on every fill / TP / SL / funding.
+  // getLiveSnapshot() will refresh from REST if older than 5 min, so worst
+  // case is one weight=5 call per 5 min instead of every 60s.
+  const snap = await getLiveSnapshot()
+  if (!snap || snap.available <= 0) {
+    console.warn(`${LOG} skip cycle — no balance snapshot or zero USDT`)
     return
   }
-  if (available <= 0) {
-    console.warn(`${LOG} skip cycle — zero available USDT`)
-    return
-  }
+  const available = snap.available
 
   const filters = await getFilters(client)
 
@@ -1865,10 +1955,63 @@ async function handleAccountUpdate(ev: AccountUpdateEvent): Promise<void> {
   // 'a.B' deltas contain the actual USDT amount charged/credited.
   if (ev.a?.m === 'FUNDING_FEE') {
     await logFundingFromEvent(ev)
-    return
+    // funding still updates balance — fall through to snapshot update
   }
-  // Position/balance updates feed reconciliation; for now we only consume them
-  // implicitly via REST when the cycle/status endpoint queries.
+
+  // Update the live snapshot from ACCOUNT_UPDATE deltas. ev.a.B carries asset
+  // balances (we care about USDT), ev.a.P carries position deltas (one entry
+  // per symbol that changed in this event — not the full position set, so we
+  // merge with the existing snapshot rather than replacing).
+  if (!liveSnapshot) return  // snapshot not yet seeded; first seedSnapshotFromRest will pick this up
+
+  const usdt = ev.a?.B?.find((b) => b.a === 'USDT')
+  if (usdt) {
+    // wb = wallet balance (post-event); cw = cross wallet balance
+    liveSnapshot.total = Number(usdt.wb)
+    // Binance doesn't broadcast availableBalance per WS — derive: total minus
+    // isolated-margin locked in positions. Close enough for the UI; the next
+    // REST refresh (≤5 min) will resync if drift accumulates.
+    let isolatedLocked = 0
+    for (const p of liveSnapshot.positions) {
+      if (p.marginType === 'isolated' && p.positionAmt !== 0) {
+        isolatedLocked += Math.abs(p.positionAmt * p.entryPrice) / Math.max(p.leverage, 1)
+      }
+    }
+    liveSnapshot.available = Math.max(0, liveSnapshot.total - isolatedLocked)
+  }
+
+  const positionDeltas = ev.a?.P ?? []
+  for (const d of positionDeltas) {
+    const amt = Number(d.pa)
+    const idx = liveSnapshot.positions.findIndex((p) => p.symbol === d.s)
+    if (amt === 0) {
+      // position closed
+      if (idx >= 0) liveSnapshot.positions.splice(idx, 1)
+      continue
+    }
+    const updated = {
+      symbol: d.s,
+      positionAmt: amt,
+      entryPrice: Number(d.ep),
+      markPrice: lastMarkPriceWs.get(d.s) ?? Number(d.ep),
+      unRealizedProfit: Number(d.up),
+      leverage: idx >= 0 ? liveSnapshot.positions[idx].leverage : 1,  // not in event; keep last
+      marginType: (d.mt === 'isolated' ? 'isolated' : 'cross') as 'isolated' | 'cross',
+    }
+    if (idx >= 0) liveSnapshot.positions[idx] = updated
+    else liveSnapshot.positions.push(updated)
+  }
+
+  liveSnapshot.updatedAt = Date.now()
+  liveSnapshot.source = 'ws-account-update'
+
+  // Reflect available balance into config for sizing alignment.
+  if (usdt) {
+    await prisma.breakoutLiveConfigC.update({
+      where: { id: 1 },
+      data: { currentDepositUsd: liveSnapshot.available },
+    }).catch(() => { /* noop */ })
+  }
 }
 
 /**
@@ -1955,6 +2098,19 @@ const lastTickProcessedAt = new Map<string, number>()
 
 function handleAggTrade(sym: string, price: number, ts: number): void {
   lastAggTradeAt.set(sym, ts)
+  lastMarkPriceWs.set(sym, price)
+
+  // Keep the snapshot's per-position markPrice in sync (no DB write — just
+  // in-memory). Lets /status return current mark without a REST hit.
+  if (liveSnapshot) {
+    const pos = liveSnapshot.positions.find((p) => p.symbol === sym)
+    if (pos) {
+      pos.markPrice = price
+      // Recompute unrealized for this position from the new mark.
+      // Sign convention: long with markPrice > entry = positive.
+      pos.unRealizedProfit = (price - pos.entryPrice) * pos.positionAmt
+    }
+  }
 
   const now = Date.now()
   const last = lastTickProcessedAt.get(sym) ?? 0
