@@ -70,6 +70,17 @@ export async function runLiveCycle(): Promise<void> {
     // Runs every cycle so a 30s ban window auto-recovers on the next tick.
     await reconcileSlTrailedLevel().catch((e) =>
       console.warn(`${LOG} reconcileSlTrailedLevel threw: ${e?.message ?? e}`))
+
+    // Sweep stray reduce-only algo orders — orphans with mismatched qty or
+    // missing positions. Mostly catches the case where placeSlOnExchange's
+    // signed POST got rate-limited so Binance gave the order an auto-generated
+    // clientOrderId; the cid-parser path misses it but Path B (positionless /
+    // size-stale heuristic) catches it. Boot + EOD runs alone weren't enough —
+    // observed AAVE+LINK orphans persisting from morning rate-limit cascade.
+    if (state.current) {
+      await sweepStrayAlgoOrders(state.current.client).catch((e) =>
+        console.warn(`${LOG} sweepStrayAlgoOrders threw: ${e?.message ?? e}`))
+    }
   } catch (e: any) {
     console.error(`${LOG} cycle threw:`, e.message)
   } finally {

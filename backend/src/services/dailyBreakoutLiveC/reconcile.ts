@@ -387,12 +387,30 @@ export async function sweepStrayAlgoOrders(client: BinanceFuturesClient): Promis
     console.warn(`${LOG} sweepStrayAlgos: getOpenAlgoOrders failed: ${e.message}`)
     return { cancelled: 0, checked: 0 }
   }
+  // Pull live positions to detect orphans whose owner can't be parsed from
+  // cid. Binance auto-generates a random alphanumeric clientOrderId when our
+  // signed POST drops the cid field (some rate-limit retry paths used to do
+  // this). Those algos look like rogue orders to the cid parser but they're
+  // still our SL/TP for some prior position size — observed 2026-05-20 on
+  // AAVE (qty=45 @ 87.569) and LINK (qty=410 @ 9.552) still alive after
+  // retrail moved the real SL to BE on the smaller remaining qty.
+  let positions: Awaited<ReturnType<typeof client.getOpenPositions>>
+  try {
+    positions = await client.getOpenPositions()
+  } catch {
+    positions = []
+  }
+  const posBySymbol = new Map<string, number>()
+  for (const p of positions) {
+    const amt = Math.abs(Number(p.positionAmt))
+    if (amt > 0) posBySymbol.set(p.symbol, amt)
+  }
+
   let cancelled = 0
   let checked = 0
   for (const o of algoOrders) {
-    const cid = o.clientAlgoId
-    if (!cid) continue
-    // Parse our cid format. slL{id} or tpL{id}_{idx}. Anything else = manual.
+    const cid = o.clientAlgoId || ''
+    // Path A: cid matches our format — cancel if owning trade is terminal.
     let tradeId: number | null = null
     if (cid.startsWith('slL')) {
       tradeId = parseInt(cid.slice(3), 10)
@@ -401,22 +419,50 @@ export async function sweepStrayAlgoOrders(client: BinanceFuturesClient): Promis
       const underscore = rest.indexOf('_')
       if (underscore > 0) tradeId = parseInt(rest.slice(0, underscore), 10)
     }
-    if (!Number.isFinite(tradeId) || tradeId === null) continue  // not our cid
+    if (Number.isFinite(tradeId) && tradeId !== null) {
+      checked++
+      const t = await prisma.breakoutLiveTradeC.findUnique({
+        where: { id: tradeId },
+        select: { status: true, symbol: true },
+      })
+      if (!t) continue
+      if (!['CLOSED', 'SL_HIT', 'TP3_HIT', 'EXPIRED', 'CANCELLED'].includes(t.status)) continue
+      try {
+        await client.cancelAlgoOrder(o.symbol, { algoId: o.algoId })
+        console.log(`${LOG} sweepStrayAlgos cancelled ${o.symbol} ${cid} (#${tradeId} status=${t.status})`)
+        cancelled++
+      } catch (e: any) {
+        if (e instanceof BinanceApiError && (e.code === -2011 || e.code === -2013)) continue
+        console.warn(`${LOG} sweepStrayAlgos cancel ${o.symbol} ${cid} failed: ${e.message}`)
+      }
+      continue
+    }
+
+    // Path B: cid not our format. Treat as orphan only if it's a reduce-only
+    // exit algo AND either:
+    //   - no live position on the symbol (zombie reduceOnly), OR
+    //   - algo qty > live positionAmt (size-stale, e.g. from before a TP1
+    //     partial close reduced position to ~50%)
+    // Both conditions are safe to cancel — a reduceOnly STOP_MARKET on top of
+    // the proper one is at best redundant and at worst would fire on a future
+    // re-entry into the same symbol at an unexpected level.
+    if (!o.reduceOnly) continue
+    const orderType = String((o as any).type ?? (o as any).orderType ?? '')
+    if (orderType !== 'STOP_MARKET' && orderType !== 'TAKE_PROFIT_MARKET') continue
+    const algoQty = Number((o as any).quantity ?? (o as any).origQty ?? 0)
+    const livePosAmt = posBySymbol.get(o.symbol) ?? 0
+    const isPositionless = livePosAmt === 0
+    const isSizeStale = algoQty > livePosAmt + 1e-8
+    if (!isPositionless && !isSizeStale) continue
     checked++
-    const t = await prisma.breakoutLiveTradeC.findUnique({
-      where: { id: tradeId },
-      select: { status: true, symbol: true },
-    })
-    if (!t) continue
-    // Terminal statuses → algo should already be gone. Cancel if it isn't.
-    if (!['CLOSED', 'SL_HIT', 'TP3_HIT', 'EXPIRED', 'CANCELLED'].includes(t.status)) continue
     try {
       await client.cancelAlgoOrder(o.symbol, { algoId: o.algoId })
-      console.log(`${LOG} sweepStrayAlgos cancelled ${o.symbol} ${cid} (#${tradeId} status=${t.status})`)
+      const reason = isPositionless ? 'no live position' : `qty ${algoQty} > positionAmt ${livePosAmt}`
+      console.log(`${LOG} sweepStrayAlgos cancelled orphan ${o.symbol} cid=${cid} ${orderType} (${reason})`)
       cancelled++
     } catch (e: any) {
-      if (e instanceof BinanceApiError && (e.code === -2011 || e.code === -2013)) continue  // already gone
-      console.warn(`${LOG} sweepStrayAlgos cancel ${o.symbol} ${cid} failed: ${e.message}`)
+      if (e instanceof BinanceApiError && (e.code === -2011 || e.code === -2013)) continue
+      console.warn(`${LOG} sweepStrayAlgos cancel orphan ${o.symbol} cid=${cid} failed: ${e.message}`)
     }
   }
   return { cancelled, checked }
