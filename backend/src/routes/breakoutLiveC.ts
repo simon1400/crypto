@@ -22,7 +22,7 @@ import {
 } from '../services/exchanges/binanceFutures'
 import { refreshLiveBalance } from './_liveBalanceShared'
 import { buildSharedReadHandlers } from './breakoutPaper/index'
-import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot, attachMissingSlTp } from '../services/dailyBreakoutLiveC'
+import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot, attachMissingSlTp, sendLiveCEodSummary } from '../services/dailyBreakoutLiveC'
 
 // Re-export so existing import paths (`from './breakoutLiveC'`) keep working.
 export { refreshLiveBalance }
@@ -858,6 +858,24 @@ router.post('/trades/repair-sltp', async (_req, res) => {
   try {
     const report = await attachMissingSlTp()
     res.json(report)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /eod/test — manually trigger the LIVE C end-of-day Telegram summary.
+// Bypasses the once-per-date idempotency marker so it can be called repeatedly
+// to verify the message template. Body: { date?: 'YYYY-MM-DD' } — defaults to
+// today's UTC date. Use case: visual QA of the EOD message without waiting
+// until 23:55 UTC.
+router.post('/eod/test', async (req, res) => {
+  try {
+    const { date } = req.body as { date?: string }
+    const utcDate = (date && /^\d{4}-\d{2}-\d{2}$/.test(date))
+      ? date
+      : new Date().toISOString().slice(0, 10)
+    await sendLiveCEodSummary(utcDate, { force: true })
+    res.json({ ok: true, sentForDate: utcDate })
   } catch (e: any) {
     res.status(500).json({ error: e.message })
   }

@@ -21,12 +21,13 @@ import { LOG, snapshot } from './state'
  * Called from runEodTick after flatten + cancel-pending + dust sweep — by
  * that point all closes from today are persisted.
  */
-export async function sendLiveCEodSummary(utcDate: string): Promise<void> {
+export async function sendLiveCEodSummary(utcDate: string, opts?: { force?: boolean }): Promise<void> {
   const cfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
   if (!cfg) return
   // Idempotency: if we already sent for this date, no-op. Marker on config row
   // so a process restart in the 23:55-23:59 window doesn't re-fire.
-  if ((cfg as any).lastEodReportDate === utcDate) {
+  // force=true is for admin/test endpoints that re-trigger an already-sent EOD.
+  if (!opts?.force && (cfg as any).lastEodReportDate === utcDate) {
     console.log(`${LOG} EOD summary for ${utcDate} already sent`)
     return
   }
