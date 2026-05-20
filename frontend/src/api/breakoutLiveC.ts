@@ -205,6 +205,25 @@ export async function wipeAllLive(confirmation?: string): Promise<WipeAllRespons
   })
 }
 
+export interface SwitchNetworkResponse {
+  ok: boolean
+  target: 'testnet' | 'real'
+  deletedTrades: number
+  deletedFunding: number
+  deletedAttempts: number
+  config: BreakoutLiveConfig
+}
+
+export async function switchNetwork(
+  target: 'testnet' | 'real',
+  confirmation?: string,
+): Promise<SwitchNetworkResponse> {
+  return req(`${BP}/switch-network`, {
+    method: 'POST',
+    body: JSON.stringify({ target, ...(confirmation ? { confirmation } : {}) }),
+  })
+}
+
 export async function testPlaceOrder(p: { symbol: string; side: 'BUY' | 'SELL'; priceOffsetPct?: number; quantity?: number }): Promise<any> {
   return req(`${BP}/test-place-order`, { method: 'POST', body: JSON.stringify(p) })
 }

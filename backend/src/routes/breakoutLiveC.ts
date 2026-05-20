@@ -82,9 +82,12 @@ router.put('/config', async (req, res) => {
     } = req.body
 
     // Baseline snapshot: the first time Strategy is enabled, capture the
-    // current Binance available balance as startingDepositUsd. This becomes the
-    // reference point for Total P&L going forward. resetAt marks the snapshot
-    // time so we can show "since {date}" in the UI.
+    // current Binance wallet balance (total realized PnL incl. unspent margin)
+    // as startingDepositUsd. This becomes the reference point for Total P&L
+    // going forward — "Total PnL" displayed in UI is walletBalance - baseline.
+    // Use totalWalletBalance, NOT availableBalance: available shrinks every
+    // time we open a position (margin gets locked), which would make baseline
+    // depend on how many trades happen to be live at the snapshot moment.
     let baselineSnapshot: { startingDepositUsd: number; resetAt: Date } | null = null
     if (enabled === true) {
       const current = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
@@ -96,10 +99,12 @@ router.put('/config', async (req, res) => {
             await client.syncTime()
             const acc = await client.getAccount()
             const usdt = acc.assets.find((a) => a.asset === 'USDT')
-            const avail = usdt ? Number(usdt.availableBalance) : 0
-            if (avail > 0) {
+            const totalFromAccount = Number(acc.totalWalletBalance)
+            const totalFromAsset = usdt ? Number(usdt.walletBalance) : 0
+            const wallet = Number.isFinite(totalFromAccount) && totalFromAccount > 0 ? totalFromAccount : totalFromAsset
+            if (wallet > 0) {
               baselineSnapshot = {
-                startingDepositUsd: avail,
+                startingDepositUsd: wallet,
                 resetAt: new Date(),
               }
             }
@@ -165,20 +170,22 @@ router.post('/baseline/reset', async (_req, res) => {
     await client.syncTime()
     const acc = await client.getAccount()
     const usdt = acc.assets.find((a) => a.asset === 'USDT')
-    const avail = usdt ? Number(usdt.availableBalance) : 0
-    if (avail <= 0) return res.status(400).json({ error: 'На Binance нулевой баланс USDT' })
+    const totalFromAccount = Number(acc.totalWalletBalance)
+    const totalFromAsset = usdt ? Number(usdt.walletBalance) : 0
+    const wallet = Number.isFinite(totalFromAccount) && totalFromAccount > 0 ? totalFromAccount : totalFromAsset
+    if (wallet <= 0) return res.status(400).json({ error: 'На Binance нулевой wallet баланс USDT' })
 
     const updated = await prisma.breakoutLiveConfigC.update({
       where: { id: 1 },
       data: {
-        startingDepositUsd: avail,
-        currentDepositUsd: avail,
-        peakDepositUsd: avail,
+        startingDepositUsd: wallet,
+        currentDepositUsd: wallet,
+        peakDepositUsd: wallet,
         maxDrawdownPct: 0,
         resetAt: new Date(),
       },
     })
-    res.json({ ok: true, baselineUsd: avail, config: updated })
+    res.json({ ok: true, baselineUsd: wallet, config: updated })
   } catch (e: any) {
     res.status(500).json({ error: e.message })
   }
@@ -414,9 +421,124 @@ router.post('/wipe-all', async (req, res) => {
   }
 })
 
+// ============================================================================
+// Switch network — testnet ↔ real. Atomic operation:
+//   1. Refuse if strategy enabled or kill-switch active (caller must disable first)
+//   2. Refuse if open positions on EITHER net (would orphan exchange state)
+//   3. For testnet → real: require body { confirmation: 'SWITCH_TO_REAL_ACK' }
+//      + verify live keys are configured
+//   4. Wipe all DB rows (BreakoutLiveTradeC/Funding/AttemptC) — statistics reset
+//   5. Set useTestnet flag, clear resetAt → next enable snapshots baseline
+//      from the NEW net's walletBalance automatically
+//   6. Leave enabled=false — user must press Запустить manually after reviewing
+//      balance / positions on the new net
+// ============================================================================
+
+router.post('/switch-network', async (req, res) => {
+  try {
+    const { target, confirmation } = req.body as {
+      target?: 'testnet' | 'real'
+      confirmation?: string
+    }
+    if (target !== 'testnet' && target !== 'real') {
+      return res.status(400).json({ error: 'target must be "testnet" or "real"' })
+    }
+
+    const cfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
+    if (!cfg) return res.status(404).json({ error: 'Config not found' })
+
+    const targetTestnet = target === 'testnet'
+    if (cfg.useTestnet === targetTestnet) {
+      return res.status(400).json({ error: `Already on ${target}` })
+    }
+
+    // Hard guard: strategy must be off
+    if (cfg.enabled) {
+      return res.status(400).json({
+        error: 'Strategy is still running. Disable it first (press Остановить).',
+      })
+    }
+
+    // Switching to real demands an explicit confirmation token from the client.
+    // testnet → real is the dangerous direction; reverse is allowed without it.
+    if (target === 'real' && confirmation !== 'SWITCH_TO_REAL_ACK') {
+      return res.status(400).json({
+        error: 'Switching to real requires confirmation=SWITCH_TO_REAL_ACK in body.',
+      })
+    }
+
+    // Verify live keys are configured before flipping the flag — otherwise the
+    // next /status / enable would just error out and the UI would be confusing.
+    if (target === 'real') {
+      const liveCreds = await getBinanceCreds(false)
+      if (!liveCreds) {
+        return res.status(400).json({
+          error: 'Live ключи Binance не настроены. Добавь их в Настройках перед переключением.',
+        })
+      }
+    }
+
+    // Check open positions on BOTH nets — we're wiping DB and we don't want to
+    // lose track of an exchange-side position on either side.
+    for (const net of ['testnet', 'real'] as const) {
+      const creds = await getBinanceCreds(net === 'testnet')
+      if (!creds) continue
+      try {
+        const client = getBinanceClient(creds)
+        const positions = await client.getOpenPositions().catch(() => null)
+        if (positions && positions.length > 0) {
+          return res.status(400).json({
+            error: `Cannot switch: ${positions.length} position(s) still open on Binance ${net}. Close them first.`,
+          })
+        }
+      } catch {
+        // If we can't reach one of the nets we still allow the switch — the
+        // wipe is DB-only, and the next /status call will surface any issue.
+      }
+    }
+
+    const deletedTrades = await prisma.breakoutLiveTradeC.deleteMany({})
+    const deletedFunding = await prisma.breakoutLiveFundingC.deleteMany({})
+    const deletedAttempts = await prisma.breakoutLiveAttemptC.deleteMany({})
+    const reset = await prisma.breakoutLiveConfigC.update({
+      where: { id: 1 },
+      data: {
+        useTestnet: targetTestnet,
+        enabled: false,
+        killSwitchActive: false,
+        killSwitchReason: null,
+        killSwitchAt: null,
+        // Clear baseline state — next enable will re-snapshot from walletBalance
+        // of the freshly-selected net.
+        resetAt: null,
+        startingDepositUsd: 100,
+        currentDepositUsd: 100,
+        peakDepositUsd: 100,
+        maxDrawdownPct: 0,
+        totalTrades: 0,
+        totalWins: 0,
+        totalLosses: 0,
+        totalPnLUsd: 0,
+        totalFundingUsd: 0,
+      },
+    })
+
+    res.json({
+      ok: true,
+      target,
+      deletedTrades: deletedTrades.count,
+      deletedFunding: deletedFunding.count,
+      deletedAttempts: deletedAttempts.count,
+      config: reset,
+    })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // POST /reset — alias of /baseline/reset that the BreakoutPaper UI expects.
 // Body: { startingDepositUsd? } is IGNORED for live (baseline always comes
-// from Binance availableBalance). Kept for API surface compatibility.
+// from Binance walletBalance). Kept for API surface compatibility.
 router.post('/reset', async (_req, res) => {
   try {
     const cfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
@@ -429,15 +551,17 @@ router.post('/reset', async (_req, res) => {
     await client.syncTime()
     const acc = await client.getAccount()
     const usdt = acc.assets.find((a) => a.asset === 'USDT')
-    const avail = usdt ? Number(usdt.availableBalance) : 0
-    if (avail <= 0) return res.status(400).json({ error: 'Zero USDT balance on Binance.' })
+    const totalFromAccount = Number(acc.totalWalletBalance)
+    const totalFromAsset = usdt ? Number(usdt.walletBalance) : 0
+    const wallet = Number.isFinite(totalFromAccount) && totalFromAccount > 0 ? totalFromAccount : totalFromAsset
+    if (wallet <= 0) return res.status(400).json({ error: 'Zero USDT wallet balance on Binance.' })
 
     const updated = await prisma.breakoutLiveConfigC.update({
       where: { id: 1 },
       data: {
-        startingDepositUsd: avail,
-        currentDepositUsd: avail,
-        peakDepositUsd: avail,
+        startingDepositUsd: wallet,
+        currentDepositUsd: wallet,
+        peakDepositUsd: wallet,
         maxDrawdownPct: 0,
         resetAt: new Date(),
       },

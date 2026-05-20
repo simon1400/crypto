@@ -419,6 +419,11 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
           onKillSwitch={handleKillSwitch}
           onReleaseKillSwitch={handleReleaseKillSwitch}
           onWipeAll={handleWipeAll}
+          onConfigChanged={async () => {
+            const s = await getLiveStatus(true)
+            setLiveStatus(s)
+            await loadAll()
+          }}
         />
       )}
 
