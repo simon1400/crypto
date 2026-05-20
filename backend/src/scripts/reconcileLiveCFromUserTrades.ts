@@ -169,13 +169,14 @@ async function main() {
   const serverOffset = await syncServerTime(creds)
   console.log(`[Reconcile] net=${creds.net} serverOffset=${serverOffset}ms`)
 
+  // Candidate rows: any terminal row that EITHER has a placeholder close with
+  // pnlUsd=0 (the EOD-FLAT bug we fixed) OR was marked EXPIRED with closes=[]
+  // (orphan PENDING_LIMIT cleanup — could be a true non-fill, but if Binance
+  // userTrades shows fills for the window we want to rebuild the row).
   const rows = await prisma.breakoutLiveTradeC.findMany({
-    where: {
-      ...(TARGET_ID ? { id: TARGET_ID } : {
-        status: { in: ['CLOSED', 'SL_HIT', 'TP3_HIT', 'EXPIRED'] },
-      }),
-      NOT: { closes: { equals: [] } },
-    },
+    where: TARGET_ID
+      ? { id: TARGET_ID }
+      : { status: { in: ['CLOSED', 'SL_HIT', 'TP3_HIT', 'EXPIRED'] } },
     orderBy: { closedAt: 'asc' },
   })
   console.log(`[Reconcile] candidate rows: ${rows.length}`)
@@ -185,9 +186,9 @@ async function main() {
 
   for (const t of rows) {
     const closes = ((t.closes as any[]) ?? []) as CloseEntry[]
-    if (closes.length === 0) continue
-    const needsFix = closes.some((c) => Number(c?.pnlUsd ?? 0) === 0 && Number(c?.percent ?? 0) > 0)
-    if (!needsFix) continue
+    const hasPlaceholderZeros = closes.some((c) => Number(c?.pnlUsd ?? 0) === 0 && Number(c?.percent ?? 0) > 0)
+    const isEmptyExpired = closes.length === 0 && t.status === 'EXPIRED'
+    if (!hasPlaceholderZeros && !isEmptyExpired) continue
 
     const openedMs = new Date(t.openedAt).getTime()
     const closedMs = t.closedAt ? new Date(t.closedAt).getTime() : Date.now()
@@ -224,6 +225,83 @@ async function main() {
     }
 
     const exitSide: 'BUY' | 'SELL' = t.side === 'BUY' ? 'SELL' : 'BUY'
+
+    // === EXPIRED rebuild branch ============================================
+    // Row was orphan-cancelled with closes=[]. If Binance shows BOTH entry-side
+    // and exit-side fills inside the row's lifetime, the limit DID fill (we
+    // just lost track of it). Rebuild: synthesize a single 100% close from the
+    // exit-side fills. We trust positionUnits as the planned size — if the
+    // entry-side qty actually filled matches that, we treat the cycle as
+    // complete and write a synthetic close.
+    if (isEmptyExpired) {
+      const entryFills = symbolTrades.filter(
+        (f) => f.side === t.side && f.time >= openedMs && f.time <= closedMs + 5 * 60_000,
+      )
+      const exitFillsAll = symbolTrades.filter(
+        (f) => f.side === exitSide && f.time >= openedMs && f.time <= closedMs + 5 * 60_000,
+      )
+      const entryQty = entryFills.reduce((a, f) => a + Number(f.qty), 0)
+      const exitQty = exitFillsAll.reduce((a, f) => a + Number(f.qty), 0)
+      if (entryQty < 1e-9 || exitQty < 1e-9) {
+        // Pure orphan (no fill happened) — nothing to fix, leave as EXPIRED.
+        continue
+      }
+      // We have fills. Build synthetic entry refine + close.
+      const entryCommission = entryFills.reduce((a, f) => a + Number(f.commission), 0)
+      const entryPxQty = entryFills.reduce((a, f) => a + Number(f.price) * Number(f.qty), 0)
+      const entryAvgPx = entryPxQty / entryQty
+
+      const exitPnl = exitFillsAll.reduce((a, f) => a + Number(f.realizedPnl), 0)
+      const exitCommission = exitFillsAll.reduce((a, f) => a + Number(f.commission), 0)
+      const exitPxQty = exitFillsAll.reduce((a, f) => a + Number(f.price) * Number(f.qty), 0)
+      const exitAvgPx = exitPxQty / exitQty
+
+      const lastFillTime = Math.max(...exitFillsAll.map((f) => f.time))
+
+      const newClose: CloseEntry = {
+        price: exitAvgPx,
+        percent: 100,
+        pnlUsd: exitPnl,
+        feePaidUsd: exitCommission,
+        closedAt: new Date(lastFillTime).toISOString(),
+        reason: 'RECONCILED',
+        reasonNote: 'expired-row-rebuilt-from-userTrades',
+      }
+      const beforeReport = {
+        realizedPnlUsd: t.realizedPnlUsd ?? 0,
+        feesPaidUsd: t.feesPaidUsd ?? 0,
+        netPnlUsd: t.netPnlUsd ?? 0,
+      }
+      if (APPLY) {
+        await prisma.breakoutLiveTradeC.update({
+          where: { id: t.id },
+          data: {
+            status: 'CLOSED',
+            entryPrice: entryAvgPx,
+            entryFeeUsd: entryCommission,
+            positionUnits: entryQty,
+            closes: [newClose] as any,
+          },
+        })
+        await recomputeRow(t.id)
+      }
+      const realizedSum = exitPnl
+      const totalFees = entryCommission + exitCommission
+      const netAfter = realizedSum - totalFees - (t.fundingPaidUsd ?? 0)
+      reports.push({
+        tradeId: t.id,
+        symbol: t.symbol,
+        side: t.side,
+        status: 'EXPIRED→CLOSED',
+        before: beforeReport,
+        after: { realizedPnlUsd: realizedSum, feesPaidUsd: totalFees, netPnlUsd: netAfter },
+        updatedSlices: 1,
+        unmatchedSlices: 0,
+      })
+      continue
+    }
+    // === End EXPIRED rebuild branch ========================================
+
     const winFills = symbolTrades.filter(
       (f) => f.side === exitSide && f.time >= openedMs && f.time <= closedMs + 5 * 60_000,
     )
