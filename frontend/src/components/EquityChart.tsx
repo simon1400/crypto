@@ -110,10 +110,26 @@ export default function EquityChart({ data, startEquity, height = 260 }: Props) 
       lastColorUpRef.current = isUp
     }
 
-    area.setData(data.map(d => ({ time: d.date as any, value: d.equity })))
+    // Prepend a flat anchor point at startEquity one day before data[0]. This
+    // makes the curve visibly "start from baseline" instead of teleporting in
+    // already in profit — user can see how the first trading day pulled equity
+    // up off the starting deposit.
+    const seriesPoints: { time: any; value: number }[] = data.map(d => ({ time: d.date as any, value: d.equity }))
+    const baselinePoints: { time: any; value: number }[] = data.map(d => ({ time: d.date as any, value: startEquity ?? equityFirst }))
+    if (typeof startEquity === 'number' && startEquity > 0) {
+      const firstDate = new Date(data[0].date + 'T00:00:00Z')
+      if (!Number.isNaN(firstDate.getTime())) {
+        firstDate.setUTCDate(firstDate.getUTCDate() - 1)
+        const anchorDate = firstDate.toISOString().slice(0, 10)
+        seriesPoints.unshift({ time: anchorDate as any, value: startEquity })
+        baselinePoints.unshift({ time: anchorDate as any, value: startEquity })
+      }
+    }
+
+    area.setData(seriesPoints)
 
     if (typeof startEquity === 'number' && startEquity > 0) {
-      baseline.setData(data.map(d => ({ time: d.date as any, value: startEquity })))
+      baseline.setData(baselinePoints)
     } else {
       baseline.setData([])
     }
