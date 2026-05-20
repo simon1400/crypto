@@ -205,6 +205,59 @@ export async function retrailSlOnExchange(tradeId: number): Promise<void> {
 }
 
 /**
+ * Reconcile SL trigger price between DB and exchange. Iterates active trades
+ * whose status is TP1_HIT / TP2_HIT (i.e. currentStop should be trailed) and
+ * checks the live STOP_MARKET trigger price on Binance. If they diverge —
+ * usually because retrailSlOnExchange bailed on rate-limit ban earlier —
+ * tries retrail again. Idempotent: noop if SL already at trailed level.
+ *
+ * Runs from cycle.ts every minute, so a transient ban during TP1 fire gets
+ * auto-recovered on the next tick after the ban window expires.
+ */
+export async function reconcileSlTrailedLevel(): Promise<void> {
+  if (!state.current) return
+  const trails = await prisma.breakoutLiveTradeC.findMany({
+    where: { status: { in: ['TP1_HIT', 'TP2_HIT'] } },
+    select: {
+      id: true, symbol: true, currentStop: true, binanceSlOrderId: true,
+    },
+  })
+  if (trails.length === 0) return
+
+  let algos: Awaited<ReturnType<typeof state.current.client.getOpenAlgoOrders>>
+  try {
+    algos = await state.current.client.getOpenAlgoOrders()
+  } catch (e: any) {
+    // Likely rate-limit / ban still in effect — try again on the next tick.
+    if (!(e instanceof BinanceApiError) || e.code !== -1003) {
+      console.warn(`${LOG} reconcileSl: getOpenAlgoOrders failed: ${e.message}`)
+    }
+    return
+  }
+
+  for (const t of trails) {
+    const algo = algos.find((a) => a.symbol === t.symbol && a.clientAlgoId === `slL${t.id}`)
+    if (!algo) {
+      // No STOP_MARKET on exchange at all — retrail will place one fresh.
+      console.log(`${LOG} reconcileSl: no SL on exchange for #${t.id} ${t.symbol} — attempting retrail`)
+      await retrailSlOnExchange(t.id).catch((e) =>
+        console.warn(`${LOG} reconcileSl retrail #${t.id} failed: ${e?.message ?? e}`))
+      continue
+    }
+    const exchangeTrigger = Number(algo.triggerPrice)
+    if (!Number.isFinite(exchangeTrigger) || exchangeTrigger <= 0) continue
+    // Compare in absolute terms, with a 1-tick tolerance scaled to price magnitude
+    // (0.01% covers any reasonable tick rounding).
+    const drift = Math.abs(exchangeTrigger - t.currentStop)
+    const tolerance = Math.max(t.currentStop, exchangeTrigger) * 0.0001
+    if (drift <= tolerance) continue  // already at expected level
+    console.log(`${LOG} reconcileSl: #${t.id} ${t.symbol} drift detected — exchange ${exchangeTrigger} vs DB ${t.currentStop}; retrailing`)
+    await retrailSlOnExchange(t.id).catch((e) =>
+      console.warn(`${LOG} reconcileSl retrail #${t.id} failed: ${e?.message ?? e}`))
+  }
+}
+
+/**
  * Strict cancel: returns true only if the SL is actually gone from the book
  * (success OR -2011/-2013 "already gone"). Returns false on any other error
  * so the caller can avoid creating a duplicate placement.

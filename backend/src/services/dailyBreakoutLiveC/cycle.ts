@@ -9,6 +9,7 @@ import { refreshAggTradeSubscriptions } from './aggTrade'
 import { flattenAllOpenC, cancelOrphanPendingLimits, cancelAllPendingLimits } from './flatten'
 import { pruneOldAttempts } from './attempts'
 import { sweepClosedRowDust, sweepStrayAlgoOrders } from './reconcile'
+import { reconcileSlTrailedLevel } from './exchangeSl'
 import { sendLiveCEodSummary } from './eod'
 
 /**
@@ -63,6 +64,12 @@ export async function runLiveCycle(): Promise<void> {
     // future safety-net logic; SL/TP triggers themselves are real exchange
     // orders so don't depend on aggTrade.
     await refreshAggTradeSubscriptions()
+
+    // Reconcile trailed SLs that didn't make it to the exchange (TP1 fired but
+    // retrail bailed on rate-limit ban → STOP_MARKET still at initial level).
+    // Runs every cycle so a 30s ban window auto-recovers on the next tick.
+    await reconcileSlTrailedLevel().catch((e) =>
+      console.warn(`${LOG} reconcileSlTrailedLevel threw: ${e?.message ?? e}`))
   } catch (e: any) {
     console.error(`${LOG} cycle threw:`, e.message)
   } finally {
