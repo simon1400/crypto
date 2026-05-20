@@ -126,20 +126,19 @@ export async function notifyExitTelegram(
   if (!t) return
 
   const terminal = reason === 'SL' || reason === 'TP3'
-  // For terminal exits, report the whole trade P&L (matches UI badge + exchange
-  // realized PnL once funding is folded in). For partial exits, report just
-  // this slice's P&L from the closes[] entry written by applyVirtualClose /
-  // refined by handleExitFillUpdate.
-  let displayedPnl: number
-  if (terminal) {
-    displayedPnl = t.realizedPnlUsd - t.feesPaidUsd - t.fundingPaidUsd
-  } else {
-    const closes = (t.closes as any[]) ?? []
-    const slice = [...closes].reverse().find((c) => c?.reason === reason)
-    const slicePnl = slice?.pnlUsd ?? virtualPnlFallback
-    const sliceFee = slice?.feePaidUsd ?? 0
-    displayedPnl = slicePnl - sliceFee
-  }
+  // Always report two numbers so the user sees exactly what the app shows
+  // and what Binance shows:
+  //   - slicePnl  = gross realizedProfit of this fill from Binance (matches
+  //                 Binance's "Realized Profit" column in Trade History)
+  //   - tradeNet  = realizedPnl − feesPaidUsd − fundingPaidUsd (matches the
+  //                 app's "Реализовано" / "Net P&L" — includes entry fee)
+  // Terminal closes get the same two figures; trade net equals the slice's
+  // net plus all prior partial-close P&Ls minus all accumulated fees.
+  const closes = (t.closes as any[]) ?? []
+  const slice = [...closes].reverse().find((c) => c?.reason === reason)
+  const sliceGross = Number(slice?.pnlUsd ?? virtualPnlFallback)
+  const sliceFee = Number(slice?.feePaidUsd ?? 0)
+  const tradeNet = (t.realizedPnlUsd ?? 0) - (t.feesPaidUsd ?? 0) - (t.fundingPaidUsd ?? 0)
 
   const emoji = reason === 'SL' ? '🔴' : '✅'
   const trailNote = reason === 'TP1' ? 'SL → BE'
@@ -148,12 +147,23 @@ export async function notifyExitTelegram(
     : 'позиция закрыта'
   const headerSuffix = terminal ? 'позиция закрыта' : 'частичное закрытие'
   const pnlSuffix = virtual ? ' <i>(≈ виртуально)</i>' : ''
+
+  // For partial closes show both: this fill's realized + cumulative net.
+  // For terminal closes the two collapse — show only the trade net so the
+  // message isn't redundant.
+  const pnlLines = terminal
+    ? [`💵 P&L    <b>${fmtPnl(tradeNet)}</b>${pnlSuffix}  <i>(сделка целиком)</i>`]
+    : [
+        `💵 Slice  <b>${fmtPnl(sliceGross - sliceFee)}</b>${pnlSuffix}  <i>(gross ${fmtPnl(sliceGross)} − fee $${sliceFee.toFixed(2)})</i>`,
+        `Σ сделка  <b>${fmtPnl(tradeNet)}</b>  <i>(вкл. entry fee)</i>`,
+      ]
+
   sendLiveTelegram([
     `${emoji} <b>${t.symbol}</b> <b>${reason}</b>  · ${headerSuffix}`,
     `━━━━━━━━━━━━━━━━━━`,
     `💰 Цена   <code>${fmtPrice(fillPrice)}</code>`,
     `📊 Закрыто  ${Math.round(frac * 100)}%`,
-    `💵 P&L    <b>${fmtPnl(displayedPnl)}</b>${pnlSuffix}`,
+    ...pnlLines,
     `🛡 ${trailNote}`,
   ].join('\n'))
 }
