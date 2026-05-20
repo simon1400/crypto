@@ -71,6 +71,24 @@ export interface FiltersCache { at: number; map: Map<string, SymbolFilter> }
 export const filtersCache: { current: FiltersCache | null } = { current: null }
 export const FILTERS_TTL_MS = 60 * 60 * 1000
 
+// === Leverage brackets cache — /fapi/v1/leverageBracket expires 1h. ===
+//
+// Each bracket entry tells us the maximum leverage Binance permits for a given
+// notional range. Sizing must consult this so we don't post an order with
+// leverage > bracket[trade-notional].initialLeverage (rejected with -2027,
+// which used to retry every aggTrade tick → IP ban 2026-05-20 AVAX).
+export interface LeverageBracket {
+  bracket: number
+  initialLeverage: number
+  notionalCap: number
+  notionalFloor: number
+  maintMarginRatio: number
+  cum: number
+}
+export interface BracketsCache { at: number; map: Map<string, LeverageBracket[]> }
+export const bracketsCache: { current: BracketsCache | null } = { current: null }
+export const BRACKETS_TTL_MS = 60 * 60 * 1000
+
 // === Cycle & EOD throttles. ===
 
 // Track which UTC day we already EOD-flushed so the 1-min tick doesn't fire
@@ -92,6 +110,15 @@ export const tradeBusy = new Set<number>()
 
 // Per-trade fill lock — prevents two aggTrade ticks racing on the same PENDING.
 export const fillBusy = new Set<number>()
+
+// Per-trade rejected-attempt counter. When tryFillVirtualLimit hits a transient
+// exchange error and bounces the row back to PENDING_LIMIT, we bump this. If a
+// row racks up too many fast rejections we cancel it — a non-structural error
+// that keeps repeating is functionally structural (network blocked, balance
+// can't grow fast enough, etc.) and continuing to retry on every aggTrade tick
+// only burns rate limit. Reset on successful FILLED.
+export const fillRejectCount = new Map<number, number>()
+export const MAX_FILL_REJECTS = 5
 
 // === aggTrade tracking. ===
 

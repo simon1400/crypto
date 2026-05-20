@@ -15,6 +15,7 @@ import { computeSizing } from '../marginGuard'
 import {
   LOG, state, snapshot, lastMarkPriceWs,
   lastAggTradeAt, lastTickProcessedAt, TICK_THROTTLE_MS, fillBusy, ACTIVE_STATUSES,
+  fillRejectCount, MAX_FILL_REJECTS,
 } from './state'
 import { fmtPrice } from './formatters'
 import { getFilters } from './filters'
@@ -242,15 +243,35 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
       // briefly until WS arrives is a tiny UI artifact vs the bigger problem
       // of mis-attributed fees the placeholder used to cause.
     } catch (e: any) {
-      // Placement rejected. Special-case -4005: even with our chunking, if
-      // qtyPlanned itself was sized far above MARKET_LOT_SIZE.maxQty AND
-      // chunking failed (shouldn't happen with the loop above), we'd retry
-      // every aggTrade tick forever — 14k+ attempts in a few hours. So for
-      // -4005 we cancel the trade outright instead of bouncing back to
-      // PENDING_LIMIT. Other errors keep the existing retry behaviour.
+      // Placement rejected. Structural rejections (sizing/leverage mismatch
+      // with the symbol's bracket, MARKET_LOT_SIZE overflow that even chunking
+      // can't fix) won't change on the next aggTrade tick — retrying just
+      // hammers REST. Each rejected attempt = a signed POST, and at 50-500
+      // ticks/sec on hot symbols this saturates the rate limit and triggers
+      // IP bans (2026-05-20 AVAX: 2115 attempts in one day, all rejected with
+      // -2027). Cancel the trade outright for any structural code; retry only
+      // on transient ones.
+      //
+      //   -4005 Quantity greater than max quantity (MARKET_LOT_SIZE)
+      //   -2027 Exceeded the maximum allowable position at current leverage
+      //   -4131 Position size > position-bracket allowance
+      //   -1111 Precision is over the maximum (sizing computed wrong qty)
+      //   -1102 Mandatory parameter sent in wrong type
+      //   -1106 Parameter sent when not required
+      //
+      // Other codes (-2019 insufficient margin, network glitches, etc.) stay
+      // retry-able — those can clear by the next tick.
       const code = e instanceof BinanceApiError ? String(e.code) : 'unknown'
       console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} MARKET rejected (${code}): ${e.message}`)
-      if (code === '-4005') {
+      const STRUCTURAL_CODES = new Set(['-4005', '-2027', '-4131', '-1111', '-1102', '-1106'])
+      const prevRejects = fillRejectCount.get(trade.id) ?? 0
+      const nextRejects = prevRejects + 1
+      fillRejectCount.set(trade.id, nextRejects)
+      const exhaustedRetries = nextRejects >= MAX_FILL_REJECTS
+      if (STRUCTURAL_CODES.has(code) || exhaustedRetries) {
+        if (exhaustedRetries && !STRUCTURAL_CODES.has(code)) {
+          console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} exhausted ${MAX_FILL_REJECTS} rejects on ${code} — cancelling to stop rate-limit storm`)
+        }
         await prisma.breakoutLiveTradeC.update({
           where: { id: trade.id },
           data: {
@@ -259,6 +280,7 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
             closedAt: new Date(ts),
           },
         })
+        fillRejectCount.delete(trade.id)
       } else {
         await prisma.breakoutLiveTradeC.updateMany({
           where: { id: trade.id, limitOrderState: 'FILLING' },
@@ -310,6 +332,7 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
       },
     })
 
+    fillRejectCount.delete(trade.id)
     console.log(`${LOG} ✓ virtual limit filled #${trade.id} ${trade.symbol} ${trade.side} @ ${fillPrice} (limit ${trade.limitOrderPrice}) qty ${fillQty}`)
 
     const sideText = trade.side === 'BUY' ? 'LONG' : 'SHORT'

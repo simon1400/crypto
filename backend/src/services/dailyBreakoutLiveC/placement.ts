@@ -30,6 +30,7 @@ import { DEFAULT_BREAKOUT_SETUPS } from '../dailyBreakoutLiveScanner'
 import { LOG } from './state'
 import { buildEntryCid } from './formatters'
 import { getFilters } from './filters'
+import { getLeverageBrackets, bracketMaxLeverageFor } from './brackets'
 import { getLiveSnapshot } from './snapshot'
 import { isLiveCircuitBreakerTripped, cancelAllPendingForBreaker, maybeNotifyBreaker } from './breaker'
 import { recordAttempt } from './attempts'
@@ -385,6 +386,24 @@ interface PlaceOneSideArgs {
  * narrow ranges had book spread overlapping rangeEdge → 99%+ -5022 rejection.
  */
 async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
+  // Look up the symbol's leverage brackets to cap sizing.leverage by what
+  // Binance will actually accept for this notional. AVAX example: 50x is fine
+  // up to $5k notional, but only 20x for $5-25k. computeSizing's positionSize
+  // doesn't depend on leverage (it's derived from riskUsd / slDist) so we can
+  // dry-compute it first to find the right bracket.
+  let exchangeMaxLev: number | undefined
+  try {
+    const brackets = await getLeverageBrackets(a.client)
+    const slDist = Math.abs(a.entryPrice - a.stopLoss)
+    if (slDist > 0 && a.cfg.currentDepositUsd > 0) {
+      const riskUsdDry = (a.cfg.currentDepositUsd * a.cfg.riskPctPerTrade) / 100
+      const notionalDry = a.entryPrice * (riskUsdDry / slDist)
+      exchangeMaxLev = bracketMaxLeverageFor(brackets.get(a.symbol), notionalDry)
+    }
+  } catch (e: any) {
+    console.warn(`${LOG} ${a.symbol}: leverage brackets lookup failed: ${e.message} — sizing without bracket cap`)
+  }
+
   // Sizing — uses the configured risk/margin knobs and current balance.
   const sizing = computeSizing({
     symbol: a.symbol,
@@ -393,6 +412,7 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
     targetMarginPct: a.cfg.targetMarginPct,
     entry: a.entryPrice,
     sl: a.stopLoss,
+    exchangeMaxLeverage: exchangeMaxLev,
   })
   if (!sizing || sizing.positionUnits <= 0) {
     console.warn(`${LOG} ${a.symbol} ${a.side} — sizing failed`)

@@ -431,6 +431,31 @@ export class BinanceFuturesClient {
     return this.signedGet('/fapi/v1/openAlgoOrders', {})
   }
 
+  /**
+   * Fetch notional leverage brackets. Without args returns brackets for all
+   * symbols; with `symbol` returns just one. Used by sizing to pick a leverage
+   * the exchange will actually accept (Binance rejects -2027 if leverage > the
+   * bracket whose notionalFloor..notionalCap contains the trade's notional).
+   *
+   * Response shape: [{ symbol, brackets: [{ bracket, initialLeverage,
+   * notionalCap, notionalFloor, maintMarginRatio, cum }, …] }]
+   */
+  async getLeverageBrackets(symbol?: string): Promise<Array<{
+    symbol: string
+    brackets: Array<{
+      bracket: number
+      initialLeverage: number
+      notionalCap: number
+      notionalFloor: number
+      maintMarginRatio: number
+      cum: number
+    }>
+  }>> {
+    const params: Record<string, string> = {}
+    if (symbol) params.symbol = symbol
+    return this.signedGet('/fapi/v1/leverageBracket', params)
+  }
+
   // --------------------------------------------------------------------------
   // User data stream (listenKey for WS)
   // --------------------------------------------------------------------------

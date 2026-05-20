@@ -68,6 +68,12 @@ export interface SizingInput {
   targetMarginPct: number  // % deposit per trade margin (e.g. 10)
   entry: number
   sl: number
+  // Exchange-side leverage cap for the planned notional. Binance Futures
+  // applies a notional-tiered leverage limit (leverageBracket endpoint).
+  // Even if our configured symbol cap allows 50x, the bracket for a $9k
+  // AVAX trade may only allow 20x — placing 50x gets -2027. Optional so
+  // paper trader can omit it (no exchange to refuse).
+  exchangeMaxLeverage?: number
 }
 
 export interface SizingResult {
@@ -80,7 +86,7 @@ export interface SizingResult {
 }
 
 export function computeSizing(input: SizingInput): SizingResult | null {
-  const { symbol, deposit, riskPct, targetMarginPct, entry, sl } = input
+  const { symbol, deposit, riskPct, targetMarginPct, entry, sl, exchangeMaxLeverage } = input
   const slDist = Math.abs(entry - sl)
   if (slDist <= 0 || deposit <= 0) return null
 
@@ -96,10 +102,14 @@ export function computeSizing(input: SizingInput): SizingResult | null {
   // If positionSize > targetMargin, we need lev = positionSize / targetMargin.
   const targetMargin = (deposit * targetMarginPct) / 100
   const idealLeverage = positionSizeUsd / Math.max(targetMargin, 1e-9)
-  const maxLev = getMaxLeverage(symbol)
-  const leverage = Math.max(1, Math.min(idealLeverage, maxLev))
+  const symbolMaxLev = getMaxLeverage(symbol)
+  // Cap by the exchange's notional-tiered bracket if known. Without this, AVAX
+  // at $9k notional gets sized 50x but Binance's bracket only allows 20x →
+  // -2027 reject → 2000+ retry attempts → IP ban (2026-05-20).
+  const effectiveMax = Math.min(symbolMaxLev, exchangeMaxLeverage ?? Infinity)
+  const leverage = Math.max(1, Math.min(idealLeverage, effectiveMax))
   const marginUsd = positionSizeUsd / leverage
-  const cappedByMaxLeverage = idealLeverage > maxLev + 1e-6
+  const cappedByMaxLeverage = idealLeverage > effectiveMax + 1e-6
 
   return { riskUsd, positionUnits, positionSizeUsd, leverage, marginUsd, cappedByMaxLeverage }
 }
