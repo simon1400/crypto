@@ -9,10 +9,6 @@ datasource db {
 
 model BotConfig {
   id                          Int      @id @default(1)
-  // === Bybit keys (legacy — kept for /settings page back-compat) ===
-  apiKey                      String?
-  apiSecret                   String?
-  useTestnet                  Boolean  @default(true)
   // === Binance Futures USDT-M keys (encrypted; used by Variant C live) ===
   // Stored as AES-256-GCM ciphertext via services/encryption.ts. Two separate
   // pairs — selected at runtime by BreakoutLiveConfigC.useTestnet.
@@ -23,12 +19,6 @@ model BotConfig {
   telegramBotToken            String?
   telegramChatId              String?
   telegramEnabled             Boolean  @default(false)
-  // === Virtual trading simulation ===
-  virtualBalance              Float    @default(1000)
-  virtualBalanceStart         Float    @default(1000)
-  virtualStartedAt            DateTime @default(now())
-  takerFeeRate                Float    @default(0.00055) // 0.055% — Bybit default VIP 0
-  makerFeeRate                Float    @default(0.0002) // 0.02%  — Bybit default VIP 0
   // === MT5 calculator deposit (forex/gold position sizing) ===
   mt5Balance                  Float?
   mt5RiskPct                  Float    @default(2)

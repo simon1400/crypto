@@ -3,11 +3,6 @@ import { BASE, getHeaders } from './base'
 // ===================== Settings =====================
 
 export interface SettingsResponse {
-  apiKeyMasked: string | null
-  apiSecretMasked: string | null
-  hasKeys: boolean
-  useTestnet: boolean
-  balance: number | null
   // Binance Futures keys (Variant C live)
   binanceTestnetKeyMasked: string | null
   binanceTestnetSecretMasked: string | null
@@ -18,8 +13,6 @@ export interface SettingsResponse {
   telegramBotToken: string | null
   telegramChatId: string | null
   telegramEnabled: boolean
-  takerFeeRate: number
-  makerFeeRate: number
 }
 
 export async function getSettings(): Promise<SettingsResponse> {
@@ -28,7 +21,7 @@ export async function getSettings(): Promise<SettingsResponse> {
   return res.json()
 }
 
-export async function saveSettings(data: Partial<SettingsResponse> & { apiKey?: string | null; apiSecret?: string | null }): Promise<SettingsResponse> {
+export async function saveSettings(data: Partial<SettingsResponse>): Promise<SettingsResponse> {
   const res = await fetch(`${BASE}/api/settings`, {
     method: 'PUT',
     headers: getHeaders(),
@@ -38,12 +31,6 @@ export async function saveSettings(data: Partial<SettingsResponse> & { apiKey?: 
     const err = await res.json().catch(() => ({ error: 'Request failed' }))
     throw new Error(err.error || `HTTP ${res.status}`)
   }
-  return res.json()
-}
-
-export async function getBalance(): Promise<{ balance: number | null; error?: string }> {
-  const res = await fetch(`${BASE}/api/settings/balance`, { headers: getHeaders() })
-  if (!res.ok) return { balance: null, error: 'Failed to fetch balance' }
   return res.json()
 }
 
