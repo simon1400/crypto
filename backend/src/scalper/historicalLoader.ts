@@ -12,6 +12,12 @@ const BINANCE_BASE = 'https://api.binance.com/api/v3/klines'
 // and a request returns -1121 'Invalid symbol'. The path/payload shape is
 // identical to spot klines so the parser doesn't change.
 const BINANCE_FUTURES_BASE = 'https://fapi.binance.com/fapi/v1/klines'
+// Mark Price klines — Binance triggers TP/SL on mark, not on last price.
+// Use this source so our paper tracker (loadRecent5m) matches what the
+// exchange actually does. Note: mark price klines have volume = 0 (mark
+// price is computed, not a trade-driven price), so don't use them for
+// volume-based filters.
+const BINANCE_FUTURES_MARK_BASE = 'https://fapi.binance.com/fapi/v1/markPriceKlines'
 const BINANCE_LIMIT = 1000
 
 const INTERVAL_MS: Record<string, number> = {
@@ -28,7 +34,7 @@ const BYBIT_INTERVAL: Record<string, string> = {
   '1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '4h': '240', '1d': 'D',
 }
 
-export type ExchangeSource = 'bybit' | 'binance' | 'binance-futures'
+export type ExchangeSource = 'bybit' | 'binance' | 'binance-futures' | 'binance-futures-mark'
 export type BybitCategory = 'linear' | 'spot' | 'inverse'
 
 function cachePath(symbol: string, interval: string, source: ExchangeSource): string {
@@ -88,14 +94,19 @@ async function fetchBybitBatch(
 }
 
 
+type BinanceFlavor = 'spot' | 'futures' | 'futures-mark'
+
 async function fetchBinanceBatch(
   symbol: string,
   interval: string,
   startTime: number,
   endTime: number,
-  futures: boolean = false,
+  flavor: BinanceFlavor = 'spot',
 ): Promise<OHLCV[]> {
-  const base = futures ? BINANCE_FUTURES_BASE : BINANCE_BASE
+  const base =
+    flavor === 'futures-mark' ? BINANCE_FUTURES_MARK_BASE :
+    flavor === 'futures' ? BINANCE_FUTURES_BASE :
+    BINANCE_BASE
   const url = `${base}?symbol=${symbol}&interval=${interval}&startTime=${startTime}&endTime=${endTime}&limit=${BINANCE_LIMIT}`
   const res = await fetch(url)
   if (!res.ok) throw new Error(`Binance ${res.status} ${res.statusText} on ${symbol} ${interval}`)
@@ -106,7 +117,7 @@ async function fetchBinanceBatch(
     high: parseFloat(k[2]),
     low: parseFloat(k[3]),
     close: parseFloat(k[4]),
-    volume: parseFloat(k[5]),
+    volume: parseFloat(k[5]),       // mark price klines: always 0
   }))
 }
 
@@ -196,11 +207,14 @@ export async function loadHistorical(
       await new Promise((r) => setTimeout(r, 400))
     }
   } else {
-    // Binance (spot or USDT-M futures, same kline shape): forward-walking.
-    const isFutures = source === 'binance-futures'
+    // Binance (spot or USDT-M futures or futures-mark, same kline shape): forward-walking.
+    const flavor: BinanceFlavor =
+      source === 'binance-futures-mark' ? 'futures-mark' :
+      source === 'binance-futures' ? 'futures' :
+      'spot'
     let cursor = fetchFrom
     while (cursor <= lastClosedTime) {
-      const batch = await fetchBinanceBatch(symbol, interval, cursor, lastClosedTime, isFutures)
+      const batch = await fetchBinanceBatch(symbol, interval, cursor, lastClosedTime, flavor)
       if (batch.length === 0) break
       fresh.push(...batch)
       cursor = batch[batch.length - 1].time + intervalMs

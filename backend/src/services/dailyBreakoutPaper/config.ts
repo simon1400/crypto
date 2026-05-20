@@ -16,5 +16,9 @@ export async function getOrCreateConfig(variant: BreakoutVariant): Promise<Paper
 }
 
 export async function loadRecent5m(symbol: string): Promise<OHLCV[]> {
-  return loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
+  // Mark Price klines — Binance triggers TP/SL on mark price, not on last
+  // price. Paper tracker uses these so its TP/SL checks (c.high >= tp / c.low
+  // <= sl) match what the exchange actually does on the live side. Note:
+  // volume is always 0 on this endpoint; A/B/C scanners must not gate on vol.
+  return loadHistorical(symbol, '5m', 1, 'binance-futures-mark')
 }

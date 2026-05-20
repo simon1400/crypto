@@ -88,9 +88,13 @@ export const DEFAULT_BREAKOUT_SETUPS: string[] = [
 
 /** Загружает последние 36+24+1 = ~60 5m свечей чтобы хватило range + volume window + last bar */
 async function loadRecentCandles(symbol: string): Promise<OHLCV[]> {
-  // 1 day = 288 5m candles. Load 2 days to be safe (covers range + volume avg + intraday).
-  const candles = await loadHistorical(symbol, '5m', 1, 'bybit', 'linear')
-  // Keep last ~600 candles (~50h) — enough for range + volume + late breakouts
+  // Mark Price klines — same source as paper tracker (loadRecent5m). Range
+  // detection and breakout signals must use the price stream that the
+  // exchange will trigger TP/SL on, otherwise live and paper will diverge.
+  // Note: mark price klines have volume = 0; vol×N confirmation in engine is
+  // therefore disabled (see dailyBreakoutEngine.ts).
+  const candles = await loadHistorical(symbol, '5m', 1, 'binance-futures-mark')
+  // Keep last ~600 candles (~50h) — enough for range + late breakouts.
   return candles.slice(-600)
 }
 

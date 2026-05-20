@@ -107,15 +107,22 @@ async function fetchFromBinanceFutures(symbol: string, interval: string, count: 
   if (!binanceInterval) {
     throw new Error(`Binance Futures klines не поддерживает interval '${interval}'`)
   }
-  // Binance Futures /fapi/v1/klines max limit is 1500; for higher counts we
-  // paginate via endTime. Same shape as Bybit so we can stack candles.
+  // Use Mark Price klines (not /klines = last price). Binance triggers TP/SL
+  // on mark price, and our paper tracker also tracks against mark. Showing
+  // last-price candles on the chart caused user confusion when a last-price
+  // wick poked above TP without firing it — the actual mark wick never made
+  // it. With markPriceKlines the chart matches both the tracker and what
+  // Binance shows in its own mark-price chart mode.
+  // Caveat: volume is always 0 on mark klines (mark is computed, not traded).
+  // Binance Futures /fapi/v1/markPriceKlines max limit is 1500; same kline
+  // shape as /klines so the parser is unchanged.
   const batchSize = 1500
   const allCandles: BybitKline[] = []
   let endTime: number | undefined = undefined
 
   while (allCandles.length < count) {
     const limit = Math.min(batchSize, count - allCandles.length)
-    let url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${binanceInterval}&limit=${limit}`
+    let url = `https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=${symbol}&interval=${binanceInterval}&limit=${limit}`
     if (endTime !== undefined) {
       url += `&endTime=${endTime}`
     }

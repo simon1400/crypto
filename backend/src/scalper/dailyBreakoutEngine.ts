@@ -114,7 +114,10 @@ export function generateBreakoutSignal(
   const candleDate = new Date(c.time).toISOString().slice(0, 10)
   if (candleDate !== range.rangeDate) return null
 
-  // Volume confirmation: avg of prev 24 bars
+  // Volume confirmation: avg of prev 24 bars.
+  // NOTE: candles now come from Binance Mark Price klines (volume always 0),
+  // so this gate is effectively no-op (0 < 0 is false). Kept here for clarity
+  // and for any backtest that wires in real-volume sources.
   const avgWindowStart = Math.max(0, candleIdx - 24)
   const avgWindowBars = candles.slice(avgWindowStart, candleIdx)
   if (avgWindowBars.length === 0) return null
