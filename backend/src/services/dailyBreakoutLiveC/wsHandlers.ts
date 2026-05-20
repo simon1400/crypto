@@ -73,10 +73,22 @@ async function handleOrderUpdate(ev: OrderTradeUpdateEvent): Promise<void> {
   }
 
   // Entry MARKET fill — refine entryPrice + fee on the row.
+  // 'enL{id}' = single-chunk entry (most symbols).
+  // 'enL{id}_N' = chunked entry (KAS/1000BONK where qty > MARKET_LOT_SIZE).
+  //   For chunked entries we INCREMENT qty + fee per chunk; aggTrade.ts's
+  //   final updateMany doesn't catch them all because WS may fire before
+  //   the loop finishes and the row's binanceOrderId gets set by chunk #1.
   if (cid && cid.startsWith('enL')) {
-    const tradeId = parseInt(cid.slice(3), 10)
+    const rest = cid.slice(3)
+    const underscoreAt = rest.indexOf('_')
+    const tradeId = parseInt(underscoreAt < 0 ? rest : rest.slice(0, underscoreAt), 10)
     if (!Number.isFinite(tradeId)) return
-    await handleEntryFillUpdate(tradeId, ev)
+    const isChunk = underscoreAt > 0
+    if (isChunk) {
+      await handleEntryChunkFillUpdate(tradeId, ev)
+    } else {
+      await handleEntryFillUpdate(tradeId, ev)
+    }
     return
   }
 
@@ -142,11 +154,72 @@ async function handleEntryFillUpdate(tradeId: number, ev: OrderTradeUpdateEvent)
       marginUsd: trade.leverage ? (exactPrice * exactQty) / trade.leverage : trade.marginUsd,
       entryFeeUsd: exactFee,
       binanceOrderId: exchangeOrderId,
+      entryFillOrderIds: [String(exchangeOrderId)] as any,
     },
   })
   await recomputeTradeMoney(tradeId)
 
   console.log(`${LOG} ↻ entry refined #${tradeId} ${trade.symbol} entry ${trade.entryPrice} → ${exactPrice}, entryFee SET to ${exactFee.toFixed(4)}`)
+}
+
+/**
+ * Refine the trade row from a CHUNKED entry MARKET fill event ('enL{id}_N').
+ * Used when sizing.positionUnits > marketMaxQty so aggTrade.ts split the entry
+ * into multiple MARKET legs (KAS at marketMaxQty=10k often needs 5-12 legs).
+ *
+ * Each chunk fires its own FILLED event with a unique orderId. We accumulate:
+ *   positionUnits  → sum of all chunks
+ *   entryPrice     → weighted average across chunks (qty-weighted)
+ *   entryFeeUsd    → sum of all chunks' commission
+ *   positionSizeUsd, marginUsd → derived from the running totals
+ *
+ * Idempotency: entryFillOrderIds Json array on the row. If this event's
+ * orderId is already in the list we skip (WS replay on reconnect).
+ *
+ * 2026-05-20 #4925 KASUSDT: planned 111545 units, split into 12 legs of ~10k.
+ * Old code only recorded the first leg via handleEntryFillUpdate → DB said
+ * positionUnits=10000 while Binance held the full 111545. Unrealized PnL
+ * computed against the wrong qty → mismatch with exchange UI.
+ */
+async function handleEntryChunkFillUpdate(tradeId: number, ev: OrderTradeUpdateEvent): Promise<void> {
+  const o = ev.o
+  if (o.X !== 'FILLED') return
+  const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!trade) return
+
+  const exchangeOrderId = String(o.i)
+  const known = ((trade.entryFillOrderIds as any[]) ?? []).map(String)
+  if (known.includes(exchangeOrderId)) return  // replay, skip
+
+  const chunkPrice = Number(o.ap) || Number(o.L) || trade.entryPrice
+  const chunkQty = Number(o.z) || 0
+  const chunkFee = Number(o.n) || 0
+  if (chunkQty <= 0) return
+
+  // Weighted-avg entry across all chunks: (prevQty × prevPrice + chunkQty × chunkPrice) / total.
+  // trade.entryPrice / positionUnits are the running totals from prior chunks
+  // (or the aggTrade placeholder + chunk #1's WS update if this is chunk #2).
+  const prevQty = trade.positionUnits
+  const prevPrice = trade.entryPrice
+  const newQty = prevQty + chunkQty
+  const newAvgPrice = newQty > 0 ? (prevQty * prevPrice + chunkQty * chunkPrice) / newQty : chunkPrice
+  const newFee = (trade.entryFeeUsd ?? 0) + chunkFee
+  const newOrderIds = [...known, exchangeOrderId]
+
+  await prisma.breakoutLiveTradeC.update({
+    where: { id: tradeId },
+    data: {
+      entryPrice: newAvgPrice,
+      positionUnits: newQty,
+      positionSizeUsd: newAvgPrice * newQty,
+      marginUsd: trade.leverage ? (newAvgPrice * newQty) / trade.leverage : trade.marginUsd,
+      entryFeeUsd: newFee,
+      entryFillOrderIds: newOrderIds as any,
+    },
+  })
+  await recomputeTradeMoney(tradeId)
+
+  console.log(`${LOG} ↻ entry chunk refined #${tradeId} ${trade.symbol} +${chunkQty}@${chunkPrice} (totalQty=${newQty}, avgPx=${newAvgPrice.toFixed(8)}, totalFee=${newFee.toFixed(4)})`)
 }
 
 /**

@@ -131,8 +131,22 @@ export async function attachSlAfterEntry(tradeId: number): Promise<void> {
 
 /**
  * Retrail SL on Binance after TP1/TP2 hit. Cancels the old algo order and
- * places a fresh STOP_MARKET at the new currentStop level. If anything fails,
- * we just clear binanceSlOrderId — virtual tracker owns the exit.
+ * places a fresh STOP_MARKET at the new currentStop level.
+ *
+ * Failure modes that used to leave a stale SL hanging at the old trigger
+ * (observed 2026-05-20 #4903 AAVE: TP1 fired but cancel SL got 418/-1003 IP
+ * ban, then place got -4116 ClientOrderId duplicated, then DB nulled
+ * binanceSlOrderId — net result: old SL @ $86.57 still alive on the book,
+ * DB thinks none, app couldn't see/cancel it):
+ *
+ *   1. Cancel SL fails (429/418/network) → DON'T null binanceSlOrderId.
+ *      Keep the ref so the next retrail/sweep can try again. (Symmetric
+ *      with cancelAllTpsOnExchange fix.)
+ *   2. Place new SL fails with -4116 duplicate cid → the old SL is still
+ *      on the book under our deterministic clientAlgoId 'slL{id}'. Try a
+ *      one-shot exchange-side recovery: look up the live algo by cid,
+ *      adopt its algoId into binanceSlOrderId so virtual layer can still
+ *      manage it.
  */
 export async function retrailSlOnExchange(tradeId: number): Promise<void> {
   const fresh = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
@@ -140,8 +154,14 @@ export async function retrailSlOnExchange(tradeId: number): Promise<void> {
   // Only retrail while position is still open.
   if (!['OPEN', 'TP1_HIT', 'TP2_HIT'].includes(fresh.status)) return
 
-  await cancelSlOnExchange(fresh)
-  // Reset stored algoId so attachSlAfterEntry can re-place idempotently.
+  const cancelOk = await cancelSlOnExchangeStrict(fresh)
+  if (!cancelOk) {
+    // Old SL still on the book — DON'T null DB ref, DON'T place a duplicate.
+    // Next TP hit or sweepStrayAlgoOrders will retry.
+    console.warn(`${LOG} ⚠ SL retrail #${tradeId} ${fresh.symbol}: cancel old SL failed (rate limit / network) — keeping stale ref, will retry`)
+    return
+  }
+  // Reset stored algoId only AFTER successful cancel.
   await prisma.breakoutLiveTradeC.update({
     where: { id: tradeId },
     data: { binanceSlOrderId: null },
@@ -163,5 +183,43 @@ export async function retrailSlOnExchange(tradeId: number): Promise<void> {
     console.log(`${LOG} 🛡 SL retrailed #${tradeId} ${refreshed.symbol} → ${refreshed.currentStop}`)
   } else {
     console.warn(`${LOG} ⚠ SL retrail failed #${tradeId}: ${r.error} — virtual SL still active`)
+    // -4116 means our deterministic cid is still alive on the book — the
+    // earlier cancel didn't fully take. Try to recover the algoId so the
+    // ref points at SOMETHING (otherwise repair-sltp can't see it either).
+    if (r.error.includes('-4116') && state.current) {
+      try {
+        const algos = await state.current.client.getOpenAlgoOrders()
+        const stale = algos.find((a) => a.symbol === refreshed.symbol && a.clientAlgoId === `slL${tradeId}`)
+        if (stale) {
+          await prisma.breakoutLiveTradeC.update({
+            where: { id: tradeId },
+            data: { binanceSlOrderId: BigInt(stale.algoId) },
+          })
+          console.log(`${LOG} ↻ SL recovered #${tradeId} ${refreshed.symbol} adopted stale algoId=${stale.algoId} from exchange`)
+        }
+      } catch (e: any) {
+        console.warn(`${LOG} SL recovery lookup failed #${tradeId}: ${e?.message ?? e}`)
+      }
+    }
+  }
+}
+
+/**
+ * Strict cancel: returns true only if the SL is actually gone from the book
+ * (success OR -2011/-2013 "already gone"). Returns false on any other error
+ * so the caller can avoid creating a duplicate placement.
+ */
+async function cancelSlOnExchangeStrict(trade: any): Promise<boolean> {
+  if (!state.current) return false
+  if (!trade.binanceSlOrderId) return true  // nothing to cancel
+  try {
+    await state.current.client.cancelAlgoOrder(trade.symbol, {
+      algoId: Number(trade.binanceSlOrderId),
+    })
+    return true
+  } catch (e: any) {
+    if (e instanceof BinanceApiError && (e.code === -2011 || e.code === -2013)) return true
+    console.warn(`${LOG} cancel SL #${trade.id} ${trade.symbol} failed: ${e.message}`)
+    return false
   }
 }

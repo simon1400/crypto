@@ -482,6 +482,12 @@ model BreakoutLiveTradeC {
   binanceOrderId       BigInt?
   binanceSlOrderId     BigInt?
   binanceTpOrderIds    Json    @default("[]")
+  // Array of Binance orderIds for chunked entries (KAS/1000BONK with qty >
+  // MARKET_LOT_SIZE). Each chunk fires its own ORDER_TRADE_UPDATE; we use
+  // this list as the idempotency key so duplicate WS events (reconnect
+  // replay) don't double-count qty/fee, and post-recovery code can tell
+  // how many chunks landed. Empty/null for single-chunk entries.
+  entryFillOrderIds    Json    @default("[]")
 
   @@index([status, symbol])
   @@index([openedAt])
