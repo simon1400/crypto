@@ -59,6 +59,10 @@ export async function flattenAllOpenC(reason: string): Promise<{ closed: number;
  * Cancel virtual PENDING_LIMIT rows from prior UTC days. Since virtual-limit
  * refactor 2026-05-19 these are DB-only rows with no exchange orders behind
  * them, so cleanup is a simple updateMany.
+ *
+ * Also includes rows stuck in `FILLING` (tryFillVirtualLimit claimed the row
+ * but didn't release it — e.g. backend crash mid-fill). Anything older than
+ * today should be considered dead regardless of state.
  */
 export async function cancelOrphanPendingLimits(): Promise<void> {
   const todayStart = new Date()
@@ -66,7 +70,7 @@ export async function cancelOrphanPendingLimits(): Promise<void> {
 
   const r = await prisma.breakoutLiveTradeC.updateMany({
     where: {
-      limitOrderState: 'PENDING_LIMIT',
+      limitOrderState: { in: ['PENDING_LIMIT', 'FILLING'] },
       limitPlacedAt: { lt: todayStart },
     },
     data: {
@@ -76,7 +80,7 @@ export async function cancelOrphanPendingLimits(): Promise<void> {
     },
   })
   if (r.count > 0) {
-    console.log(`${LOG} cancelled ${r.count} orphan virtual PENDING_LIMIT from prior days`)
+    console.log(`${LOG} cancelled ${r.count} orphan virtual PENDING_LIMIT/FILLING from prior days`)
   }
 }
 
@@ -86,10 +90,12 @@ export async function cancelOrphanPendingLimits(): Promise<void> {
  * are closed via flattenAllOpenC, and any unfilled limits from today should
  * also be cancelled so they don't fire when a new UTC day starts and prices
  * cross the prior day's rangeEdge before a fresh range forms.
+ *
+ * Also sweeps rows stuck in `FILLING` (backend crash mid-fill, orphan claims).
  */
 export async function cancelAllPendingLimits(): Promise<number> {
   const r = await prisma.breakoutLiveTradeC.updateMany({
-    where: { limitOrderState: 'PENDING_LIMIT' },
+    where: { limitOrderState: { in: ['PENDING_LIMIT', 'FILLING'] } },
     data: {
       limitOrderState: 'CANCELLED_EOD',
       status: 'EXPIRED',
@@ -97,7 +103,7 @@ export async function cancelAllPendingLimits(): Promise<number> {
     },
   })
   if (r.count > 0) {
-    console.log(`${LOG} EOD: cancelled ${r.count} virtual PENDING_LIMIT(s) (all dates)`)
+    console.log(`${LOG} EOD: cancelled ${r.count} virtual PENDING_LIMIT/FILLING (all dates)`)
   }
   return r.count
 }

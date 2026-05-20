@@ -208,11 +208,16 @@ router.get('/status', async (_req, res) => {
     const totalPnlUsd = snap.total - baseline
     const totalPnlPct = baseline > 0 ? (totalPnlUsd / baseline) * 100 : 0
 
-    // Pending limits live in DB (virtual limits), not on the exchange — count
-    // PENDING_LIMIT rows so the header reflects what the "Pending" tab shows.
-    const pendingOrders = await prisma.breakoutLiveTradeC.count({
+    // Pending limits live in DB (virtual limits), not on the exchange.
+    // Header counts the SAME unit the UI "Pending" tab renders — one row per
+    // symbol (BUY/SELL pair collapsed). Counting raw rows confused users
+    // (e.g. "5 ордеров" but only 2 pairs visible). distinct symbol count is
+    // what they see in the table.
+    const pendingRows = await prisma.breakoutLiveTradeC.findMany({
       where: { status: 'PENDING_LIMIT' },
+      select: { symbol: true },
     })
+    const pendingOrders = new Set(pendingRows.map((r) => r.symbol)).size
 
     res.json({
       connected: true,

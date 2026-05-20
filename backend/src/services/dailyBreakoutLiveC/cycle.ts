@@ -37,6 +37,23 @@ export async function runLiveCycle(): Promise<void> {
     }
     if (!state.current) return  // service stopped between schedule and tick
 
+    // Unstuck stale FILLING claims. tryFillVirtualLimit flips a row to
+    // 'FILLING' atomically, then sends MARKET, then writes the OPEN row. If
+    // the backend dies between claim and the OPEN write, the row sits in
+    // FILLING forever — invisible to aggTrade watcher (filters PENDING_LIMIT
+    // only) AND to EOD cancel (filters PENDING_LIMIT only). Anything older
+    // than 10 minutes in FILLING is dead; revert to PENDING_LIMIT so the
+    // watcher can retry, or — if from a prior UTC day — let EOD/orphan tick
+    // sweep it. Catches the #4894 1000BONK pattern we saw 2026-05-20.
+    const staleCutoff = new Date(Date.now() - 10 * 60 * 1000)
+    const stale = await prisma.breakoutLiveTradeC.updateMany({
+      where: { limitOrderState: 'FILLING', limitPlacedAt: { lt: staleCutoff } },
+      data: { limitOrderState: 'PENDING_LIMIT' },
+    })
+    if (stale.count > 0) {
+      console.log(`${LOG} unstuck ${stale.count} stale FILLING row(s) (> 10 min old) — back to PENDING_LIMIT`)
+    }
+
     // Pre-emptive limit placement: one BUY + one SELL on rangeEdge for each
     // tracked symbol that has a formed 3h range today and no open record yet.
     await placeLimitsForRanges(cfg, state.current.client, state.current.net)
