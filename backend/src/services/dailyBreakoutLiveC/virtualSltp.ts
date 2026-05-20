@@ -153,7 +153,18 @@ export async function notifyExitTelegram(
   const sliceFee = Number(slice?.feePaidUsd ?? 0)
   const tradeNet = (t.realizedPnlUsd ?? 0) - (t.feesPaidUsd ?? 0) - (t.fundingPaidUsd ?? 0)
 
-  const emoji = reason === 'SL' ? '🔴' : '✅'
+  // For SL closes, look at prior TP fills to label the exit precisely:
+  //   0 prior TPs → "SL" (initial stop, full loss)
+  //   1 prior TP  → "SL@BE" (SL trailed to entry after TP1)
+  //   2 prior TPs → "SL@TP1" (SL trailed to TP1 level after TP2)
+  // Matches the label format used by the UI (helpers.buildOutcomeLabel) so
+  // the Telegram message matches what user sees in the Trades table.
+  const priorTps = closes.filter((c: any) => typeof c?.reason === 'string' && c.reason.startsWith('TP') && c.reason !== reason).length
+  const reasonLabel = reason === 'SL'
+    ? (priorTps === 0 ? 'SL' : priorTps === 1 ? 'SL@BE' : `SL@TP${priorTps - 1}`)
+    : reason
+
+  const emoji = reason === 'SL' ? (priorTps > 0 ? '🟢' : '🔴') : '✅'
   const trailNote = reason === 'TP1' ? 'SL → BE'
     : reason === 'TP2' ? 'SL → TP1'
     : reason === 'TP3' ? 'позиция закрыта полностью'
@@ -161,18 +172,24 @@ export async function notifyExitTelegram(
   const headerSuffix = terminal ? 'позиция закрыта' : 'частичное закрытие'
   const pnlSuffix = virtual ? ' <i>(≈ виртуально)</i>' : ''
 
-  // For partial closes show both: this fill's realized + cumulative net.
-  // For terminal closes the two collapse — show only the trade net so the
-  // message isn't redundant.
+  // For partial closes (TP1/TP2) show both: this fill's realized + cumulative net.
+  // For terminal closes (SL/TP3) show BOTH slice and total so user sees how
+  // much this exit added on top of prior partials — that's the whole point of
+  // the trailing stop: "+$X from this slice, +$Y total over the trade".
   const pnlLines = terminal
-    ? [`💵 P&L    <b>${fmtPnl(tradeNet)}</b>${pnlSuffix}  <i>(сделка целиком)</i>`]
+    ? (priorTps > 0
+        ? [
+            `💵 Slice  <b>${fmtPnl(sliceGross - sliceFee)}</b>${pnlSuffix}  <i>(${Math.round(frac * 100)}% остатка)</i>`,
+            `Σ сделка  <b>${fmtPnl(tradeNet)}</b>  <i>(целиком, вкл. fee)</i>`,
+          ]
+        : [`💵 P&L    <b>${fmtPnl(tradeNet)}</b>${pnlSuffix}  <i>(сделка целиком)</i>`])
     : [
         `💵 Slice  <b>${fmtPnl(sliceGross - sliceFee)}</b>${pnlSuffix}  <i>(gross ${fmtPnl(sliceGross)} − fee $${sliceFee.toFixed(2)})</i>`,
         `Σ сделка  <b>${fmtPnl(tradeNet)}</b>  <i>(вкл. entry fee)</i>`,
       ]
 
   sendLiveTelegram([
-    `${emoji} <b>${t.symbol}</b> <b>${reason}</b>  · ${headerSuffix}`,
+    `${emoji} <b>${t.symbol}</b> <b>${reasonLabel}</b>  · ${headerSuffix}`,
     `━━━━━━━━━━━━━━━━━━`,
     `💰 Цена   <code>${fmtPrice(fillPrice)}</code>`,
     `📊 Закрыто  ${Math.round(frac * 100)}%`,
