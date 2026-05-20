@@ -90,17 +90,29 @@ export async function recomputeLiveCStats(): Promise<void> {
 
   // Peak/DD anchored on real walletBalance — equity from the exchange, not
   // the synthetic startingDepositUsd + totalPnLUsd reconstruction (which can
-  // drift on funding / external wallet movements).
+  // drift on funding / external wallet movements and undercounts realized
+  // partial closes that haven't terminalised the row yet).
+  //
+  // Guard: only update when the snapshot is fresh AND its total is sane.
+  // We've seen testnet REST occasionally return availableBalance in place of
+  // walletBalance which would record a phantom 40%+ drawdown. If wallet drops
+  // below baseline × 0.5 AND below currentDepositUsd it's almost certainly
+  // bad data — skip the DD update for this tick.
   const wallet = snapshot.current?.total ?? cfg.currentDepositUsd
-  const newPeak = Math.max(cfg.peakDepositUsd ?? cfg.startingDepositUsd, wallet)
-  const newDD = newPeak > 0 ? Math.max(cfg.maxDrawdownPct, ((newPeak - wallet) / newPeak) * 100) : 0
+  const looksBogus = wallet > 0 && wallet < cfg.startingDepositUsd * 0.5 && wallet < cfg.currentDepositUsd
+  const dataToWrite: any = { totalTrades, totalWins, totalLosses, totalPnLUsd }
+  if (!looksBogus) {
+    const newPeak = Math.max(cfg.peakDepositUsd ?? cfg.startingDepositUsd, wallet)
+    const currentDD = newPeak > 0 ? ((newPeak - wallet) / newPeak) * 100 : 0
+    dataToWrite.peakDepositUsd = newPeak
+    dataToWrite.maxDrawdownPct = Math.max(cfg.maxDrawdownPct ?? 0, currentDD)
+  } else {
+    console.warn(`${LOG} recomputeLiveCStats: snapshot.total=${wallet} looks bogus (< baseline×0.5 AND < currentDeposit) — skipping peak/DD update`)
+  }
 
   await prisma.breakoutLiveConfigC.update({
     where: { id: 1 },
-    data: {
-      totalTrades, totalWins, totalLosses, totalPnLUsd,
-      peakDepositUsd: newPeak, maxDrawdownPct: newDD,
-    },
+    data: dataToWrite,
   })
 }
 
