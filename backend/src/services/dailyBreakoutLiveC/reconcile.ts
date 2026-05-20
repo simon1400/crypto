@@ -421,3 +421,44 @@ export async function sweepStrayAlgoOrders(client: BinanceFuturesClient): Promis
   }
   return { cancelled, checked }
 }
+
+/**
+ * Targeted version of sweepStrayAlgoOrders: cancels every algo order on the
+ * exchange whose clientAlgoId belongs to a specific tradeId — slL{tradeId} or
+ * tpL{tradeId}_*. Used as a defensive net on terminal close so TPs/SL don't
+ * outlive the trade even if binanceTpOrderIds/binanceSlOrderId in DB drifted
+ * (e.g. after a reconcile that nulled them, or a missed WS write).
+ *
+ * Safer than cancelAllTpsOnExchange(t) alone — that one trusts the DB array;
+ * this one trusts the exchange. We run both for belt-and-braces.
+ */
+export async function cancelAllExchangeOrdersForTrade(
+  client: BinanceFuturesClient,
+  tradeId: number,
+  symbol: string,
+): Promise<{ cancelled: number }> {
+  let algoOrders: Awaited<ReturnType<typeof client.getOpenAlgoOrders>>
+  try {
+    algoOrders = await client.getOpenAlgoOrders()
+  } catch (e: any) {
+    console.warn(`${LOG} cancelAllExchangeOrdersForTrade #${tradeId}: getOpenAlgoOrders failed: ${e.message}`)
+    return { cancelled: 0 }
+  }
+  let cancelled = 0
+  const slPrefix = `slL${tradeId}`
+  const tpPrefix = `tpL${tradeId}_`
+  for (const o of algoOrders) {
+    if (o.symbol !== symbol) continue
+    const cid = o.clientAlgoId || ''
+    if (cid !== slPrefix && !cid.startsWith(tpPrefix)) continue
+    try {
+      await client.cancelAlgoOrder(o.symbol, { algoId: o.algoId })
+      console.log(`${LOG} cancelAllExchangeOrdersForTrade cancelled ${o.symbol} ${cid} (#${tradeId})`)
+      cancelled++
+    } catch (e: any) {
+      if (e instanceof BinanceApiError && (e.code === -2011 || e.code === -2013)) continue
+      console.warn(`${LOG} cancelAllExchangeOrdersForTrade cancel ${o.symbol} ${cid} failed: ${e.message}`)
+    }
+  }
+  return { cancelled }
+}

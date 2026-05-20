@@ -136,19 +136,21 @@ export async function cancelTpOnExchange(trade: any, tpIdx: 1 | 2 | 3): Promise<
   const tpAlgos = ((trade.binanceTpOrderIds as any[]) ?? []) as TpAlgoEntry[]
   const entry = tpAlgos.find((t) => Number(t.tpIdx) === tpIdx)
   if (!entry) return
+  let cancelledOrAlreadyGone = false
   try {
     await state.current.client.cancelAlgoOrder(trade.symbol, {
       algoId: Number(entry.algoId),
     })
+    cancelledOrAlreadyGone = true
   } catch (e: any) {
-    // -2011 unknown order, -2013 doesn't exist — already gone, fine.
     if (e instanceof BinanceApiError && (e.code === -2011 || e.code === -2013)) {
-      // intentionally swallow
+      cancelledOrAlreadyGone = true  // already gone, fine
     } else {
       console.warn(`${LOG} cancel TP${tpIdx} #${trade.id} ${trade.symbol} failed: ${e.message}`)
+      // Transient failure — leave in DB so retry/sweep can finish.
     }
   }
-  // Remove from stored list either way (best-effort; reconcile heals drift).
+  if (!cancelledOrAlreadyGone) return
   const remaining = tpAlgos.filter((t) => Number(t.tpIdx) !== tpIdx)
   await prisma.breakoutLiveTradeC.update({
     where: { id: trade.id },
@@ -160,22 +162,39 @@ export async function cancelTpOnExchange(trade: any, tpIdx: 1 | 2 | 3): Promise<
  * Cancel ALL stored TP algo orders for this trade. Used on terminal exits
  * (SL hit, TP3 hit, flatten/kill) so no algo orders are left hanging on the
  * book after the position is closed.
+ *
+ * Per-entry result handling: only drop a TP from binanceTpOrderIds if it was
+ * actually cancelled or returned -2011/-2013 (already gone). On a rate-limit
+ * (-1003) or other transient failure we keep it in the array so the next
+ * cancel attempt (or sweepStrayAlgoOrders) can finish the job. Previously we
+ * unconditionally zeroed out the array even on failures, which made
+ * binanceTpOrderIds report "all cancelled" while the orders kept living on
+ * the exchange — observed 2026-05-20 #4923 TRUMPUSDT (three 429s during SL
+ * fill, TPs survived the close).
  */
 export async function cancelAllTpsOnExchange(trade: any): Promise<void> {
   if (!state.current) return
   const tpAlgos = ((trade.binanceTpOrderIds as any[]) ?? []) as TpAlgoEntry[]
   if (tpAlgos.length === 0) return
+  const stillOpen: TpAlgoEntry[] = []
   for (const t of tpAlgos) {
     try {
       await state.current.client.cancelAlgoOrder(trade.symbol, { algoId: Number(t.algoId) })
+      // success → drop from stored array
     } catch (e: any) {
-      if (e instanceof BinanceApiError && (e.code === -2011 || e.code === -2013)) continue
+      if (e instanceof BinanceApiError && (e.code === -2011 || e.code === -2013)) {
+        // already gone → drop from stored array
+        continue
+      }
       console.warn(`${LOG} cancel TP${t.tpIdx} #${trade.id} ${trade.symbol} failed: ${e.message}`)
+      // Transient failure (rate limit, network, etc.) — KEEP in array so a
+      // later sweep finishes the cancel. Don't lie to the DB.
+      stillOpen.push(t)
     }
   }
   await prisma.breakoutLiveTradeC.update({
     where: { id: trade.id },
-    data: { binanceTpOrderIds: [] as any },
+    data: { binanceTpOrderIds: stillOpen as any },
   }).catch(() => { /* noop */ })
 }
 

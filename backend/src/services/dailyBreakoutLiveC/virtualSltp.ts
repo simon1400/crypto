@@ -24,7 +24,7 @@ import { sendLiveTelegram } from './telegram'
 import { cancelSlOnExchange, retrailSlOnExchange } from './exchangeSl'
 import { cancelTpOnExchange, cancelAllTpsOnExchange } from './exchangeTp'
 import { seedSnapshotFromRest } from './snapshot'
-import { sweepDustForSymbol } from './reconcile'
+import { sweepDustForSymbol, cancelAllExchangeOrdersForTrade } from './reconcile'
 
 /**
  * Rebuild realizedPnlUsd / feesPaidUsd / netPnlUsd as absolute values from the
@@ -444,6 +444,16 @@ export async function applyVirtualClose(
       where: { id: fresh.id },
       data: { binanceSlOrderId: null },
     }).catch(() => { /* noop */ })
+    // Belt-and-braces: the cancelAllTpsOnExchange call above trusts the DB
+    // array binanceTpOrderIds. If that array was nulled by a prior reconcile,
+    // or never written (WS race after entry), TPs survive the terminal close
+    // (observed 2026-05-20 #4904 TRUMP: SL_HIT but TP1+TP2 still on the book).
+    // Query the exchange directly and kill anything tagged with this trade's
+    // clientAlgoId — independent of what the DB thinks we placed.
+    if (state.current) {
+      await cancelAllExchangeOrdersForTrade(state.current.client, fresh.id, fresh.symbol).catch((e) =>
+        console.warn(`${LOG} post-close cancelAllExchangeOrdersForTrade failed: ${e?.message ?? e}`))
+    }
     // Sweep any step-rounding residue NOW instead of waiting for EOD. SL@BE
     // from exchange STOP_MARKET and TP3 from exchange TAKE_PROFIT_MARKET both
     // close their advertised qty, but if entry filled fractional (e.g. 10.4
