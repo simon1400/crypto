@@ -63,9 +63,13 @@ export function getMaxLeverage(symbol: string): number {
 
 export interface SizingInput {
   symbol: string
-  deposit: number          // current deposit USD
+  deposit: number          // wallet deposit USD — full equity incl. open margin.
+                           // Used to compute riskUsd (2% of wallet) and target
+                           // margin (5% of wallet). NOT availableBalance —
+                           // available shrinks as positions open, but each new
+                           // trade should still risk % of the full bankroll.
   riskPct: number          // % per trade (e.g. 2)
-  targetMarginPct: number  // % deposit per trade margin (e.g. 10)
+  targetMarginPct: number  // % deposit per trade margin (e.g. 5)
   entry: number
   sl: number
   // Exchange-side leverage cap for the planned notional. Binance Futures
@@ -74,6 +78,13 @@ export interface SizingInput {
   // AVAX trade may only allow 20x — placing 50x gets -2027. Optional so
   // paper trader can omit it (no exchange to refuse).
   exchangeMaxLeverage?: number
+  // Free margin currently available on the wallet. If the targetMarginPct
+  // computation says we need $251 but only $180 is free, downsize margin
+  // to $180 and let leverage climb to keep notional unchanged. When the
+  // exchange/symbol max leverage can't accommodate that, sizing returns
+  // null (caller treats it as "skip — insufficient free margin"). Optional
+  // for paper trader.
+  availableUsd?: number
 }
 
 export interface SizingResult {
@@ -83,10 +94,14 @@ export interface SizingResult {
   leverage: number         // chosen so margin ≈ targetMarginPct × deposit, capped at maxLeverage
   marginUsd: number        // positionSizeUsd / leverage
   cappedByMaxLeverage: boolean
+  // Set when targetMargin > availableUsd and we downsized margin to fit free
+  // funds (leverage bumped accordingly). Surfaces to logs/UI so the user
+  // knows why margin is below 5% of wallet on a specific trade.
+  downsizedToAvailable?: boolean
 }
 
 export function computeSizing(input: SizingInput): SizingResult | null {
-  const { symbol, deposit, riskPct, targetMarginPct, entry, sl, exchangeMaxLeverage } = input
+  const { symbol, deposit, riskPct, targetMarginPct, entry, sl, exchangeMaxLeverage, availableUsd } = input
   const slDist = Math.abs(entry - sl)
   if (slDist <= 0 || deposit <= 0) return null
 
@@ -95,13 +110,29 @@ export function computeSizing(input: SizingInput): SizingResult | null {
   const positionSizeUsd = entry * positionUnits
   if (positionSizeUsd <= 0) return null
 
-  // Pick the MINIMUM leverage needed to keep margin <= targetMargin. Higher leverage
-  // wastes margin on extra fees (taker/maker fee scales with notional, not margin),
-  // and trading fees apply to notional too — so we want the smallest lever that fits.
-  // If positionSize <= targetMargin, leverage=1 is enough (no leverage needed).
-  // If positionSize > targetMargin, we need lev = positionSize / targetMargin.
+  // targetMargin is the desired margin commitment for a "full" sized trade:
+  // 5% of the wallet deposit. With deposit=wallet (not available), opening a
+  // new trade always targets the same fraction of total bankroll regardless
+  // of how much is currently tied up in other positions.
   const targetMargin = (deposit * targetMarginPct) / 100
-  const idealLeverage = positionSizeUsd / Math.max(targetMargin, 1e-9)
+
+  // If free margin is below the target, downsize margin to whatever IS free
+  // and bump leverage to keep positionSize (and therefore $-risk) unchanged.
+  // Honour a small floor — below $5 margin Binance rejects on minNotional
+  // anyway and the trade isn't worth opening.
+  const MIN_DOWNSIZE_MARGIN = 5
+  let effectiveTargetMargin = targetMargin
+  let downsizedToAvailable = false
+  if (availableUsd !== undefined && availableUsd < targetMargin) {
+    if (availableUsd < MIN_DOWNSIZE_MARGIN) return null  // not enough free margin at all
+    effectiveTargetMargin = availableUsd
+    downsizedToAvailable = true
+  }
+
+  // Pick the MINIMUM leverage needed to keep margin <= effectiveTargetMargin.
+  // Higher leverage wastes nothing (fees scale on notional, not margin), so
+  // we want the smallest lever that fits the margin budget.
+  const idealLeverage = positionSizeUsd / Math.max(effectiveTargetMargin, 1e-9)
   const symbolMaxLev = getMaxLeverage(symbol)
   // Cap by the exchange's notional-tiered bracket if known. Without this, AVAX
   // at $9k notional gets sized 50x but Binance's bracket only allows 20x →
@@ -111,7 +142,11 @@ export function computeSizing(input: SizingInput): SizingResult | null {
   const marginUsd = positionSizeUsd / leverage
   const cappedByMaxLeverage = idealLeverage > effectiveMax + 1e-6
 
-  return { riskUsd, positionUnits, positionSizeUsd, leverage, marginUsd, cappedByMaxLeverage }
+  // If the leverage cap forced margin ABOVE what's actually free, we can't
+  // open this trade — would get -2019 insufficient margin. Skip cleanly.
+  if (availableUsd !== undefined && marginUsd > availableUsd + 1e-6) return null
+
+  return { riskUsd, positionUnits, positionSizeUsd, leverage, marginUsd, cappedByMaxLeverage, downsizedToAvailable }
 }
 
 export interface ExistingTrade {

@@ -26,6 +26,7 @@ import { cancelPairOrder } from './wsHandlers'
 import { attachSlAfterEntry } from './exchangeSl'
 import { attachTpsAfterEntry } from './exchangeTp'
 import { seedSnapshotFromRest } from './snapshot'
+import { getLeverageBrackets, bracketMaxLeverageFor } from './brackets'
 
 export function handleAggTrade(sym: string, price: number, ts: number): void {
   lastAggTradeAt.set(sym, ts)
@@ -137,13 +138,35 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
       })
       return
     }
+    // Sizing % basis = full wallet (walletBalance), not the shrinking available
+    // balance. Same rule as placement.ts — keeps risk/margin a stable fraction
+    // of total bankroll across the lifecycle of multiple concurrent positions.
+    const sizingDeposit = snapshot.current?.total ?? cfg.currentDepositUsd
+    const sizingAvailable = snapshot.current?.available ?? cfg.currentDepositUsd
+    // Cap leverage by Binance's notional-tiered bracket for this symbol (same
+    // logic as placement.ts). Without this, re-sizing at fill could pick a
+    // leverage that the exchange refuses → -2027 → rate-limit storm.
+    let exchangeMaxLev: number | undefined
+    try {
+      const brackets = await getLeverageBrackets(state.current.client)
+      const slDist = Math.abs(trade.limitOrderPrice - trade.stopLoss)
+      if (slDist > 0 && sizingDeposit > 0) {
+        const riskUsdDry = (sizingDeposit * cfg.riskPctPerTrade) / 100
+        const notionalDry = trade.limitOrderPrice * (riskUsdDry / slDist)
+        exchangeMaxLev = bracketMaxLeverageFor(brackets.get(trade.symbol), notionalDry)
+      }
+    } catch (e: any) {
+      console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol}: leverage brackets lookup failed: ${e.message}`)
+    }
     const sizing = computeSizing({
       symbol: trade.symbol,
-      deposit: cfg.currentDepositUsd,
+      deposit: sizingDeposit,
       riskPct: cfg.riskPctPerTrade,
       targetMarginPct: cfg.targetMarginPct,
       entry: trade.limitOrderPrice,
       sl: trade.stopLoss,
+      exchangeMaxLeverage: exchangeMaxLev,
+      availableUsd: sizingAvailable,
     })
     if (!sizing || sizing.positionUnits <= 0) {
       console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} sizing failed at fill — cancelling`)
@@ -326,7 +349,7 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
         limitOrderState: 'FILLED',
         limitFilledAt: fillTime,
         openedAt: fillTime,
-        depositAtEntryUsd: cfg.currentDepositUsd,
+        depositAtEntryUsd: sizingDeposit,
         riskUsd: sizing.riskUsd,
         leverage: newLev,
       },

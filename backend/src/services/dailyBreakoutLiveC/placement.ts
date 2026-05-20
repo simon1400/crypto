@@ -134,6 +134,7 @@ export async function placeLimitsForRanges(
     placedCount: openOrPendingCount,
     locked: lockedMarginUsd,
     walletTotal: snap.total,
+    walletAvailable: snap.available,
     maxConcurrent,
   }
 
@@ -350,6 +351,10 @@ interface BudgetState {
   placedCount: number   // total OPEN+TP1_HIT+TP2_HIT+PENDING_LIMIT rows so far
   locked: number        // total margin USD already committed
   walletTotal: number   // snap.total at start of cycle — used as 90% cap base
+                        // AND as the % basis for risk + target margin sizing
+                        // (5% of full wallet, not 5% of what's free).
+  walletAvailable: number  // snap.available — used by sizing to clamp the
+                           // target margin if free funds < target.
   maxConcurrent: number // cfg.maxConcurrentPositions
 }
 
@@ -386,6 +391,15 @@ interface PlaceOneSideArgs {
  * narrow ranges had book spread overlapping rangeEdge → 99%+ -5022 rejection.
  */
 async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
+  // Use the wallet total (snap.total) as the % basis — sizing fractions are
+  // always taken from the FULL bankroll, not from what's free. This keeps
+  // each new trade's $-risk and target margin stable regardless of how many
+  // positions are already open. cfg.currentDepositUsd is the mirrored
+  // availableBalance from the snapshot, which would understate sizing as
+  // more positions tie up margin.
+  const walletTotal = a.budgetState.walletTotal
+  const walletAvailable = a.budgetState.walletAvailable
+
   // Look up the symbol's leverage brackets to cap sizing.leverage by what
   // Binance will actually accept for this notional. AVAX example: 50x is fine
   // up to $5k notional, but only 20x for $5-25k. computeSizing's positionSize
@@ -395,8 +409,8 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
   try {
     const brackets = await getLeverageBrackets(a.client)
     const slDist = Math.abs(a.entryPrice - a.stopLoss)
-    if (slDist > 0 && a.cfg.currentDepositUsd > 0) {
-      const riskUsdDry = (a.cfg.currentDepositUsd * a.cfg.riskPctPerTrade) / 100
+    if (slDist > 0 && walletTotal > 0) {
+      const riskUsdDry = (walletTotal * a.cfg.riskPctPerTrade) / 100
       const notionalDry = a.entryPrice * (riskUsdDry / slDist)
       exchangeMaxLev = bracketMaxLeverageFor(brackets.get(a.symbol), notionalDry)
     }
@@ -407,12 +421,13 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
   // Sizing — uses the configured risk/margin knobs and current balance.
   const sizing = computeSizing({
     symbol: a.symbol,
-    deposit: a.cfg.currentDepositUsd,
+    deposit: walletTotal,
     riskPct: a.cfg.riskPctPerTrade,
     targetMarginPct: a.cfg.targetMarginPct,
     entry: a.entryPrice,
     sl: a.stopLoss,
     exchangeMaxLeverage: exchangeMaxLev,
+    availableUsd: walletAvailable,
   })
   if (!sizing || sizing.positionUnits <= 0) {
     console.warn(`${LOG} ${a.symbol} ${a.side} — sizing failed`)
@@ -524,7 +539,7 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
         initialStop: a.stopLoss,
         currentStop: a.stopLoss,
         tpLadder: a.tpLadder as any,
-        depositAtEntryUsd: a.cfg.currentDepositUsd,
+        depositAtEntryUsd: walletTotal,
         riskUsd: sizing.riskUsd,
         positionSizeUsd: priceRounded * qty,
         positionUnits: qty,
