@@ -251,6 +251,14 @@ export async function closeBreakoutPaperTradeManual(id: number, price: number, p
     body: JSON.stringify({ price, percent }),
   }))
 }
+// Manual cancel of a PENDING_LIMIT row. Server marks the row CANCELLED_MANUAL
+// + status CANCELLED, and also cancels the paired BUY/SELL side for the same
+// symbol/day (engine treats placement as a pair, so does cancellation).
+export async function cancelBreakoutPaperPending(id: number, variant: BreakoutVariant = 'A'): Promise<{ ok: true; cancelled: number }> {
+  return handle(await fetch(`${BASE}${basePath(variant)}/trades/${id}/cancel-pending`, {
+    method: 'POST', headers: getHeaders(),
+  }))
+}
 // Симулирует TP1/TP2/TP3/SL fill точно так же, как это делает движок
 // (maker fees/без slip для TP, taker fees+slip для SL, авто-трейлинг SL).
 export async function simulateBreakoutPaperFill(id: number, reason: 'TP1' | 'TP2' | 'TP3' | 'SL', variant: BreakoutVariant = 'A'): Promise<BreakoutTrade> {

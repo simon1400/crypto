@@ -468,7 +468,13 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       )}
 
       {statusFilter === 'PENDING' && (variant === 'C' || isLive) && (
-        <PendingTable trades={trades} loading={loading} onSelectChartFor={setChartTrade} />
+        <PendingTable
+          trades={trades}
+          loading={loading}
+          variant={variant}
+          onSelectChartFor={setChartTrade}
+          onCancelled={() => { loadAll() }}
+        />
       )}
 
       {statusFilter === 'ATTEMPTS' && isLive && (

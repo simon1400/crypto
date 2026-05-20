@@ -663,6 +663,51 @@ router.post('/trades/:id/close-market', async (req, res) => {
   }
 })
 
+// Manual cancel of a PENDING_LIMIT row — UI calls this from the Pending tab.
+// Entry limits in LIVE C are virtual (no exchange-side order) — the row sits
+// in DB with status='PENDING_LIMIT' and aggTrade tracker fires the market entry
+// when price crosses rangeEdge. So cancelling is purely a DB mutation: mark
+// CANCELLED_MANUAL + status CANCELLED + close the paired side (BUY+SELL placed
+// together for the same symbol/day).
+router.post('/trades/:id/cancel-pending', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const trade = await prisma.breakoutLiveTradeC.findUnique({ where: { id } })
+    if (!trade) return res.status(404).json({ error: 'Not found' })
+    if (trade.status !== 'PENDING_LIMIT') {
+      return res.status(400).json({ error: `Cannot cancel — status is ${trade.status}` })
+    }
+    const now = new Date()
+    const cancelData = {
+      limitOrderState: 'CANCELLED_MANUAL',
+      status: 'CANCELLED',
+      closedAt: now,
+    }
+    await prisma.breakoutLiveTradeC.update({ where: { id }, data: cancelData })
+
+    // Pair side: same symbol, same placement day, still PENDING_LIMIT, opposite side
+    const dayStart = new Date(trade.openedAt)
+    dayStart.setUTCHours(0, 0, 0, 0)
+    const dayEnd = new Date(dayStart)
+    dayEnd.setUTCDate(dayEnd.getUTCDate() + 1)
+    const paired = await prisma.breakoutLiveTradeC.findFirst({
+      where: {
+        symbol: trade.symbol,
+        status: 'PENDING_LIMIT',
+        side: trade.side === 'BUY' ? 'SELL' : 'BUY',
+        openedAt: { gte: dayStart, lt: dayEnd },
+      },
+    })
+    if (paired) {
+      await prisma.breakoutLiveTradeC.update({ where: { id: paired.id }, data: cancelData })
+    }
+    res.json({ ok: true, cancelled: paired ? 2 : 1 })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // GET /attempts — placement attempts audit log. Powers the LIVE 'Отклонённые'
 // tab. Default returns today's UTC bucket; ?rangeDate=YYYY-MM-DD overrides.
 // Each row: PLACED | REJECTED_EXCHANGE | SKIPPED_GATE | SKIPPED_FILTER + the

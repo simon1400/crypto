@@ -147,6 +147,51 @@ export function registerCloseRoutes(router: Router, variant: BreakoutVariant, cm
     }
   })
 
+  // Manual cancel of a PENDING_LIMIT row — UI calls this from the Pending tab.
+  // Paper limits are virtual (DB-only), so cancelling is a row mutation: mark
+  // CANCELLED_MANUAL + status CANCELLED. Also cancels the paired side of the
+  // BUY+SELL placement on the same symbol/day so the user doesn't have to do
+  // it twice — that's the same idempotent contract the engine uses when one
+  // side fills (CANCELLED_OTHER_SIDE).
+  router.post('/trades/:id/cancel-pending', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10)
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+      const trade = await tm.findUnique({ where: { id } })
+      if (!trade) return res.status(404).json({ error: 'Not found' })
+      if (trade.status !== 'PENDING_LIMIT') {
+        return res.status(400).json({ error: `Cannot cancel — status is ${trade.status}` })
+      }
+      const now = new Date()
+      const cancelData = {
+        limitOrderState: 'CANCELLED_MANUAL',
+        status: 'CANCELLED',
+        closedAt: now,
+      }
+      await tm.update({ where: { id }, data: cancelData })
+
+      // Pair side: same symbol, same placement day, still PENDING_LIMIT, opposite side
+      const dayStart = new Date(trade.openedAt)
+      dayStart.setUTCHours(0, 0, 0, 0)
+      const dayEnd = new Date(dayStart)
+      dayEnd.setUTCDate(dayEnd.getUTCDate() + 1)
+      const paired = await tm.findFirst({
+        where: {
+          symbol: trade.symbol,
+          status: 'PENDING_LIMIT',
+          side: trade.side === 'BUY' ? 'SELL' : 'BUY',
+          openedAt: { gte: dayStart, lt: dayEnd },
+        },
+      })
+      if (paired) {
+        await tm.update({ where: { id: paired.id }, data: cancelData })
+      }
+      res.json({ ok: true, cancelled: paired ? 2 : 1 })
+    } catch (e: any) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
   // Симуляция fill TP/SL «как будто это сделал движок» — для ручного тестирования
   // из модала. Повторяет логику dailyBreakoutPaperTrader: TP = maker fill (без slip),
   // split 50/30/20, авто-трейлинг SL (TP1→BE, TP2→TP1); SL = taker fill со slip.
