@@ -99,16 +99,25 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       const isPendingTab = statusFilter === 'PENDING'
       const isCancelledTab = statusFilter === 'CANCELLED'
       // Variant C / LIVE: "Открытые" — только FILLED-сделки. "Закрытые" — только
-      // реальные закрытия позиций (CLOSED/SL_HIT/EXPIRED/TP3_HIT). "Отменено" —
-      // отдельный таб для CANCELLED (limit отменён EOD или other-side), чтобы
-      // не засорять "Закрытые" десятками лимиток без P&L. "PENDING" — висящие
-      // limit-ордера до пробоя.
+      // реальные закрытия позиций. "Отменено" — отдельный таб для CANCELLED
+      // (limit отменён other-side при fill пары) + для LIVE сюда же идут EXPIRED
+      // pendings (orphan cleanup отменил limit после полуночи UTC — fill никогда
+      // не происходил, у row маржа/размер выставлены умозрительно при placement,
+      // но реально позиции не было). Для paper-вариантов EXPIRED остаётся в
+      // "Закрытые" — там это маркер истечения сделки уже после открытия.
+      const liveExpiredAsCancelled = isLiveVariant(variant)
+      const closedStatuses = liveExpiredAsCancelled
+        ? CLOSED_STATUSES.filter((s) => s !== 'EXPIRED')
+        : [...CLOSED_STATUSES]
+      const cancelledStatuses = liveExpiredAsCancelled
+        ? ['CANCELLED', 'EXPIRED']
+        : ['CANCELLED']
       const status = statusFilter === 'OPEN'
         ? [...ACTIVE_STATUSES]
         : statusFilter === 'CLOSED'
-        ? [...CLOSED_STATUSES]
+        ? closedStatuses
         : isCancelledTab
-        ? ['CANCELLED']
+        ? cancelledStatuses
         : isPendingTab
         ? (isLiveVariant(variant) ? ['PENDING_LIMIT'] : ['PENDING'])
         : undefined

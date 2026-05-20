@@ -188,7 +188,12 @@ async function main() {
     const closes = ((t.closes as any[]) ?? []) as CloseEntry[]
     const hasPlaceholderZeros = closes.some((c) => Number(c?.pnlUsd ?? 0) === 0 && Number(c?.percent ?? 0) > 0)
     const isEmptyExpired = closes.length === 0 && t.status === 'EXPIRED'
-    if (!hasPlaceholderZeros && !isEmptyExpired) continue
+    // RECONCILED closes carry an estimated P&L from markPrice (placeholder
+    // when reconcileWithExchange detects the position vanished on the exchange
+    // without a matching WS event). Always replace those with exact figures
+    // from userTrades — the estimate is rarely accurate.
+    const hasReconciledEstimate = closes.some((c) => c?.reason === 'RECONCILED' && Number(c?.percent ?? 0) > 0)
+    if (!hasPlaceholderZeros && !isEmptyExpired && !hasReconciledEstimate) continue
 
     const openedMs = new Date(t.openedAt).getTime()
     const closedMs = t.closedAt ? new Date(t.closedAt).getTime() : Date.now()
@@ -373,8 +378,10 @@ async function main() {
       const avgPx = sumPxQty / sumQty
 
       // Keep slices that already have a non-zero pnlUsd (refined correctly
-      // before the bug) — just advance the fill cursor through their qty.
-      if (Number(c.pnlUsd ?? 0) !== 0) continue
+      // via WS) — just advance the fill cursor through their qty. RECONCILED
+      // entries are estimates from markPrice, NOT refined values — always
+      // overwrite them with the exact userTrades figures.
+      if (Number(c.pnlUsd ?? 0) !== 0 && c.reason !== 'RECONCILED') continue
 
       newCloses[i] = {
         ...c,
