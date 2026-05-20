@@ -68,6 +68,23 @@ export async function placeLimitsForRanges(
   const utcDate = new Date().toISOString().slice(0, 10)
   const todayStartUtc = new Date(`${utcDate}T00:00:00.000Z`)
 
+  // Early-exit: if every symbol in the universe already has a row for today,
+  // there's nothing to place — skip the whole cycle (no klines fetch, no
+  // markPrice query, no DB writes). The per-symbol loop below would do the
+  // same skip via `existing` check, but that costs N × klines.fetch first.
+  // Once per day the first cycle after 03:00 UTC creates all pairs; every
+  // subsequent cycle until EOD is now a single SELECT + return.
+  const todayRowSymbols = await prisma.breakoutLiveTradeC.findMany({
+    where: { openedAt: { gte: todayStartUtc } },
+    select: { symbol: true },
+    distinct: ['symbol'],
+  })
+  const coveredSymbols = new Set(todayRowSymbols.map((r) => r.symbol))
+  if (symbols.every((s) => coveredSymbols.has(s))) {
+    // All universe symbols already have today's pair — nothing to do.
+    return
+  }
+
   // Pull available balance from the WS-driven snapshot. No REST call — the
   // snapshot is updated by ACCOUNT_UPDATE on every fill / TP / SL / funding.
   // getLiveSnapshot() will refresh from REST if older than the staleness

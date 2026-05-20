@@ -129,9 +129,10 @@ function formatMessage(action: OrderAction, details?: Record<string, any>): stri
       const variants: VariantOpenInfo[] = (d.variants as VariantOpenInfo[]) ?? []
       const coin = sym.replace('USDT', '')
       const maxLev = getMaxLeverage(sym)
+      const maxLevText = Number.isFinite(maxLev) ? `${maxLev}x` : 'cap'
 
       const variantBlocks = variants.map((v) => {
-        const lvNote = v.cappedByMaxLeverage ? ` (max ${maxLev}x)` : ''
+        const lvNote = v.cappedByMaxLeverage ? ` (max ${maxLevText})` : ''
         return [
           `<b>Вариант ${v.variant}</b>`,
           `💰 Депо    <code>$${v.depositUsd.toFixed(2)}</code>  · Риск ${v.riskPctPerTrade}% (<code>$${v.riskUsd.toFixed(2)}</code>)`,

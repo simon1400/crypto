@@ -318,7 +318,10 @@ export async function openNewPaperTrades(cfg: PaperConfig, variant: BreakoutVari
       cappedByMaxLeverage: sizing.cappedByMaxLeverage,
       reason: sig.reason,
     })
-    const lvNote = sizing.cappedByMaxLeverage ? ` (capped at ${getMaxLeverage(sig.symbol)}x)` : ''
+    const maxLevForLog = getMaxLeverage(sig.symbol)
+    const lvNote = sizing.cappedByMaxLeverage
+      ? ` (capped at ${Number.isFinite(maxLevForLog) ? `${maxLevForLog}x` : 'exchange limit'})`
+      : ''
     const dsNote = finalMargin !== sizing.marginUsd
       ? ` [downsized $${sizing.marginUsd.toFixed(2)}→$${finalMargin.toFixed(2)}]`
       : ''
@@ -407,7 +410,8 @@ export async function forceOpenSignal(signalId: number, variant: BreakoutVariant
     const requiredLev = sizing.positionSizeUsd / free
     const maxLev = getMaxLeverage(sig.symbol)
     if (requiredLev > maxLev) {
-      return { ok: false, reason: `required leverage ${requiredLev.toFixed(1)}x exceeds max ${maxLev}x for ${sig.symbol}` }
+      const maxStr = Number.isFinite(maxLev) ? `${maxLev}x` : 'exchange limit'
+      return { ok: false, reason: `required leverage ${requiredLev.toFixed(1)}x exceeds max ${maxStr} for ${sig.symbol}` }
     }
     finalMargin = free
     finalLeverage = requiredLev

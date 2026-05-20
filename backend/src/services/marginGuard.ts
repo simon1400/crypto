@@ -2,8 +2,9 @@
  * Margin guard — sizing and free-margin enforcement for paper trader.
  *
  * Behavior:
- *   1. Sizing: leverage chosen so margin ≈ targetMarginPct × deposit, capped by per-symbol maxLeverage.
- *      Position size is determined by riskUsd / slDistance (unchanged risk-per-trade model).
+ *   1. Sizing: leverage chosen so margin ≈ targetMarginPct × deposit, capped only by
+ *      the exchange's notional-tiered bracket (Binance leverageBracket — passed in
+ *      via exchangeMaxLeverage). Position size is determined by riskUsd / slDistance.
  *   2. Margin guard at open time:
  *        - Compute new trade's required margin
  *        - Sum margin already locked by OPEN/TP1_HIT/TP2_HIT trades (using their saved leverage)
@@ -15,50 +16,23 @@
  *           Close enough to fit; if still not enough → SKIP signal (don't open at all,
  *           do NOT close trades that wouldn't have helped).
  *
- * Why per-symbol maxLeverage: Bybit has hard caps (e.g. AAVE 75x, AVAX 50x). Sizing must
- * respect those even if our targetMarginPct math says otherwise.
+ * Removed 2026-05-20: hardcoded BYBIT_MAX_LEVERAGE table. Binance leverage brackets
+ * (fetched via getLeverageBrackets in dailyBreakoutLiveC/brackets.ts) are the
+ * authoritative source — they account for both per-symbol AND per-notional caps
+ * which the static table couldn't represent. Paper trader doesn't have a real
+ * exchange to refuse oversize leverage, so it falls back to Infinity (margin
+ * targeting via targetMarginPct is enough — paper backtest doesn't model bracket
+ * rejections anyway).
  */
 
-// Bybit max leverage (linear USDT perps), captured 2026-05-07 + extended for top-150 universe.
-// Conservative defaults for unknown symbols. Can be refreshed via Bybit /v5/market/instruments-info.
-const BYBIT_MAX_LEVERAGE: Record<string, number> = {
-  // Tier-1 majors (100x)
-  BTCUSDT: 100, ETHUSDT: 100, SOLUSDT: 100, XRPUSDT: 100, BNBUSDT: 100,
-  DOGEUSDT: 75,
-  // Layer-1
-  ADAUSDT: 75, AVAXUSDT: 50, DOTUSDT: 50, NEARUSDT: 50, SUIUSDT: 75,
-  TONUSDT: 50, TRXUSDT: 50, LTCUSDT: 75, BCHUSDT: 75, XLMUSDT: 50,
-  ATOMUSDT: 50, ALGOUSDT: 25, FILUSDT: 50, INJUSDT: 50, ICPUSDT: 50,
-  HBARUSDT: 50, APTUSDT: 50, SEIUSDT: 50, TIAUSDT: 50, EGLDUSDT: 25,
-  KASUSDT: 25, ZECUSDT: 50, XMRUSDT: 50, DASHUSDT: 25, STXUSDT: 25,
-  // L2 / infra
-  ARBUSDT: 50, OPUSDT: 50, STRKUSDT: 50, MANTAUSDT: 25, ZKUSDT: 50,
-  ZROUSDT: 50, MNTUSDT: 25,
-  // DeFi
-  LINKUSDT: 75, AAVEUSDT: 75, UNIUSDT: 50, CRVUSDT: 50, PENDLEUSDT: 25,
-  LDOUSDT: 25, COMPUSDT: 25, MKRUSDT: 25, SNXUSDT: 25, SUSHIUSDT: 25,
-  CAKEUSDT: 25, DYDXUSDT: 25, GMXUSDT: 25, JUPUSDT: 25, ONDOUSDT: 25,
-  // AI / DePIN
-  RENDERUSDT: 25, RNDRUSDT: 25, GRTUSDT: 25, TAOUSDT: 25, FETUSDT: 25,
-  AKTUSDT: 25, ARUSDT: 25, IOUSDT: 25, WLDUSDT: 25, AIXBTUSDT: 25,
-  // Memes
-  '1000PEPEUSDT': 50, '1000BONKUSDT': 50, '1000FLOKIUSDT': 50, '1000LUNCUSDT': 25,
-  WIFUSDT: 50, FARTCOINUSDT: 25, POPCATUSDT: 25, MEWUSDT: 25, BOMEUSDT: 25,
-  PNUTUSDT: 25, GOATUSDT: 25, TURBOUSDT: 25, SHIB1000USDT: 25, MOODENGUSDT: 25,
-  TRUMPUSDT: 25, BRETTUSDT: 25, NEIROUSDT: 25,
-  // New / volatile
-  HYPEUSDT: 75, ENAUSDT: 50, BLURUSDT: 50, ORDIUSDT: 50, JTOUSDT: 25,
-  PYTHUSDT: 25, ARKMUSDT: 25, AEVOUSDT: 25, ETHFIUSDT: 25, ENSUSDT: 25,
-  GALAUSDT: 25, AXSUSDT: 25, APEUSDT: 25, CHZUSDT: 25, JASMYUSDT: 25,
-  MASKUSDT: 25, ILVUSDT: 25, BANANAUSDT: 25, NOTUSDT: 25,
-  // Universe expansion 2026-05-07
-  MUSDT: 25, IPUSDT: 25, SANDUSDT: 25, ETCUSDT: 50, POLUSDT: 50,
-  TSTBSCUSDT: 25, VVVUSDT: 25, AEROUSDT: 25,
-}
-const DEFAULT_MAX_LEVERAGE = 25
-
-export function getMaxLeverage(symbol: string): number {
-  return BYBIT_MAX_LEVERAGE[symbol] ?? DEFAULT_MAX_LEVERAGE
+/**
+ * Returns the maximum leverage allowed for a symbol when no exchange-side
+ * information is available (paper trader). Currently Infinity — sizing then
+ * relies on targetMarginPct / availableUsd alone. Live code paths must pass
+ * exchangeMaxLeverage from Binance brackets for the real cap.
+ */
+export function getMaxLeverage(_symbol: string): number {
+  return Infinity
 }
 
 export interface SizingInput {
@@ -101,7 +75,7 @@ export interface SizingResult {
 }
 
 export function computeSizing(input: SizingInput): SizingResult | null {
-  const { symbol, deposit, riskPct, targetMarginPct, entry, sl, exchangeMaxLeverage, availableUsd } = input
+  const { deposit, riskPct, targetMarginPct, entry, sl, exchangeMaxLeverage, availableUsd } = input
   const slDist = Math.abs(entry - sl)
   if (slDist <= 0 || deposit <= 0) return null
 
@@ -133,11 +107,10 @@ export function computeSizing(input: SizingInput): SizingResult | null {
   // Higher leverage wastes nothing (fees scale on notional, not margin), so
   // we want the smallest lever that fits the margin budget.
   const idealLeverage = positionSizeUsd / Math.max(effectiveTargetMargin, 1e-9)
-  const symbolMaxLev = getMaxLeverage(symbol)
-  // Cap by the exchange's notional-tiered bracket if known. Without this, AVAX
-  // at $9k notional gets sized 50x but Binance's bracket only allows 20x →
-  // -2027 reject → 2000+ retry attempts → IP ban (2026-05-20).
-  const effectiveMax = Math.min(symbolMaxLev, exchangeMaxLeverage ?? Infinity)
+  // Cap by the exchange's notional-tiered bracket. Live code paths fetch this
+  // from Binance leverageBracket (per-notional cap). Paper trader doesn't
+  // pass it → no cap (Infinity), which matches paper's simplified model.
+  const effectiveMax = exchangeMaxLeverage ?? Infinity
   const leverage = Math.max(1, Math.min(idealLeverage, effectiveMax))
   const marginUsd = positionSizeUsd / leverage
   const cappedByMaxLeverage = idealLeverage > effectiveMax + 1e-6
