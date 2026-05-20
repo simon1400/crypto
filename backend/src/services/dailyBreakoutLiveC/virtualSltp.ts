@@ -24,7 +24,7 @@ import { sendLiveTelegram } from './telegram'
 import { cancelSlOnExchange, retrailSlOnExchange } from './exchangeSl'
 import { cancelTpOnExchange, cancelAllTpsOnExchange } from './exchangeTp'
 import { seedSnapshotFromRest } from './snapshot'
-import { sweepDustForSymbol, cancelAllExchangeOrdersForTrade, sweepStrayAlgoOrders, closeLowMarginPositions } from './reconcile'
+import { cancelAllExchangeOrdersForTrade, sweepStrayAlgoOrders, closeLowMarginPositions } from './reconcile'
 
 /**
  * Rebuild realizedPnlUsd / feesPaidUsd / netPnlUsd as absolute values from the
@@ -296,27 +296,19 @@ export async function applyVirtualClose(
       await cancelAllExchangeOrdersForTrade(state.current.client, fresh.id, fresh.symbol).catch((e) =>
         console.warn(`${LOG} post-close cancelAllExchangeOrdersForTrade failed: ${e?.message ?? e}`))
     }
-    // Sweep any step-rounding residue NOW instead of waiting for EOD. SL@BE
-    // from exchange STOP_MARKET and TP3 from exchange TAKE_PROFIT_MARKET both
-    // close their advertised qty, but if entry filled fractional (e.g. 10.4
-    // for stepSize=1) the STOP_MARKET/TPs we placed were floor-step (10) and
-    // ~0.4 contracts get stripped of margin but stay listed in Binance UI.
-    if (state.current) {
-      await sweepDustForSymbol(state.current.client, fresh.symbol).catch((e) =>
-        console.warn(`${LOG} post-close sweepDustForSymbol failed: ${e?.message ?? e}`))
-    }
     // Stray-algo sweep right after a terminal close — picks up any random-cid
-    // orphans (Binance auto-cid when our signed POST dropped clientAlgoId on a
-    // rate-limited retry). Cheaper than periodic 60s sweep because runs only
-    // on exit events, not idle ticks.
+    // orphans (Binance auto-cid when our signed POST dropped clientAlgoId on
+    // a rate-limited retry) and size-stale algos.
     if (state.current) {
       await sweepStrayAlgoOrders(state.current.client).catch((e) =>
         console.warn(`${LOG} post-close sweepStrayAlgoOrders failed: ${e?.message ?? e}`))
     }
-    // Close any positions whose isolated margin dropped below $1 — they're
-    // effectively dust on the book (post-fee/funding/PnL margin erosion). The
-    // exit event is a good moment because we already touched the wallet
-    // snapshot and don't need an extra REST hit during idle.
+    // Close any exchange-side dust positions whose isolated margin is below
+    // $1. Includes step-rounding residue from this terminal close — the old
+    // dust sweep gated on `qty < minQty` and refused to act, leaving the
+    // position visible in Binance UI. Margin-based gate handles it directly
+    // (if Binance refuses qty < minQty we just log; the position stays but
+    // the trader keeps working).
     if (state.current) {
       await closeLowMarginPositions(state.current.client).catch((e) =>
         console.warn(`${LOG} post-close closeLowMarginPositions failed: ${e?.message ?? e}`))

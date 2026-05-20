@@ -242,84 +242,6 @@ export async function reconcileWithExchange(client: BinanceFuturesClient): Promi
 }
 
 /**
- * Close any "dust" positions left on the exchange whose DB row is already
- * CLOSED. These appear when our planned close-qty was step-rounded DOWN
- * (e.g. step=1, remaining=4187.5 → we sent qty=4187, leaving 0.5 on the book).
- * Symptom: app shows N open while exchange shows N+1, and Binance's UI lists
- * a position with size <= minQty that the strategy will never touch again.
- *
- * Strategy: list exchange positions, look up the matching DB row; if row is
- * CLOSED/EXPIRED and exchange amt is non-zero, send a reduceOnly MARKET to
- * close it. If qty < minQty we can't close via order — the residual stays as
- * exchange dust but we at least log it so the operator can act.
- */
-export async function sweepClosedRowDust(client: BinanceFuturesClient): Promise<{ swept: number; dust: number }> {
-  let positions: Awaited<ReturnType<typeof client.getOpenPositions>>
-  try {
-    positions = await client.getOpenPositions()
-  } catch (e: any) {
-    console.warn(`${LOG} sweepDust: getOpenPositions failed: ${e.message}`)
-    return { swept: 0, dust: 0 }
-  }
-  let swept = 0
-  let dust = 0
-  const filtersMap = state.current ? await getFilters(state.current.client).catch(() => null) : null
-  for (const p of positions) {
-    const amt = Number(p.positionAmt)
-    if (amt === 0) continue
-    // Find the most recent DB row for this symbol that's CLOSED/EXPIRED. If
-    // there's any OPEN/PENDING row for the same symbol, leave it alone — that
-    // could be a re-entry from a fresh range.
-    const activeRow = await prisma.breakoutLiveTradeC.findFirst({
-      where: {
-        symbol: p.symbol,
-        OR: [
-          { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
-          { limitOrderState: 'PENDING_LIMIT' },
-        ],
-      },
-    })
-    if (activeRow) continue  // legit open position, not dust
-    // Send MARKET reduceOnly for the remaining amt, step-rounded down.
-    const f = filtersMap?.get(p.symbol)
-    if (!f) {
-      console.warn(`${LOG} sweepDust ${p.symbol} amt=${amt}: no filter — leaving as dust`)
-      dust++
-      continue
-    }
-    const closeSide: 'BUY' | 'SELL' = amt > 0 ? 'SELL' : 'BUY'
-    const step = f.stepSize
-    let qty = Math.floor(Math.abs(amt) / step) * step
-    qty = Number(qty.toFixed(f.quantityPrecision))
-    if (qty < f.minQty) {
-      console.warn(`${LOG} sweepDust ${p.symbol} amt=${amt} < minQty ${f.minQty} — exchange dust, can't close via order`)
-      dust++
-      continue
-    }
-    try {
-      if (state.current) {
-        await state.current.client.placeOrder({
-          symbol: p.symbol,
-          side: closeSide,
-          type: 'MARKET',
-          quantity: qty,
-          reduceOnly: true,
-        })
-        console.log(`${LOG} sweepDust closed ${p.symbol} qty=${qty} (DB row is CLOSED)`)
-        swept++
-      }
-    } catch (e: any) {
-      if (e instanceof BinanceApiError && e.code === -2022) {
-        // Already gone (someone closed between getOpenPositions and now). Fine.
-        continue
-      }
-      console.warn(`${LOG} sweepDust ${p.symbol} qty=${qty} failed: ${e.message}`)
-    }
-  }
-  return { swept, dust }
-}
-
-/**
  * Close exchange-side dust positions whose isolated margin dropped below $1.
  *
  * Scenario: DB row already CLOSED (TP3 fully filled, or SL hit, or manual
@@ -398,64 +320,16 @@ export async function closeLowMarginPositions(client: BinanceFuturesClient, marg
 }
 
 /**
- * Targeted dust sweep for a single symbol — call right after a terminal close
- * so any 1-step residue gets cleared immediately instead of waiting for the
- * boot/EOD sweep. Reads positionAmt from REST (snapshot may not have refreshed
- * the just-closed symbol yet) and fires a MARKET reduceOnly if anything > 0.
+ * Cancel any stray algo orders (TP/SL) on the exchange. Two paths:
+ *   A) cid matches our format (slL{id} / tpL{id}_{idx}) AND owning trade is
+ *      in a terminal status → cancel.
+ *   B) cid not our format BUT reduce-only STOP_MARKET/TAKE_PROFIT_MARKET on a
+ *      symbol where the algo qty exceeds live positionAmt, OR there's no
+ *      live position at all → cancel (random-cid orphan from a rate-limit
+ *      retry that dropped our clientAlgoId).
  *
- * Caller is expected to have already flipped the DB row to a terminal status.
- */
-export async function sweepDustForSymbol(client: BinanceFuturesClient, symbol: string): Promise<void> {
-  if (!state.current) return
-  let positions: Awaited<ReturnType<typeof client.getOpenPositions>>
-  try {
-    positions = await client.getOpenPositions()
-  } catch (e: any) {
-    console.warn(`${LOG} sweepDustForSymbol ${symbol}: getOpenPositions failed: ${e.message}`)
-    return
-  }
-  const p = positions.find((pp) => pp.symbol === symbol)
-  if (!p) return
-  const amt = Number(p.positionAmt)
-  if (amt === 0) return
-  const filtersMap = await getFilters(client).catch(() => null)
-  const f = filtersMap?.get(symbol)
-  if (!f) {
-    console.warn(`${LOG} sweepDustForSymbol ${symbol} amt=${amt}: no filter — leaving as dust`)
-    return
-  }
-  const closeSide: 'BUY' | 'SELL' = amt > 0 ? 'SELL' : 'BUY'
-  const step = f.stepSize
-  let qty = Math.floor(Math.abs(amt) / step) * step
-  qty = Number(qty.toFixed(f.quantityPrecision))
-  if (qty < f.minQty) {
-    console.warn(`${LOG} sweepDustForSymbol ${symbol} amt=${amt} < minQty ${f.minQty} — exchange dust, can't close via order`)
-    return
-  }
-  try {
-    await client.placeOrder({
-      symbol,
-      side: closeSide,
-      type: 'MARKET',
-      quantity: qty,
-      reduceOnly: true,
-    })
-    console.log(`${LOG} sweepDustForSymbol closed ${symbol} qty=${qty} (terminal close residue)`)
-  } catch (e: any) {
-    if (e instanceof BinanceApiError && e.code === -2022) return  // already gone
-    console.warn(`${LOG} sweepDustForSymbol ${symbol} qty=${qty} failed: ${e.message}`)
-  }
-}
-
-/**
- * Cancel any stray algo orders (TP/SL) on the exchange whose owning trade is
- * already in a terminal status (CLOSED/SL_HIT/TP3_HIT/EXPIRED). Sister of
- * sweepClosedRowDust — that one closes phantom positions, this one cancels
- * phantom algo orders. Together they keep the exchange book in sync with DB.
- *
- * Identifies each algo order's owning trade by its clientAlgoId — our placement
- * code tags every algo with 'slL{id}' / 'tpL{id}_{idx}'. Any other cid is a
- * manual order we don't touch.
+ * Together with closeLowMarginPositions keeps the exchange book in sync with
+ * DB after exit events.
  */
 export async function sweepStrayAlgoOrders(client: BinanceFuturesClient): Promise<{ cancelled: number; checked: number }> {
   let algoOrders: Awaited<ReturnType<typeof client.getOpenAlgoOrders>>

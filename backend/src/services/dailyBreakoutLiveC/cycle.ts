@@ -8,7 +8,7 @@ import { placeLimitsForRanges } from './placement'
 import { refreshAggTradeSubscriptions } from './aggTrade'
 import { flattenAllOpenC, cancelOrphanPendingLimits, cancelAllPendingLimits } from './flatten'
 import { pruneOldAttempts } from './attempts'
-import { sweepClosedRowDust, sweepStrayAlgoOrders } from './reconcile'
+import { closeLowMarginPositions, sweepStrayAlgoOrders } from './reconcile'
 import { reconcileSlTrailedLevel } from './exchangeSl'
 import { sendLiveCEodSummary } from './eod'
 
@@ -110,9 +110,9 @@ export async function runEodTick(): Promise<void> {
     }
     if (state.current) {
       try {
-        await sweepClosedRowDust(state.current.client)
+        await closeLowMarginPositions(state.current.client)
       } catch (e: any) {
-        console.error(`${LOG} EOD dust sweep failed: ${e.message}`)
+        console.error(`${LOG} EOD low-margin sweep failed: ${e.message}`)
       }
       try {
         await sweepStrayAlgoOrders(state.current.client)
