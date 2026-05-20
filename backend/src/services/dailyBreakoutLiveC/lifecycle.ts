@@ -21,7 +21,6 @@ import { sendLiveTelegram } from './telegram'
 import { runLiveCycle, runEodTick } from './cycle'
 import { handleAggTrade } from './aggTrade'
 import { handleUserDataEvent } from './wsHandlers'
-import { runKlineWatchdog, getWatchdogInterval } from './klineWatchdog'
 
 /**
  * Start the live trader. Idempotent — if already running, returns the existing
@@ -130,26 +129,16 @@ export async function startBreakoutLiveTraderC(): Promise<void> {
       runEodTick().catch((e) => console.error(`${LOG} EOD tick error:`, e.message))
     }, 60 * 1000)
 
-    // Kline-replay safety net — every 30s, fetches 1m candles per active
-    // symbol and replays them against each trade's SL/TP using candle high/low.
-    // Covers gaps where aggTrade WS missed the wick that pierced our level
-    // (reconnect window, burst throttle, sparse-trade symbols). Paper trader
-    // has this on its slow tick; LIVE C didn't until 2026-05-19 — saw a real
-    // missed TP1 on SEIUSDT.
-    const watchdogTimer = setInterval(() => {
-      runKlineWatchdog().catch((e) => console.error(`${LOG} watchdog error:`, e.message))
-    }, getWatchdogInterval())
+    // Watchdog removed 2026-05-20 — exit handling is now exchange-only via
+    // Binance algo orders, so missed aggTrade wicks no longer matter (mark
+    // price drives the STOP_MARKET / TAKE_PROFIT_MARKET triggers directly).
 
-    state.current = { client, userDataWs, marketDataWs, tickTimer, eodTimer, watchdogTimer, net: creds.net }
+    state.current = { client, userDataWs, marketDataWs, tickTimer, eodTimer, watchdogTimer: null, net: creds.net }
     console.log(`${LOG} started (${creds.net})`)
 
     // Kick off one immediate cycle so subscriptions/reconciliation happen now,
     // not 60s from now.
     runLiveCycle().catch((e) => console.error(`${LOG} initial cycle error:`, e.message))
-
-    // Kick off one immediate watchdog pass so any wick missed while the
-    // process was down gets detected at boot, not 30s into runtime.
-    runKlineWatchdog().catch((e) => console.error(`${LOG} initial watchdog error:`, e.message))
 
     // Sweep any step-rounding dust left on the exchange whose DB rows are
     // already CLOSED. Cheap (one getOpenPositions + a few possible MARKETs)

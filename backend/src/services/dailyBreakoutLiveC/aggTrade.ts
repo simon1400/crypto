@@ -20,7 +20,6 @@ import {
 import { fmtPrice } from './formatters'
 import { getFilters } from './filters'
 import { sendLiveTelegram } from './telegram'
-import { trackLiveTrade } from './virtualSltp'
 import { recordAttempt } from './attempts'
 import { cancelPairOrder } from './wsHandlers'
 import { attachSlAfterEntry } from './exchangeSl'
@@ -49,35 +48,26 @@ export function handleAggTrade(sym: string, price: number, ts: number): void {
   if (now - last < TICK_THROTTLE_MS) return
   lastTickProcessedAt.set(sym, now)
 
-  // Fire-and-forget tracker. trackLiveTrade has its own per-trade busy lock
-  // so concurrent ticks on the same symbol can't race.
+  // Fire-and-forget. Exit handling (SL/TP) is owned by Binance algo orders —
+  // STOP_MARKET + 3x TAKE_PROFIT_MARKET placed at entry, triggered by mark
+  // price. WS ORDER_TRADE_UPDATE fires handleSlOrderUpdate / handleTpOrderUpdate
+  // which write DB + Telegram + retrail SL on TP fills. We only watch
+  // aggTrade for ENTRY fills here.
   void processAggTradeForSymbol(sym, price, ts)
 }
 
 async function processAggTradeForSymbol(sym: string, price: number, ts: number): Promise<void> {
   try {
-    // 1. Virtual limit fill — check PENDING_LIMIT rows; if price crossed the
-    //    limit level, send MARKET to open the position.
+    // Virtual limit fill — check PENDING_LIMIT rows; if price crossed the
+    // limit level, send MARKET to open the position.
     const pending = await prisma.breakoutLiveTradeC.findMany({
       where: { symbol: sym, limitOrderState: 'PENDING_LIMIT' },
     })
     for (const t of pending) {
       await tryFillVirtualLimit(t, price, ts)
     }
-
-    // 2. Virtual SL/TP — check OPEN/TP1_HIT/TP2_HIT rows; if price crossed any
-    //    exit level, send MARKET reduceOnly.
-    const openTrades = await prisma.breakoutLiveTradeC.findMany({
-      where: {
-        symbol: sym,
-        status: { in: [...ACTIVE_STATUSES] },
-      },
-    })
-    for (const t of openTrades) {
-      await trackLiveTrade(t, price, ts)
-    }
   } catch (e: any) {
-    console.warn(`${LOG} aggTrade tracker ${sym} threw: ${e.message}`)
+    console.warn(`${LOG} aggTrade entry-fill tracker ${sym} threw: ${e.message}`)
   }
 }
 

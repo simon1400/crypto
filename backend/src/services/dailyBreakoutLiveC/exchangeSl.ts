@@ -235,6 +235,13 @@ export async function reconcileSlTrailedLevel(): Promise<void> {
     return
   }
 
+  // Need symbol filters to compute the tick-rounded version of currentStop
+  // (which is what placeSlOnExchange actually sends to Binance). Without this,
+  // a DB.currentStop=0.06074 vs exchange triggerPrice=0.0607 (after Binance's
+  // tickSize=0.0001 rounding) keeps "drifting" by 0.066% every minute and we'd
+  // cancel+replace the SL forever (observed 2026-05-20 #4907 SEIUSDT).
+  const filtersMap = await getFilters(state.current.client).catch(() => null)
+
   for (const t of trails) {
     const algo = algos.find((a) => a.symbol === t.symbol && a.clientAlgoId === `slL${t.id}`)
     if (!algo) {
@@ -246,12 +253,21 @@ export async function reconcileSlTrailedLevel(): Promise<void> {
     }
     const exchangeTrigger = Number(algo.triggerPrice)
     if (!Number.isFinite(exchangeTrigger) || exchangeTrigger <= 0) continue
-    // Compare in absolute terms, with a 1-tick tolerance scaled to price magnitude
-    // (0.01% covers any reasonable tick rounding).
-    const drift = Math.abs(exchangeTrigger - t.currentStop)
-    const tolerance = Math.max(t.currentStop, exchangeTrigger) * 0.0001
-    if (drift <= tolerance) continue  // already at expected level
-    console.log(`${LOG} reconcileSl: #${t.id} ${t.symbol} drift detected — exchange ${exchangeTrigger} vs DB ${t.currentStop}; retrailing`)
+
+    // Round DB.currentStop the same way placeSlOnExchange would. After
+    // rounding, the two prices should be byte-identical when the trailed
+    // SL is in sync. If they still differ — retrail is genuinely needed.
+    const f = filtersMap?.get(t.symbol)
+    const tick = f?.tickSize ?? 0
+    const dbRounded = tick > 0
+      ? Number((Math.round(t.currentStop / tick) * tick).toFixed(f?.pricePrecision ?? 8))
+      : t.currentStop
+    // Tolerance = half a tick (covers floating-point representation noise on
+    // either side). 0.01% multiplier kept as a fallback for unknown filters.
+    const tolerance = tick > 0 ? tick / 2 : Math.max(dbRounded, exchangeTrigger) * 0.0001
+    if (Math.abs(exchangeTrigger - dbRounded) <= tolerance) continue
+
+    console.log(`${LOG} reconcileSl: #${t.id} ${t.symbol} drift detected — exchange ${exchangeTrigger} vs DB ${t.currentStop} (rounded ${dbRounded}); retrailing`)
     await retrailSlOnExchange(t.id).catch((e) =>
       console.warn(`${LOG} reconcileSl retrail #${t.id} failed: ${e?.message ?? e}`))
   }
