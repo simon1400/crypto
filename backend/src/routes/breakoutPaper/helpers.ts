@@ -140,7 +140,7 @@ export async function computeUnrealizedForTrades(
  * Build the stats payload (config, winRate, returnPct, bySymbol, equityCurve).
  * Used by both /stats route and the live router's shared handler.
  */
-export async function computeStatsResponse(cm: any, tm: any) {
+export async function computeStatsResponse(cm: any, tm: any, variant?: BreakoutVariant) {
   const cfg = await cm.upsert({ where: { id: 1 }, update: {}, create: { id: 1 } })
   const closed = await tm.findMany({
     where: { status: { in: ['CLOSED', 'SL_HIT', 'EXPIRED'] } },
@@ -193,6 +193,46 @@ export async function computeStatsResponse(cm: any, tm: any) {
   for (const date of Object.keys(byDay).sort()) {
     running += byDay[date]
     equityCurve.push({ date, pnl: byDay[date], equity: running })
+  }
+
+  // For LIVE the curve should anchor to the actual Binance walletBalance so
+  // the "Сейчас" figure on the equity panel matches the "Депозит" stat at the
+  // top of the page. The wallet already includes entry-fees of currently open
+  // positions and accrued funding ("прочее ...$"), neither of which is a
+  // realized close — so by-day attribution from closes[] would otherwise drift
+  // above wallet by exactly that amount. Book the residual (wallet − baseline
+  // − Σ realized) as today's "other" P&L so the running total converges.
+  if (variant === 'LIVE' && cfg.startingDepositUsd > 0) {
+    try {
+      const { getLiveSnapshot } = await import('../../services/dailyBreakoutLiveC')
+      const snap = await getLiveSnapshot()
+      if (snap && snap.total > 0) {
+        const totalRealized = Object.values(byDay).reduce((a, b) => a + b, 0)
+        const residual = snap.total - cfg.startingDepositUsd - totalRealized
+        if (Math.abs(residual) > 0.005) {
+          const today = new Date().toISOString().slice(0, 10)
+          const lastIdx = equityCurve.findIndex((p) => p.date === today)
+          if (lastIdx >= 0) {
+            equityCurve[lastIdx] = {
+              date: today,
+              pnl: equityCurve[lastIdx].pnl + residual,
+              equity: equityCurve[lastIdx].equity + residual,
+            }
+            for (let i = lastIdx + 1; i < equityCurve.length; i++) {
+              equityCurve[i] = { ...equityCurve[i], equity: equityCurve[i].equity + residual }
+            }
+          } else {
+            equityCurve.push({
+              date: today,
+              pnl: residual,
+              equity: cfg.startingDepositUsd + totalRealized + residual,
+            })
+          }
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[Stats] LIVE curve wallet-anchor skipped: ${e?.message ?? e}`)
+    }
   }
 
   const bySymbol: Record<string, { trades: number; wins: number; pnl: number }> = {}

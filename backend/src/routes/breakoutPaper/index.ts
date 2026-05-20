@@ -32,7 +32,7 @@ export function buildBreakoutPaperRouter(variant: BreakoutVariant): Router {
   // doesn't match "live" as the :id param.
   registerTradesRoutes(router, variant, cm, tm)
   registerCloseRoutes(router, variant, cm, tm)
-  registerStatsRoutes(router, cm, tm)
+  registerStatsRoutes(router, variant, cm, tm)
   registerSignalsRoutes(router, variant, tm)
 
   return router
