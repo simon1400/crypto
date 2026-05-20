@@ -6,8 +6,9 @@ import { prisma } from '../../db/prisma'
 import { LOG, state, cycleGuard, eodGuard } from './state'
 import { placeLimitsForRanges } from './placement'
 import { refreshAggTradeSubscriptions } from './aggTrade'
-import { flattenAllOpenC, cancelOrphanPendingLimits } from './flatten'
+import { flattenAllOpenC, cancelOrphanPendingLimits, cancelAllPendingLimits } from './flatten'
 import { pruneOldAttempts } from './attempts'
+import { sweepClosedRowDust } from './reconcile'
 
 /**
  * Placement tick — mirrors paper C cadence. Virtual limits live only in DB;
@@ -66,13 +67,28 @@ export async function runEodTick(): Promise<void> {
   const minute = now.getUTCMinutes()
 
   // EOD flatten window: 23:55 UTC. Idempotent via eodGuard.lastDate.
+  // Three-part flush: close all open positions via MARKET reduceOnly, cancel
+  // every still-pending virtual limit, then sweep any step-rounding dust that
+  // got left on the exchange (e.g. step=1 closes leave 0.5-unit residuals).
   if (hour === 23 && minute >= 55 && eodGuard.lastDate !== utcDate) {
     eodGuard.lastDate = utcDate
-    console.log(`${LOG} EOD-FLAT window ${utcDate} 23:55 UTC — flattening open positions`)
+    console.log(`${LOG} EOD-FLAT window ${utcDate} 23:55 UTC — flattening open positions + cancelling pending + dust sweep`)
     try {
       await flattenAllOpenC('EOD-FLAT')
     } catch (e: any) {
       console.error(`${LOG} EOD-FLAT failed: ${e.message}`)
+    }
+    try {
+      await cancelAllPendingLimits()
+    } catch (e: any) {
+      console.error(`${LOG} EOD pending-cancel failed: ${e.message}`)
+    }
+    if (state.current) {
+      try {
+        await sweepClosedRowDust(state.current.client)
+      } catch (e: any) {
+        console.error(`${LOG} EOD dust sweep failed: ${e.message}`)
+      }
     }
   }
 

@@ -16,7 +16,7 @@ import {
 import { LOG, state, startGuard, snapshot } from './state'
 import { seedSnapshotFromRest } from './snapshot'
 import { recomputeLiveCStats } from './virtualSltp'
-import { reconcileWithExchange } from './reconcile'
+import { reconcileWithExchange, sweepClosedRowDust } from './reconcile'
 import { sendLiveTelegram } from './telegram'
 import { runLiveCycle, runEodTick } from './cycle'
 import { handleAggTrade } from './aggTrade'
@@ -150,6 +150,11 @@ export async function startBreakoutLiveTraderC(): Promise<void> {
     // Kick off one immediate watchdog pass so any wick missed while the
     // process was down gets detected at boot, not 30s into runtime.
     runKlineWatchdog().catch((e) => console.error(`${LOG} initial watchdog error:`, e.message))
+
+    // Sweep any step-rounding dust left on the exchange whose DB rows are
+    // already CLOSED. Cheap (one getOpenPositions + a few possible MARKETs)
+    // and clears the "19 in app vs 20 on exchange" drift after restart.
+    sweepClosedRowDust(client).catch((e) => console.warn(`${LOG} boot dust sweep error:`, e.message))
   } finally {
     startGuard.inFlight = false
   }

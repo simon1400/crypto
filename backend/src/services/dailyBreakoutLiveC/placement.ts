@@ -72,9 +72,68 @@ export async function placeLimitsForRanges(
   // getLiveSnapshot() will refresh from REST if older than the staleness
   // threshold (30s).
   const snap = await getLiveSnapshot()
-  if (!snap || snap.available <= 0) {
+  if (!snap || snap.total <= 0) {
     console.warn(`${LOG} skip cycle — no balance snapshot or zero USDT`)
     return
+  }
+
+  // Two-part risk gate, mirroring paper trader's invariants:
+  //   1. Max concurrent OPEN positions ≤ cfg.maxConcurrentPositions (default 20)
+  //   2. Total locked margin (existing + new) ≤ 90% × walletBalance
+  // Both are evaluated against the DB rows so PENDING_LIMIT counts toward the
+  // budget too — a pre-placed limit may fill in seconds and lock the margin.
+  // Without that, the cycle would happily put more than 20 pair-limits on the
+  // book and overshoot the cap on a fast-fill day.
+  const maxConcurrent = (cfg.maxConcurrentPositions as number | undefined) ?? 20
+  const activeRowsForBudget = await prisma.breakoutLiveTradeC.findMany({
+    where: {
+      OR: [
+        { status: { in: [...['OPEN', 'TP1_HIT', 'TP2_HIT']] } },
+        { limitOrderState: 'PENDING_LIMIT' },
+      ],
+    },
+    select: {
+      status: true,
+      limitOrderState: true,
+      positionSizeUsd: true,
+      marginUsd: true,
+      leverage: true,
+      closes: true,
+    },
+  })
+  const openOrPendingCount = activeRowsForBudget.length
+  const lockedMarginUsd = activeRowsForBudget.reduce((sum, r) => {
+    // For active positions we discount the closed fraction (TP1/TP2 already
+    // released that share of margin). For pending limits the full marginUsd
+    // is the worst-case lock should they fill.
+    const closesArr = ((r.closes as any[]) ?? []) as Array<{ percent?: number }>
+    const closedFrac = closesArr.reduce((a, c) => a + (c.percent ?? 0), 0) / 100
+    const remainingFrac = Math.max(0, 1 - closedFrac)
+    return sum + (r.marginUsd ?? 0) * remainingFrac
+  }, 0)
+  // 90% of walletBalance is the hard ceiling; the remaining 10% is buffer
+  // for funding, exit slippage, and the pair-fill race window.
+  const totalBudget = snap.total * 0.90
+  const remainingBudget = Math.max(0, totalBudget - lockedMarginUsd)
+
+  if (openOrPendingCount >= maxConcurrent) {
+    console.log(`${LOG} skip cycle — concurrent positions cap reached (${openOrPendingCount}/${maxConcurrent})`)
+    return
+  }
+  if (remainingBudget <= 0) {
+    console.log(`${LOG} skip cycle — margin budget exhausted (locked ${lockedMarginUsd.toFixed(2)} / ${totalBudget.toFixed(2)})`)
+    return
+  }
+
+  // Pass the live budget down into placeOneSide so each placement checks
+  // against the live cap. We mutate them as we go through the loop so the
+  // count/budget update during the cycle (a placed pair locks margin
+  // immediately).
+  const budgetState = {
+    placedCount: openOrPendingCount,
+    locked: lockedMarginUsd,
+    walletTotal: snap.total,
+    maxConcurrent,
   }
 
   const filters = await getFilters(client)
@@ -214,6 +273,33 @@ export async function placeLimitsForRanges(
       const placedRows: any[] = []
       const placedAt = new Date()
 
+      // Re-check the cap before EACH pair — earlier iterations of this loop
+      // may have placed pairs that pushed us over. The remaining budget is
+      // updated inside placeOneSide via budgetState mutations.
+      if (budgetState.placedCount >= budgetState.maxConcurrent) {
+        await recordAttempt({
+          symbol, side: 'BUY', rangeDate: utcDate,
+          status: 'SKIPPED_GATE',
+          reasonCode: 'maxConcurrent',
+          reasonText: `${budgetState.placedCount} / ${budgetState.maxConcurrent} concurrent positions`,
+          limitPrice: range.rangeHigh, markPrice: livePrice ?? range.rangeHigh,
+          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+        })
+        continue
+      }
+      const liveBudgetRemaining = budgetState.walletTotal * 0.90 - budgetState.locked
+      if (liveBudgetRemaining <= 0) {
+        await recordAttempt({
+          symbol, side: 'BUY', rangeDate: utcDate,
+          status: 'SKIPPED_GATE',
+          reasonCode: 'margin',
+          reasonText: `budget exhausted: locked ${budgetState.locked.toFixed(2)} / cap ${(budgetState.walletTotal * 0.90).toFixed(2)}`,
+          limitPrice: range.rangeHigh, markPrice: livePrice ?? range.rangeHigh,
+          rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+        })
+        continue
+      }
+
       // Place BUY @ rangeHigh (virtual — DB only)
       const buyRow = await placeOneSide({
         client, net, cfg, f, symbol, side: 'BUY',
@@ -221,6 +307,7 @@ export async function placeLimitsForRanges(
         tpLadder: buyTpLadder, rangeDate: utcDate, placedAt,
         markPrice: livePrice ?? range.rangeHigh,
         rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+        budgetState,
       })
       if (buyRow) placedRows.push(buyRow)
 
@@ -231,6 +318,7 @@ export async function placeLimitsForRanges(
         tpLadder: sellTpLadder, rangeDate: utcDate, placedAt,
         markPrice: livePrice ?? range.rangeLow,
         rangeHigh: range.rangeHigh, rangeLow: range.rangeLow,
+        budgetState,
       })
       if (sellRow) placedRows.push(sellRow)
 
@@ -257,6 +345,13 @@ export async function placeLimitsForRanges(
   }
 }
 
+interface BudgetState {
+  placedCount: number   // total OPEN+TP1_HIT+TP2_HIT+PENDING_LIMIT rows so far
+  locked: number        // total margin USD already committed
+  walletTotal: number   // snap.total at start of cycle — used as 90% cap base
+  maxConcurrent: number // cfg.maxConcurrentPositions
+}
+
 interface PlaceOneSideArgs {
   client: BinanceFuturesClient
   net: 'testnet' | 'prod'
@@ -274,6 +369,9 @@ interface PlaceOneSideArgs {
   markPrice: number
   rangeHigh: number
   rangeLow: number
+  // Live budget state mutated by each successful placement so subsequent
+  // attempts respect the cap in real-time within the same cycle.
+  budgetState: BudgetState
 }
 
 /**
@@ -309,18 +407,30 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
     return null
   }
 
-  // Free margin guard. `currentDepositUsd` IS available balance — Binance
-  // already subtracted margin locked in OPEN positions from it. So we just
-  // compare the new trade's required margin against 90% of available, no
-  // need to add existingMargin again (that was a double-count bug pre-2026-05-19).
-  //
-  // 10% buffer covers: funding fees, exit slippage on existing positions,
-  // and the pair-fill race window where both sides could fill before the
-  // cancel cascade runs (paper-equivalent worst case).
+  // Two-part live budget gate (mirrors paper trader's invariants):
+  //   1. Concurrent position cap (cfg.maxConcurrentPositions, default 20)
+  //   2. Margin cap: locked + new ≤ 90% × walletBalance
+  // Both are measured against walletBalance (not availableBalance), because
+  // availableBalance already excludes locked margin — using it as the budget
+  // base double-counts the lock and silently caps us at ~60% utilization
+  // (bug report 2026-05-20 #3). 10% buffer covers funding, exit slippage,
+  // and the pair-fill race window.
+  const b = a.budgetState
+  if (b.placedCount >= b.maxConcurrent) {
+    const msg = `concurrent cap ${b.placedCount}/${b.maxConcurrent}`
+    await recordAttempt({
+      symbol: a.symbol, side: a.side, rangeDate: a.rangeDate,
+      status: 'SKIPPED_GATE',
+      reasonCode: 'maxConcurrent', reasonText: msg,
+      limitPrice: a.entryPrice, markPrice: a.markPrice,
+      rangeHigh: a.rangeHigh, rangeLow: a.rangeLow,
+    })
+    return null
+  }
+  const cap = b.walletTotal * 0.90
   const required = sizing.marginUsd
-  const budget = a.cfg.currentDepositUsd * 0.90
-  if (required > budget) {
-    const msg = `new margin ${required.toFixed(2)} > available × 0.9 = ${budget.toFixed(2)} (avail ${a.cfg.currentDepositUsd.toFixed(2)})`
+  if (b.locked + required > cap) {
+    const msg = `margin cap: locked ${b.locked.toFixed(2)} + new ${required.toFixed(2)} > ${cap.toFixed(2)} (90% × wallet ${b.walletTotal.toFixed(2)})`
     console.log(`${LOG} ${a.symbol} ${a.side} — skip: ${msg}`)
     await recordAttempt({
       symbol: a.symbol, side: a.side, rangeDate: a.rangeDate,
@@ -408,6 +518,12 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
     limitPrice: priceRounded, markPrice: a.markPrice,
     rangeHigh: a.rangeHigh, rangeLow: a.rangeLow,
   })
+
+  // Update the live budget so the next iteration of the placement loop sees
+  // this slot/margin as taken. Margin used is what we actually stored on the
+  // row (could differ from sizing.marginUsd if qty got rounded down).
+  b.placedCount += 1
+  b.locked += (priceRounded * qty) / targetLev
 
   return row
 }

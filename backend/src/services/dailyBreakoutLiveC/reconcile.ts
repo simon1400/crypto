@@ -19,7 +19,8 @@
 import { prisma } from '../../db/prisma'
 import type { BinanceFuturesClient } from '../exchanges/binanceFutures'
 import { BinanceApiError } from '../exchanges/binanceFutures'
-import { LOG } from './state'
+import { LOG, state } from './state'
+import { getFilters } from './filters'
 import { attachSlAfterEntry } from './exchangeSl'
 import { attachTpsAfterEntry } from './exchangeTp'
 
@@ -162,26 +163,36 @@ export async function reconcileWithExchange(client: BinanceFuturesClient): Promi
     }
 
     report.details.missingPositionsForDbOpen++
-    // Position closed externally — finalize the row. Exact P&L will be inferred
-    // later from userTrades; for now, just close.
-    await prisma.breakoutLiveTradeC.update({
-      where: { id: t.id },
-      data: {
-        status: 'CLOSED',
-        closedAt: new Date(),
-        closes: [
-          ...((t.closes as any[]) ?? []),
-          {
-            price: 0,
-            percent: Math.max(0, 100 - ((t.closes as any[]) ?? []).reduce((a, c: any) => a + (c.percent ?? 0), 0)),
-            pnlUsd: 0,
-            closedAt: new Date().toISOString(),
-            reason: 'RECONCILED',
-          },
-        ] as any,
-      },
-    })
-    console.log(`${LOG} reconcile: #${t.id} ${t.symbol} position gone — closed`)
+    // Position closed externally — finalize the row. If there's a remaining
+    // (un-closed) fraction, append a single RECONCILED entry with a non-zero
+    // P&L estimate from markPrice so the equity curve doesn't drop to 0 for
+    // the residual share. The exact P&L will be inferred later from userTrades
+    // (if we ever wire that up) — for now, the estimate keeps the curve sane.
+    const priorCloses = ((t.closes as any[]) ?? []) as Array<{ percent?: number; price?: number }>
+    const priorPercent = priorCloses.reduce((a, c) => a + (c.percent ?? 0), 0)
+    const residualPercent = Math.max(0, 100 - priorPercent)
+    const updateData: any = { status: 'CLOSED', closedAt: new Date() }
+    if (residualPercent > 1e-6) {
+      // Best-effort P&L estimate: use the last seen mark price for this row's
+      // symbol. If none, leave at 0 — caller can rely on userTrades reconciliation
+      // when we add it.
+      const refPrice = priorCloses.length > 0 ? Number(priorCloses[priorCloses.length - 1].price) || 0 : 0
+      const isLong = t.side === 'BUY'
+      const residualUnits = t.positionUnits * (residualPercent / 100)
+      const grossPnl = refPrice > 0 ? (isLong ? refPrice - t.entryPrice : t.entryPrice - refPrice) * residualUnits : 0
+      updateData.closes = [
+        ...priorCloses,
+        {
+          price: refPrice,
+          percent: residualPercent,
+          pnlUsd: grossPnl,
+          closedAt: new Date().toISOString(),
+          reason: 'RECONCILED',
+        },
+      ] as any
+    }
+    await prisma.breakoutLiveTradeC.update({ where: { id: t.id }, data: updateData })
+    console.log(`${LOG} reconcile: #${t.id} ${t.symbol} position gone — closed (residual ${residualPercent.toFixed(1)}%)`)
   }
 
   // --- Exchange positions without DB row ---
@@ -214,4 +225,82 @@ export async function reconcileWithExchange(client: BinanceFuturesClient): Promi
   console.log(`${LOG} reconcile: ${report.summary}`)
 
   return report
+}
+
+/**
+ * Close any "dust" positions left on the exchange whose DB row is already
+ * CLOSED. These appear when our planned close-qty was step-rounded DOWN
+ * (e.g. step=1, remaining=4187.5 → we sent qty=4187, leaving 0.5 on the book).
+ * Symptom: app shows N open while exchange shows N+1, and Binance's UI lists
+ * a position with size <= minQty that the strategy will never touch again.
+ *
+ * Strategy: list exchange positions, look up the matching DB row; if row is
+ * CLOSED/EXPIRED and exchange amt is non-zero, send a reduceOnly MARKET to
+ * close it. If qty < minQty we can't close via order — the residual stays as
+ * exchange dust but we at least log it so the operator can act.
+ */
+export async function sweepClosedRowDust(client: BinanceFuturesClient): Promise<{ swept: number; dust: number }> {
+  let positions: Awaited<ReturnType<typeof client.getOpenPositions>>
+  try {
+    positions = await client.getOpenPositions()
+  } catch (e: any) {
+    console.warn(`${LOG} sweepDust: getOpenPositions failed: ${e.message}`)
+    return { swept: 0, dust: 0 }
+  }
+  let swept = 0
+  let dust = 0
+  const filtersMap = state.current ? await getFilters(state.current.client).catch(() => null) : null
+  for (const p of positions) {
+    const amt = Number(p.positionAmt)
+    if (amt === 0) continue
+    // Find the most recent DB row for this symbol that's CLOSED/EXPIRED. If
+    // there's any OPEN/PENDING row for the same symbol, leave it alone — that
+    // could be a re-entry from a fresh range.
+    const activeRow = await prisma.breakoutLiveTradeC.findFirst({
+      where: {
+        symbol: p.symbol,
+        OR: [
+          { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+          { limitOrderState: 'PENDING_LIMIT' },
+        ],
+      },
+    })
+    if (activeRow) continue  // legit open position, not dust
+    // Send MARKET reduceOnly for the remaining amt, step-rounded down.
+    const f = filtersMap?.get(p.symbol)
+    if (!f) {
+      console.warn(`${LOG} sweepDust ${p.symbol} amt=${amt}: no filter — leaving as dust`)
+      dust++
+      continue
+    }
+    const closeSide: 'BUY' | 'SELL' = amt > 0 ? 'SELL' : 'BUY'
+    const step = f.stepSize
+    let qty = Math.floor(Math.abs(amt) / step) * step
+    qty = Number(qty.toFixed(f.quantityPrecision))
+    if (qty < f.minQty) {
+      console.warn(`${LOG} sweepDust ${p.symbol} amt=${amt} < minQty ${f.minQty} — exchange dust, can't close via order`)
+      dust++
+      continue
+    }
+    try {
+      if (state.current) {
+        await state.current.client.placeOrder({
+          symbol: p.symbol,
+          side: closeSide,
+          type: 'MARKET',
+          quantity: qty,
+          reduceOnly: true,
+        })
+        console.log(`${LOG} sweepDust closed ${p.symbol} qty=${qty} (DB row is CLOSED)`)
+        swept++
+      }
+    } catch (e: any) {
+      if (e instanceof BinanceApiError && e.code === -2022) {
+        // Already gone (someone closed between getOpenPositions and now). Fine.
+        continue
+      }
+      console.warn(`${LOG} sweepDust ${p.symbol} qty=${qty} failed: ${e.message}`)
+    }
+  }
+  return { swept, dust }
 }

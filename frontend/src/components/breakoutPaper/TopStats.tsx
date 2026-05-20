@@ -73,8 +73,17 @@ export default function TopStats({
         tone={pnlValue > 0 ? 'long' : pnlValue < 0 ? 'short' : 'neutral'} />
       <Stat label="Win Rate" value={`${(winRate * 100).toFixed(0)}%`}
         sub={`${config.totalWins}W / ${config.totalLosses}L`} />
-      <Stat label="Открытых" value={openCount.toString()}
-        sub={openCount > 0 ? `маржа $${activeMarginUsd.toFixed(2)} · Max DD ${config.maxDrawdownPct.toFixed(1)}%` : `Max DD ${config.maxDrawdownPct.toFixed(1)}%`} />
+      <Stat label="Открытых" value={(isLive ? (liveStatus?.openPositions ?? openCount) : openCount).toString()}
+        sub={(() => {
+          const exchangeCount = isLive ? (liveStatus?.openPositions ?? null) : null
+          const driftNote = exchangeCount != null && exchangeCount !== openCount
+            ? ` · биржа ${exchangeCount}, БД ${openCount}`
+            : ''
+          const ddText = `Max DD ${config.maxDrawdownPct.toFixed(1)}%`
+          return openCount > 0
+            ? `маржа $${activeMarginUsd.toFixed(2)} · ${ddText}${driftNote}`
+            : `${ddText}${driftNote}`
+        })()} />
     </div>
   )
 }
