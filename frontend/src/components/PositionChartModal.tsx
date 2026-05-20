@@ -252,7 +252,12 @@ export default function PositionChartModal({ position, onClose }: Props) {
       axisLabelVisible: true,
       title: 'SL',
     })
+    // Сколько TP уже зацеплено — по партиалам без SL (порядок: TP1, TP2, TP3).
+    // Линии для уже сработавших TP скрываем — они больше не несут информации,
+    // а только захламляют график (SL после трейлинга стоит на их уровне).
+    const tpHitCount = (position.partialCloses || []).filter(c => !c.isSL).length
     takeProfits.forEach((tp, i) => {
+      if (i < tpHitCount) return
       candleSeries.createPriceLine({
         price: tp,
         color: '#0ecb81',
@@ -322,16 +327,24 @@ export default function PositionChartModal({ position, onClose }: Props) {
       // that lies — wicks can pierce a level on a bar before the fill actually
       // executes (e.g. our TP price = level + 1 tick, or kline-watchdog backfill
       // delay). The DB closedAt IS the truth — snap it to the bar grid.
+      let tpIdx = 0
       for (const close of position.partialCloses) {
         const closeSec = toUnix(close.closedAt)
         if (closeSec == null) continue
         const time = snapToBar(closeSec, intervalSec)
+        let text: string
+        if (close.isSL) {
+          text = 'SL'
+        } else {
+          tpIdx += 1
+          text = `TP${tpIdx} −${close.percent}%`
+        }
         markers.push({
           time,
           position: close.isSL ? (isLong ? 'belowBar' : 'aboveBar') : (isLong ? 'aboveBar' : 'belowBar'),
           color: close.isSL ? '#f6465d' : '#0ecb81',
           shape: 'circle',
-          text: close.isSL ? `SL` : `−${close.percent}%`,
+          text,
         })
       }
     }
