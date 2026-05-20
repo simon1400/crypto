@@ -320,6 +320,56 @@ export async function sweepClosedRowDust(client: BinanceFuturesClient): Promise<
 }
 
 /**
+ * Targeted dust sweep for a single symbol — call right after a terminal close
+ * so any 1-step residue gets cleared immediately instead of waiting for the
+ * boot/EOD sweep. Reads positionAmt from REST (snapshot may not have refreshed
+ * the just-closed symbol yet) and fires a MARKET reduceOnly if anything > 0.
+ *
+ * Caller is expected to have already flipped the DB row to a terminal status.
+ */
+export async function sweepDustForSymbol(client: BinanceFuturesClient, symbol: string): Promise<void> {
+  if (!state.current) return
+  let positions: Awaited<ReturnType<typeof client.getOpenPositions>>
+  try {
+    positions = await client.getOpenPositions()
+  } catch (e: any) {
+    console.warn(`${LOG} sweepDustForSymbol ${symbol}: getOpenPositions failed: ${e.message}`)
+    return
+  }
+  const p = positions.find((pp) => pp.symbol === symbol)
+  if (!p) return
+  const amt = Number(p.positionAmt)
+  if (amt === 0) return
+  const filtersMap = await getFilters(client).catch(() => null)
+  const f = filtersMap?.get(symbol)
+  if (!f) {
+    console.warn(`${LOG} sweepDustForSymbol ${symbol} amt=${amt}: no filter — leaving as dust`)
+    return
+  }
+  const closeSide: 'BUY' | 'SELL' = amt > 0 ? 'SELL' : 'BUY'
+  const step = f.stepSize
+  let qty = Math.floor(Math.abs(amt) / step) * step
+  qty = Number(qty.toFixed(f.quantityPrecision))
+  if (qty < f.minQty) {
+    console.warn(`${LOG} sweepDustForSymbol ${symbol} amt=${amt} < minQty ${f.minQty} — exchange dust, can't close via order`)
+    return
+  }
+  try {
+    await client.placeOrder({
+      symbol,
+      side: closeSide,
+      type: 'MARKET',
+      quantity: qty,
+      reduceOnly: true,
+    })
+    console.log(`${LOG} sweepDustForSymbol closed ${symbol} qty=${qty} (terminal close residue)`)
+  } catch (e: any) {
+    if (e instanceof BinanceApiError && e.code === -2022) return  // already gone
+    console.warn(`${LOG} sweepDustForSymbol ${symbol} qty=${qty} failed: ${e.message}`)
+  }
+}
+
+/**
  * Cancel any stray algo orders (TP/SL) on the exchange whose owning trade is
  * already in a terminal status (CLOSED/SL_HIT/TP3_HIT/EXPIRED). Sister of
  * sweepClosedRowDust — that one closes phantom positions, this one cancels

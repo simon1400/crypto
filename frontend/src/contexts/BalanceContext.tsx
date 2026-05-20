@@ -1,8 +1,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
-import { getBreakoutPaperConfig, BreakoutVariant } from '../api/breakoutPaper'
+import { getLiveStatus } from '../api/breakoutLiveC'
 
-export interface VariantBalance {
-  variant: BreakoutVariant
+export interface LiveBalance {
   balance: number
   start: number
   pnl: number
@@ -10,37 +9,28 @@ export interface VariantBalance {
 }
 
 interface BalanceContextValue {
-  balances: VariantBalance[] | null
+  balance: LiveBalance | null
   refresh: () => void
 }
 
-const BalanceContext = createContext<BalanceContextValue>({ balances: null, refresh: () => {} })
-
-const VARIANTS: BreakoutVariant[] = ['A', 'B', 'C']
+const BalanceContext = createContext<BalanceContextValue>({ balance: null, refresh: () => {} })
 
 export function BalanceProvider({ children }: { children: ReactNode }) {
-  const [balances, setBalances] = useState<VariantBalance[] | null>(null)
+  const [balance, setBalance] = useState<LiveBalance | null>(null)
 
   const refresh = () => {
-    Promise.all(
-      VARIANTS.map(v =>
-        getBreakoutPaperConfig(v)
-          .then(cfg => {
-            const start = cfg.startingDepositUsd
-            const balance = cfg.currentDepositUsd
-            const pnl = balance - start
-            const roiPct = start > 0 ? (pnl / start) * 100 : 0
-            return { variant: v, balance, start, pnl, roiPct } as VariantBalance
-          })
-          .catch(err => {
-            console.error(`[BalanceProvider] Failed to fetch variant ${v}:`, err)
-            return null
-          }),
-      ),
-    ).then(results => {
-      const ok = results.filter((r): r is VariantBalance => r != null)
-      setBalances(ok.length > 0 ? ok : null)
-    })
+    getLiveStatus()
+      .then(st => {
+        const start = st.baselineUsd ?? 0
+        const balance = st.marginBalanceUsdt ?? st.walletBalanceUsdt ?? 0
+        const pnl = st.totalPnlUsd ?? (start > 0 ? balance - start : 0)
+        const roiPct = st.totalPnlPct ?? (start > 0 ? (pnl / start) * 100 : 0)
+        setBalance({ balance, start, pnl, roiPct })
+      })
+      .catch(err => {
+        console.error('[BalanceProvider] Failed to fetch LIVE status:', err)
+        setBalance(null)
+      })
   }
 
   useEffect(() => {
@@ -50,7 +40,7 @@ export function BalanceProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return (
-    <BalanceContext.Provider value={{ balances, refresh }}>
+    <BalanceContext.Provider value={{ balance, refresh }}>
       {children}
     </BalanceContext.Provider>
   )

@@ -265,6 +265,10 @@ async function handleSlOrderUpdate(trade: any, ev: OrderTradeUpdateEvent): Promi
   const grossPnl = (isLong ? fillPrice - fresh.entryPrice : fresh.entryPrice - fillPrice) * fresh.positionUnits * remainingFrac
   const feePaid = Number(o.n) || 0
   await applyVirtualClose(fresh, 'SL', fillPrice, remainingFrac, pnlR, grossPnl - feePaid, ev.T || ev.E, feePaid)
+  // Exchange STOP_MARKET fill doesn't trigger an 'exL' cid path — send Telegram
+  // here (same contract as handleTpOrderUpdate). Without this the user gets
+  // silence when the safety-net SL closes a position (TP1→BE@SL and bare SL).
+  await notifyExitTelegram(fresh.id, 'SL', fillPrice, remainingFrac, grossPnl - feePaid, false)
   console.log(`${LOG} 🛑 exchange SL triggered #${fresh.id} ${fresh.symbol} @ ${fillPrice}`)
 }
 

@@ -8,7 +8,7 @@ interface Props {
 
 export default function Navbar({ onLogout }: Props) {
   const { pathname } = useLocation()
-  const { balances } = useBalance()
+  const { balance } = useBalance()
   const [menuOpen, setMenuOpen] = useState(false)
 
   useEffect(() => {
@@ -32,37 +32,34 @@ export default function Navbar({ onLogout }: Props) {
           <Link to="/settings" className={linkClass('/settings')}>Настройки</Link>
         </div>
 
-        {/* Right side: per-variant balances, logout, burger */}
+        {/* Right side: LIVE balance, logout, burger */}
         <div className="flex items-center gap-2 sm:gap-3 ml-auto flex-1 min-w-0">
-          {balances && balances.length > 0 && (
+          {balance && (
             <div
               className="flex flex-1 items-center gap-1 sm:gap-2 font-mono min-w-0"
               style={{ containerType: 'inline-size' }}
             >
-              {balances.map(b => (
-                <div
-                  key={b.variant}
-                  className="flex flex-1 items-baseline justify-center gap-1 sm:gap-1.5 px-1.5 sm:px-2 py-1 rounded-md bg-card/60 border border-card min-w-0 whitespace-nowrap"
-                  style={{ fontSize: 'clamp(10px, 4cqi, 14px)' }}
-                  title={
-                    `Вариант ${b.variant}\n` +
-                    `Текущий: ${b.balance.toFixed(2)} USDT\n` +
-                    `Старт: ${b.start.toFixed(2)} USDT\n` +
-                    `P&L: ${b.pnl >= 0 ? '+' : ''}${b.pnl.toFixed(2)} USDT (${b.roiPct >= 0 ? '+' : ''}${b.roiPct.toFixed(2)}%)`
-                  }
-                >
-                  <span className="text-text-secondary">{b.variant}</span>
-                  <span className="text-accent">{b.balance.toFixed(0)}</span>
-                  {b.start > 0 && (
-                    <span
-                      className={b.pnl >= 0 ? 'text-long' : 'text-short'}
-                      style={{ fontSize: '0.85em' }}
-                    >
-                      {b.roiPct >= 0 ? '+' : ''}{b.roiPct.toFixed(1)}%
-                    </span>
-                  )}
-                </div>
-              ))}
+              <div
+                className="flex flex-1 items-baseline justify-center gap-1 sm:gap-1.5 px-1.5 sm:px-2 py-1 rounded-md bg-card/60 border border-card min-w-0 whitespace-nowrap"
+                style={{ fontSize: 'clamp(10px, 4cqi, 14px)' }}
+                title={
+                  `LIVE\n` +
+                  `Текущий: ${balance.balance.toFixed(2)} USDT\n` +
+                  `Старт: ${balance.start.toFixed(2)} USDT\n` +
+                  `P&L: ${balance.pnl >= 0 ? '+' : ''}${balance.pnl.toFixed(2)} USDT (${balance.roiPct >= 0 ? '+' : ''}${balance.roiPct.toFixed(2)}%)`
+                }
+              >
+                <span className="text-text-secondary">LIVE</span>
+                <span className="text-accent">{balance.balance.toFixed(0)}</span>
+                {balance.start > 0 && (
+                  <span
+                    className={balance.pnl >= 0 ? 'text-long' : 'text-short'}
+                    style={{ fontSize: '0.85em' }}
+                  >
+                    {balance.roiPct >= 0 ? '+' : ''}{balance.roiPct.toFixed(1)}%
+                  </span>
+                )}
+              </div>
             </div>
           )}
           {onLogout && (

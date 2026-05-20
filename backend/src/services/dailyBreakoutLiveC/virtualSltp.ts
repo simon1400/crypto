@@ -24,6 +24,7 @@ import { sendLiveTelegram } from './telegram'
 import { cancelSlOnExchange, retrailSlOnExchange } from './exchangeSl'
 import { cancelTpOnExchange, cancelAllTpsOnExchange } from './exchangeTp'
 import { seedSnapshotFromRest } from './snapshot'
+import { sweepDustForSymbol } from './reconcile'
 
 /**
  * Rebuild realizedPnlUsd / feesPaidUsd / netPnlUsd as absolute values from the
@@ -443,6 +444,15 @@ export async function applyVirtualClose(
       where: { id: fresh.id },
       data: { binanceSlOrderId: null },
     }).catch(() => { /* noop */ })
+    // Sweep any step-rounding residue NOW instead of waiting for EOD. SL@BE
+    // from exchange STOP_MARKET and TP3 from exchange TAKE_PROFIT_MARKET both
+    // close their advertised qty, but if entry filled fractional (e.g. 10.4
+    // for stepSize=1) the STOP_MARKET/TPs we placed were floor-step (10) and
+    // ~0.4 contracts get stripped of margin but stay listed in Binance UI.
+    if (state.current) {
+      await sweepDustForSymbol(state.current.client, fresh.symbol).catch((e) =>
+        console.warn(`${LOG} post-close sweepDustForSymbol failed: ${e?.message ?? e}`))
+    }
   } else if (reason === 'TP1' || reason === 'TP2') {
     await retrailSlOnExchange(fresh.id).catch((e) =>
       console.warn(`${LOG} retrailSlOnExchange threw: ${e?.message ?? e}`))
