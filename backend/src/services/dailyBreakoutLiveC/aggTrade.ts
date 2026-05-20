@@ -115,6 +115,51 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
     })
     if (claim.count !== 1) return  // someone else got here first
 
+    // Slippage / TP-cascade guard.
+    //
+    // If the trigger price is far above limitOrderPrice (LONG) or far below it
+    // (SHORT) we'd open at a fill price that's already past one or more TP
+    // levels. The exit tracker would then immediately register a TP hit on the
+    // first tick after entry, trail SL to BE, and any pullback closes the
+    // remainder at a loss after fees — the trade is "born dead" (observed
+    // 2026-05-20 #4948 AVAX: limit $9.122, fill $9.281 — already past TP1
+    // $9.186 and TP2 $9.250, instant TP1 → SL@BE → −$34 net).
+    //
+    // Two cumulative checks, whichever fires first cancels the trade:
+    //   1. Slippage > 0.6% of limit price — much wider than normal MARKET
+    //      execution; usually means the bot was offline through the breakout
+    //      and the limit got triggered late.
+    //   2. Trigger price already at/past TP1. tpLadder=[TP1,TP2,TP3], for
+    //      LONG cancel if price >= TP1, for SHORT if price <= TP1.
+    const tpLadder = (trade.tpLadder as number[]) ?? []
+    const tp1 = tpLadder[0]
+    const slippagePct = Math.abs(price - trade.limitOrderPrice) / trade.limitOrderPrice * 100
+    const pastTp1 = tp1 !== undefined && (isLong ? price >= tp1 : price <= tp1)
+    const SLIPPAGE_CAP_PCT = 0.6
+    if (slippagePct > SLIPPAGE_CAP_PCT || pastTp1) {
+      const reason = pastTp1
+        ? `trigger price ${price} already at/past TP1 ${tp1}`
+        : `slippage ${slippagePct.toFixed(2)}% > ${SLIPPAGE_CAP_PCT}% cap (limit ${trade.limitOrderPrice}, fill ref ${price})`
+      console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} ${trade.side} — cancelling: ${reason}`)
+      await prisma.breakoutLiveTradeC.update({
+        where: { id: trade.id },
+        data: {
+          limitOrderState: 'CANCELLED_OTHER_SIDE',
+          status: 'CANCELLED',
+          closedAt: new Date(ts),
+        },
+      })
+      await recordAttempt({
+        symbol: trade.symbol, side: trade.side,
+        rangeDate: new Date(ts).toISOString().slice(0, 10),
+        status: 'SKIPPED_FILTER',
+        reasonCode: pastTp1 ? 'pastTp1' : 'slippage',
+        reasonText: reason,
+        limitPrice: trade.limitOrderPrice, markPrice: price,
+      })
+      return
+    }
+
     const filters = await getFilters(state.current.client)
     const f = filters.get(trade.symbol)
     if (!f) {
