@@ -471,6 +471,25 @@ async function placeOneSide(a: PlaceOneSideArgs): Promise<any> {
     return null
   }
 
+  // MARKET_LOT_SIZE cap check. If our intended qty needs > MAX_MARKET_CHUNKS
+  // chunks to fit through MARKET_LOT_SIZE.maxQty, the position is too large
+  // for clean execution — every aggTrade fill will need many round-trips,
+  // increasing slippage and the chance one chunk lands at a different price.
+  // Better to skip this symbol than fight 15+ MARKET legs on KAS/1000BONK.
+  const MAX_MARKET_CHUNKS = 5
+  if (a.f.marketMaxQty > 0 && qty > a.f.marketMaxQty * MAX_MARKET_CHUNKS) {
+    const msg = `qty ${qty} > MARKET_LOT_SIZE.maxQty ${a.f.marketMaxQty} × ${MAX_MARKET_CHUNKS} (would need ${Math.ceil(qty / a.f.marketMaxQty)} MARKET legs)`
+    console.warn(`${LOG} ${a.symbol} ${a.side} — ${msg}`)
+    await recordAttempt({
+      symbol: a.symbol, side: a.side, rangeDate: a.rangeDate,
+      status: 'SKIPPED_FILTER',
+      reasonCode: 'marketMaxQty', reasonText: msg,
+      limitPrice: priceRounded, markPrice: a.markPrice,
+      rangeHigh: a.rangeHigh, rangeLow: a.rangeLow,
+    })
+    return null
+  }
+
   const cid = buildEntryCid(a.net, a.rangeDate, a.symbol, a.side)
 
   let row: any

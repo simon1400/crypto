@@ -186,35 +186,85 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
     // this MARKET order, which handleEntryFillUpdate routes back into the row.
     // Binance's synchronous placeOrder response for MARKET returns avgPrice="0"
     // (the matching-engine fill hasn't been indexed yet), so we can't trust it.
+    //
+    // MARKET_LOT_SIZE cap: some low-cap perps have qty caps far below their
+    // LIMIT cap (e.g. KAS LIMIT=1M but MARKET=10K, 1000BONK LIMIT=10M but
+    // MARKET=100K). We split the requested qty into chunks of at most
+    // marketMaxQty so the exchange doesn't reject -4005 "Quantity greater
+    // than max quantity". Each chunk is its own MARKET; we tag them with
+    // a suffix so handleEntryFillUpdate can still match them by the trade id
+    // (it parses only the trade id from cid prefix 'enL{id}').
     let fillPrice = price
     let fillQty = qtyPlanned
     const entryCid = `enL${trade.id}`
+    const marketCap = Math.max(f.minQty, f.marketMaxQty || qtyPlanned)
+    const chunks: number[] = []
+    if (qtyPlanned <= marketCap) {
+      chunks.push(qtyPlanned)
+    } else {
+      let remaining = qtyPlanned
+      while (remaining > 1e-9) {
+        const chunk = Math.min(remaining, marketCap)
+        // Round chunk down to step so each leg is a valid qty on its own.
+        let qc = Math.floor(chunk / step) * step
+        qc = Number(qc.toFixed(f.quantityPrecision))
+        if (qc < f.minQty) break
+        chunks.push(qc)
+        remaining -= qc
+      }
+      console.log(`${LOG} fillVirtual #${trade.id} ${trade.symbol} qty ${qtyPlanned} > MARKET_LOT_SIZE.maxQty ${marketCap} — splitting into ${chunks.length} legs`)
+    }
+
     try {
-      const resp = await state.current.client.placeOrder({
-        symbol: trade.symbol,
-        side: trade.side,
-        type: 'MARKET',
-        quantity: qtyPlanned,
-        newClientOrderId: entryCid,
-        // No reduceOnly — this is the entry, opening a new position.
-      })
-      // executedQty IS available immediately if MARKET filled — use it.
-      if (resp.executedQty && Number(resp.executedQty) > 0) {
-        fillQty = Number(resp.executedQty)
+      let totalExecuted = 0
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkQty = chunks[i]
+        const cidForChunk = chunks.length === 1 ? entryCid : `${entryCid}_${i + 1}`
+        const resp = await state.current.client.placeOrder({
+          symbol: trade.symbol,
+          side: trade.side,
+          type: 'MARKET',
+          quantity: chunkQty,
+          newClientOrderId: cidForChunk,
+          // No reduceOnly — this is the entry, opening a new position.
+        })
+        if (resp.executedQty && Number(resp.executedQty) > 0) {
+          totalExecuted += Number(resp.executedQty)
+        } else {
+          totalExecuted += chunkQty
+        }
+      }
+      if (totalExecuted > 0) {
+        fillQty = totalExecuted
       }
       // Fee not estimated here — handleEntryFillUpdate writes the exact
       // commission from Binance's o.n into entryFeeUsd. Leaving feesPaidUsd=0
       // briefly until WS arrives is a tiny UI artifact vs the bigger problem
       // of mis-attributed fees the placeholder used to cause.
     } catch (e: any) {
-      // Placement rejected — release the FILLING claim so the next tick can
-      // retry, and surface the rejection to the audit log.
-      console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} MARKET rejected: ${e.message}`)
-      await prisma.breakoutLiveTradeC.updateMany({
-        where: { id: trade.id, limitOrderState: 'FILLING' },
-        data: { limitOrderState: 'PENDING_LIMIT' },
-      })
+      // Placement rejected. Special-case -4005: even with our chunking, if
+      // qtyPlanned itself was sized far above MARKET_LOT_SIZE.maxQty AND
+      // chunking failed (shouldn't happen with the loop above), we'd retry
+      // every aggTrade tick forever — 14k+ attempts in a few hours. So for
+      // -4005 we cancel the trade outright instead of bouncing back to
+      // PENDING_LIMIT. Other errors keep the existing retry behaviour.
       const code = e instanceof BinanceApiError ? String(e.code) : 'unknown'
+      console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} MARKET rejected (${code}): ${e.message}`)
+      if (code === '-4005') {
+        await prisma.breakoutLiveTradeC.update({
+          where: { id: trade.id },
+          data: {
+            limitOrderState: 'CANCELLED_OTHER_SIDE',
+            status: 'CANCELLED',
+            closedAt: new Date(ts),
+          },
+        })
+      } else {
+        await prisma.breakoutLiveTradeC.updateMany({
+          where: { id: trade.id, limitOrderState: 'FILLING' },
+          data: { limitOrderState: 'PENDING_LIMIT' },
+        })
+      }
       await recordAttempt({
         symbol: trade.symbol, side: trade.side, rangeDate: new Date(ts).toISOString().slice(0, 10),
         status: 'REJECTED_EXCHANGE',

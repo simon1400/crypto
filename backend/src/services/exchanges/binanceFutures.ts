@@ -177,6 +177,10 @@ export interface SymbolFilter {
   tickSize: number
   stepSize: number
   minQty: number
+  /** LOT_SIZE.maxQty — applies to LIMIT and other non-MARKET orders. */
+  maxQty: number
+  /** MARKET_LOT_SIZE.maxQty — separate, usually much smaller cap for MARKET. */
+  marketMaxQty: number
   minNotional: number
   pricePrecision: number
   quantityPrecision: number
@@ -257,9 +261,21 @@ export class BinanceFuturesClient {
         if (flt.filterType === 'LOT_SIZE') {
           f.stepSize = Number(flt.stepSize)
           f.minQty = Number(flt.minQty)
+          f.maxQty = Number(flt.maxQty)
+        }
+        if (flt.filterType === 'MARKET_LOT_SIZE') {
+          // Many low-cap perps have a much smaller maxQty for MARKET orders
+          // than for LIMIT. e.g. KASUSDT LOT_SIZE.maxQty=1,000,000 but
+          // MARKET_LOT_SIZE.maxQty=10,000. Sending a MARKET above this cap
+          // returns -4005 "Quantity greater than max quantity". We have to
+          // split the fill into multiple MARKETs of size <= marketMaxQty.
+          f.marketMaxQty = Number(flt.maxQty)
         }
         if (flt.filterType === 'MIN_NOTIONAL') f.minNotional = Number(flt.notional)
       }
+      // Default fallbacks if Binance ever omits a filter row.
+      if (f.maxQty === undefined) f.maxQty = Number.POSITIVE_INFINITY
+      if (f.marketMaxQty === undefined) f.marketMaxQty = f.maxQty
       map.set(s.symbol, f as SymbolFilter)
     }
     return map
