@@ -400,6 +400,21 @@ export class BinanceFuturesClient {
     return this.signedDelete('/fapi/v1/algoOrder', params)
   }
 
+  /** List all open conditional/algo orders. Used by sweepStrayAlgoOrders. */
+  async getOpenAlgoOrders(): Promise<Array<{
+    algoId: number
+    clientAlgoId: string
+    symbol: string
+    side: 'BUY' | 'SELL'
+    type: string
+    triggerPrice: string
+    quantity?: string
+    origQty?: string
+    reduceOnly: boolean
+  }>> {
+    return this.signedGet('/fapi/v1/openAlgoOrders', {})
+  }
+
   // --------------------------------------------------------------------------
   // User data stream (listenKey for WS)
   // --------------------------------------------------------------------------

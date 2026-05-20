@@ -157,10 +157,19 @@ async function flattenOneRow(t: any, reason: string): Promise<'closed' | 'finali
 
   if (remainingQty <= 0) {
     // Nothing left to close on exchange (already fully filled via TPs/SL).
-    // Finalize the DB row.
+    // Cancel any still-active SL/TP algo orders on Binance before flipping
+    // the row to CLOSED — otherwise they hang on the exchange book forever
+    // (we found 3 such orphans 2026-05-20 from this exact early-return path).
+    await cancelSlOnExchange(t).catch(() => { /* best-effort */ })
+    await cancelAllTpsOnExchange(t).catch(() => { /* best-effort */ })
     await prisma.breakoutLiveTradeC.update({
       where: { id: t.id },
-      data: { status: 'CLOSED', closedAt: new Date() },
+      data: {
+        status: 'CLOSED',
+        closedAt: new Date(),
+        binanceSlOrderId: null,
+        binanceTpOrderIds: [] as any,
+      },
     })
     return 'finalized'
   }
@@ -176,10 +185,17 @@ async function flattenOneRow(t: any, reason: string): Promise<'closed' | 'finali
   let qty = Math.floor(remainingQty / step) * step
   qty = Number(qty.toFixed(f.quantityPrecision))
   if (qty < f.minQty) {
-    // Below min qty — pure dust. Finalize the row.
+    // Below min qty — pure dust. Finalize the row and clean up exchange algos.
+    await cancelSlOnExchange(t).catch(() => { /* best-effort */ })
+    await cancelAllTpsOnExchange(t).catch(() => { /* best-effort */ })
     await prisma.breakoutLiveTradeC.update({
       where: { id: t.id },
-      data: { status: 'CLOSED', closedAt: new Date() },
+      data: {
+        status: 'CLOSED',
+        closedAt: new Date(),
+        binanceSlOrderId: null,
+        binanceTpOrderIds: [] as any,
+      },
     })
     return 'finalized'
   }

@@ -21,8 +21,8 @@ import type { BinanceFuturesClient } from '../exchanges/binanceFutures'
 import { BinanceApiError } from '../exchanges/binanceFutures'
 import { LOG, state } from './state'
 import { getFilters } from './filters'
-import { attachSlAfterEntry } from './exchangeSl'
-import { attachTpsAfterEntry } from './exchangeTp'
+import { attachSlAfterEntry, cancelSlOnExchange } from './exchangeSl'
+import { attachTpsAfterEntry, cancelAllTpsOnExchange } from './exchangeTp'
 
 export interface ReconcileReport {
   hasUntrackedPositions: boolean
@@ -171,7 +171,15 @@ export async function reconcileWithExchange(client: BinanceFuturesClient): Promi
     const priorCloses = ((t.closes as any[]) ?? []) as Array<{ percent?: number; price?: number }>
     const priorPercent = priorCloses.reduce((a, c) => a + (c.percent ?? 0), 0)
     const residualPercent = Math.max(0, 100 - priorPercent)
-    const updateData: any = { status: 'CLOSED', closedAt: new Date() }
+    const updateData: any = {
+      status: 'CLOSED',
+      closedAt: new Date(),
+      // Clear stored algo refs — any still-active TP/SL on the exchange gets
+      // cancelled below, and a NULL/[] field prevents subsequent reconcile or
+      // sweep cycles from trying to operate on them again.
+      binanceSlOrderId: null,
+      binanceTpOrderIds: [] as any,
+    }
     if (residualPercent > 1e-6) {
       // Best-effort P&L estimate: use the last seen mark price for this row's
       // symbol. If none, leave at 0 — caller can rely on userTrades reconciliation
@@ -191,8 +199,14 @@ export async function reconcileWithExchange(client: BinanceFuturesClient): Promi
         },
       ] as any
     }
+    // Cancel any still-active TP/SL algo orders BEFORE flipping the row to
+    // CLOSED. Without this, dust algo orders stayed on the exchange forever
+    // (we found 3 such orphans 2026-05-20: SIREN tpL4938_1 and ENA tpL4905_3
+    // + slL4905). Best-effort — -2011/-2013 already-gone is fine.
+    await cancelSlOnExchange(t).catch(() => { /* best-effort */ })
+    await cancelAllTpsOnExchange(t).catch(() => { /* best-effort */ })
     await prisma.breakoutLiveTradeC.update({ where: { id: t.id }, data: updateData })
-    console.log(`${LOG} reconcile: #${t.id} ${t.symbol} position gone — closed (residual ${residualPercent.toFixed(1)}%)`)
+    console.log(`${LOG} reconcile: #${t.id} ${t.symbol} position gone — closed (residual ${residualPercent.toFixed(1)}%, algos cancelled)`)
   }
 
   // --- Exchange positions without DB row ---
@@ -303,4 +317,57 @@ export async function sweepClosedRowDust(client: BinanceFuturesClient): Promise<
     }
   }
   return { swept, dust }
+}
+
+/**
+ * Cancel any stray algo orders (TP/SL) on the exchange whose owning trade is
+ * already in a terminal status (CLOSED/SL_HIT/TP3_HIT/EXPIRED). Sister of
+ * sweepClosedRowDust — that one closes phantom positions, this one cancels
+ * phantom algo orders. Together they keep the exchange book in sync with DB.
+ *
+ * Identifies each algo order's owning trade by its clientAlgoId — our placement
+ * code tags every algo with 'slL{id}' / 'tpL{id}_{idx}'. Any other cid is a
+ * manual order we don't touch.
+ */
+export async function sweepStrayAlgoOrders(client: BinanceFuturesClient): Promise<{ cancelled: number; checked: number }> {
+  let algoOrders: Awaited<ReturnType<typeof client.getOpenAlgoOrders>>
+  try {
+    algoOrders = await client.getOpenAlgoOrders()
+  } catch (e: any) {
+    console.warn(`${LOG} sweepStrayAlgos: getOpenAlgoOrders failed: ${e.message}`)
+    return { cancelled: 0, checked: 0 }
+  }
+  let cancelled = 0
+  let checked = 0
+  for (const o of algoOrders) {
+    const cid = o.clientAlgoId
+    if (!cid) continue
+    // Parse our cid format. slL{id} or tpL{id}_{idx}. Anything else = manual.
+    let tradeId: number | null = null
+    if (cid.startsWith('slL')) {
+      tradeId = parseInt(cid.slice(3), 10)
+    } else if (cid.startsWith('tpL')) {
+      const rest = cid.slice(3)
+      const underscore = rest.indexOf('_')
+      if (underscore > 0) tradeId = parseInt(rest.slice(0, underscore), 10)
+    }
+    if (!Number.isFinite(tradeId) || tradeId === null) continue  // not our cid
+    checked++
+    const t = await prisma.breakoutLiveTradeC.findUnique({
+      where: { id: tradeId },
+      select: { status: true, symbol: true },
+    })
+    if (!t) continue
+    // Terminal statuses → algo should already be gone. Cancel if it isn't.
+    if (!['CLOSED', 'SL_HIT', 'TP3_HIT', 'EXPIRED', 'CANCELLED'].includes(t.status)) continue
+    try {
+      await client.cancelAlgoOrder(o.symbol, { algoId: o.algoId })
+      console.log(`${LOG} sweepStrayAlgos cancelled ${o.symbol} ${cid} (#${tradeId} status=${t.status})`)
+      cancelled++
+    } catch (e: any) {
+      if (e instanceof BinanceApiError && (e.code === -2011 || e.code === -2013)) continue  // already gone
+      console.warn(`${LOG} sweepStrayAlgos cancel ${o.symbol} ${cid} failed: ${e.message}`)
+    }
+  }
+  return { cancelled, checked }
 }

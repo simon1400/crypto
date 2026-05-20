@@ -8,7 +8,7 @@ import { placeLimitsForRanges } from './placement'
 import { refreshAggTradeSubscriptions } from './aggTrade'
 import { flattenAllOpenC, cancelOrphanPendingLimits, cancelAllPendingLimits } from './flatten'
 import { pruneOldAttempts } from './attempts'
-import { sweepClosedRowDust } from './reconcile'
+import { sweepClosedRowDust, sweepStrayAlgoOrders } from './reconcile'
 import { sendLiveCEodSummary } from './eod'
 
 /**
@@ -89,6 +89,11 @@ export async function runEodTick(): Promise<void> {
         await sweepClosedRowDust(state.current.client)
       } catch (e: any) {
         console.error(`${LOG} EOD dust sweep failed: ${e.message}`)
+      }
+      try {
+        await sweepStrayAlgoOrders(state.current.client)
+      } catch (e: any) {
+        console.error(`${LOG} EOD stray-algo sweep failed: ${e.message}`)
       }
     }
     // Telegram report — full list of closes for the day with Σ P&L. Runs LAST

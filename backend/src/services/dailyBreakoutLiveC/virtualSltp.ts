@@ -436,6 +436,13 @@ export async function applyVirtualClose(
     // Re-read the row so binanceTpOrderIds reflects whichever TP fired (if any).
     const t2 = await prisma.breakoutLiveTradeC.findUnique({ where: { id: fresh.id } })
     if (t2) await cancelAllTpsOnExchange(t2).catch(() => { /* best-effort */ })
+    // Clear stored algo refs — cancelAllTpsOnExchange already empties the
+    // TP list, but cancelSlOnExchange doesn't touch the SL ref. Null it out
+    // so subsequent reconcile/sweep cycles don't see a stale algoId.
+    await prisma.breakoutLiveTradeC.update({
+      where: { id: fresh.id },
+      data: { binanceSlOrderId: null },
+    }).catch(() => { /* noop */ })
   } else if (reason === 'TP1' || reason === 'TP2') {
     await retrailSlOnExchange(fresh.id).catch((e) =>
       console.warn(`${LOG} retrailSlOnExchange threw: ${e?.message ?? e}`))

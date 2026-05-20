@@ -16,7 +16,7 @@ import {
 import { LOG, state, startGuard, snapshot } from './state'
 import { seedSnapshotFromRest } from './snapshot'
 import { recomputeLiveCStats } from './virtualSltp'
-import { reconcileWithExchange, sweepClosedRowDust } from './reconcile'
+import { reconcileWithExchange, sweepClosedRowDust, sweepStrayAlgoOrders } from './reconcile'
 import { sendLiveTelegram } from './telegram'
 import { runLiveCycle, runEodTick } from './cycle'
 import { handleAggTrade } from './aggTrade'
@@ -155,6 +155,9 @@ export async function startBreakoutLiveTraderC(): Promise<void> {
     // already CLOSED. Cheap (one getOpenPositions + a few possible MARKETs)
     // and clears the "19 in app vs 20 on exchange" drift after restart.
     sweepClosedRowDust(client).catch((e) => console.warn(`${LOG} boot dust sweep error:`, e.message))
+    // Same idea, but for algo orders (TP/SL): cancel anything whose owning
+    // trade is already terminal. Companion to sweepClosedRowDust.
+    sweepStrayAlgoOrders(client).catch((e) => console.warn(`${LOG} boot stray-algo sweep error:`, e.message))
   } finally {
     startGuard.inFlight = false
   }
