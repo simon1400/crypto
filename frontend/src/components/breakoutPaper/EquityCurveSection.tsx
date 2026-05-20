@@ -42,13 +42,16 @@ export default function EquityCurveSection({ stats, startEquity }: Props) {
               <tr>
                 <th className="text-left px-3 py-2 font-medium">Дата</th>
                 <th className="text-right px-3 py-2 font-medium">P&L дня</th>
+                <th className="text-right px-3 py-2 font-medium">% дня</th>
                 <th className="text-right px-3 py-2 font-medium">Депозит</th>
                 <th className="text-right px-3 py-2 font-medium">Δ от старта</th>
               </tr>
             </thead>
             <tbody>
-              {curve.slice(-30).reverse().map((p, idx) => {
+              {curve.slice(-30).reverse().map((p, idx, arr) => {
                 const delta = p.equity - startEquity
+                const prevEquity = arr[idx + 1]?.equity ?? startEquity
+                const dayPct = prevEquity > 0 ? (p.pnl / prevEquity) * 100 : 0
                 return (
                   <tr
                     key={p.date}
@@ -57,6 +60,9 @@ export default function EquityCurveSection({ stats, startEquity }: Props) {
                     <td className="text-text-secondary px-3 py-1.5">{p.date}</td>
                     <td className={`text-right px-3 py-1.5 ${p.pnl > 0 ? 'text-long' : p.pnl < 0 ? 'text-short' : 'text-text-secondary'}`}>
                       {fmt2Signed(p.pnl)}$
+                    </td>
+                    <td className={`text-right px-3 py-1.5 ${p.pnl > 0 ? 'text-long' : p.pnl < 0 ? 'text-short' : 'text-text-secondary'}`}>
+                      {fmt2Signed(dayPct)}%
                     </td>
                     <td className="text-right px-3 py-1.5 text-text-primary">${p.equity.toFixed(2)}</td>
                     <td className={`text-right px-3 py-1.5 ${delta > 0 ? 'text-long' : delta < 0 ? 'text-short' : 'text-text-secondary'}`}>

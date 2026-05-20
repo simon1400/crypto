@@ -64,6 +64,19 @@ export interface BreakoutLiveStatusOrder {
   reduceOnly: boolean
 }
 
+export interface BreakoutLiveAlgoOrder {
+  algoId: number
+  clientAlgoId: string
+  symbol: string
+  side: 'BUY' | 'SELL'
+  type: string                // STOP_MARKET | TAKE_PROFIT_MARKET
+  tpIdx: number | null        // 1/2/3 for TP orders; null otherwise
+  triggerPrice: number
+  quantity: number
+  reduceOnly: boolean
+  createdAt: number | null    // ms epoch (from Binance bookTime/createTime)
+}
+
 export interface BreakoutLiveStatus {
   connected: boolean
   net?: 'testnet' | 'prod'
@@ -86,6 +99,8 @@ export interface BreakoutLiveStatus {
   orderCount1m?: number
   positions?: BreakoutLiveStatusPosition[]
   orders?: BreakoutLiveStatusOrder[]
+  algoOrders?: BreakoutLiveAlgoOrder[]
+  algoOrdersAge?: number    // ms since last refresh
 }
 
 export interface BreakoutLiveTrade {
@@ -149,8 +164,8 @@ export async function updateLiveConfig(patch: Partial<BreakoutLiveConfig>): Prom
   return req(`${BP}/config`, { method: 'PUT', body: JSON.stringify(patch) })
 }
 
-export async function getLiveStatus(): Promise<BreakoutLiveStatus> {
-  return req(`${BP}/status`)
+export async function getLiveStatus(forceRefresh = false): Promise<BreakoutLiveStatus> {
+  return req(`${BP}/status${forceRefresh ? '?refresh=1' : ''}`)
 }
 
 export async function getLiveTrades(query?: { status?: string; symbol?: string; limit?: number; offset?: number }): Promise<{ data: BreakoutLiveTrade[]; total: number }> {

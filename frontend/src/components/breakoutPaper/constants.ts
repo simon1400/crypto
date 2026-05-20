@@ -1,6 +1,6 @@
 // 'SIGNALS' — таб для A/B со списком сигналов сканера.
 // 'PENDING' — таб для C: висящие limit-ордера на rangeEdge до пробоя.
-export type StatusFilter = 'OPEN' | 'CLOSED' | 'SIGNALS' | 'PENDING' | 'ATTEMPTS' | 'CANCELLED'
+export type StatusFilter = 'OPEN' | 'CLOSED' | 'SIGNALS' | 'PENDING' | 'ATTEMPTS' | 'CANCELLED' | 'EXCHANGE'
 
 export const PAPER_STATUS_BADGE: Record<string, { bg: string; text: string; label: string }> = {
   NEW:       { bg: 'bg-neutral/15',    text: 'text-neutral',    label: 'Новый' },

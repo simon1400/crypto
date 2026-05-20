@@ -29,6 +29,32 @@ export { refreshLiveBalance }
 
 const router = Router()
 
+// Cache for /fapi/v1/openAlgoOrders. SIGNED REST, weight 5+. /status is
+// polled every 10s and shared across tabs/users — refreshing on every call
+// would burn ~30 weight/min just for a tab that's mostly closed. TTL=5min
+// means at worst 1 refresh per /status poll cycle = ≤2 calls/10min = 10
+// weight/10min, while still showing fresh-enough data when the user actually
+// opens the "Биржа" tab (algo orders don't churn that fast — TP/SL stays put
+// until exit).
+interface AlgoOrderRow {
+  algoId: number
+  clientAlgoId: string
+  symbol: string
+  side: 'BUY' | 'SELL'
+  /** Canonical: 'STOP_MARKET' | 'TAKE_PROFIT_MARKET'. Derived from
+   *  clientAlgoId (slL{id} / tpL{id}_{idx}) since Binance's raw `type` field
+   *  is inconsistent across endpoint versions. */
+  type: string
+  /** 1, 2 or 3 — only set for TAKE_PROFIT_MARKET. */
+  tpIdx: number | null
+  triggerPrice: number
+  quantity: number
+  reduceOnly: boolean
+  createdAt: number | null
+}
+const algoOrdersCache: { at: number; data: AlgoOrderRow[] } = { at: 0, data: [] }
+const ALGO_ORDERS_TTL_MS = 5 * 60 * 1000   // 5 min — see /status doc-note
+
 
 // ============================================================================
 // Config
@@ -162,8 +188,11 @@ router.post('/baseline/reset', async (_req, res) => {
 // Status — connectivity smoke test
 // ============================================================================
 
-router.get('/status', async (_req, res) => {
+router.get('/status', async (req, res) => {
   try {
+    // ?refresh=1 force-busts the algoOrders cache. Used by the "Биржа" tab's
+    // manual refresh button — fine, weight 5 per click, no spam vector.
+    const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true'
     const cfg = await prisma.breakoutLiveConfigC.upsert({
       where: { id: 1 }, update: {}, create: { id: 1 },
     })
@@ -219,6 +248,65 @@ router.get('/status', async (_req, res) => {
     })
     const pendingOrders = new Set(pendingRows.map((r) => r.symbol)).size
 
+    // Conditional TP/SL list — refreshed at most once per ALGO_ORDERS_TTL_MS.
+    // If the refresh fails (rate-limit, network) we still serve the previous
+    // snapshot so the UI doesn't flicker to empty between polls.
+    const now = Date.now()
+    if (forceRefresh || now - algoOrdersCache.at >= ALGO_ORDERS_TTL_MS) {
+      try {
+        const client = getBinanceClient(creds)
+        if (client) {
+          const raw = await client.getOpenAlgoOrders()
+          if (raw.length > 0) {
+            // Once-per-refresh sample so we can see what Binance actually
+            // returns (field naming differs across endpoint versions: type vs
+            // algoType, triggerPrice vs stopPrice, etc.).
+            console.log('[breakoutLiveC] /status algoOrders sample:', JSON.stringify(raw[0]))
+          }
+          algoOrdersCache.data = raw.map((o) => {
+            const anyO = o as any
+            const qtyStr = o.quantity ?? o.origQty ?? '0'
+            // Source of truth: our own clientAlgoId. Format set by the trader:
+            //   'slL{tradeId}'           — STOP_MARKET (SL)
+            //   'tpL{tradeId}_{idx}'     — TAKE_PROFIT_MARKET, idx ∈ {1,2,3}
+            // The raw `type`/`algoType` fields are kept as a fallback for any
+            // orphan ordered outside the bot (rare, e.g. manual UI placement).
+            const cid = String(o.clientAlgoId ?? '')
+            let canonicalType = ''
+            let tpIdx: number | null = null
+            if (cid.startsWith('slL')) {
+              canonicalType = 'STOP_MARKET'
+            } else {
+              const m = cid.match(/^tpL\d+_(\d+)$/)
+              if (m) {
+                canonicalType = 'TAKE_PROFIT_MARKET'
+                tpIdx = Number(m[1])
+              } else {
+                const rawType = String(o.type ?? anyO.algoType ?? '').toUpperCase()
+                if (rawType.includes('STOP') && !rawType.includes('TAKE')) canonicalType = 'STOP_MARKET'
+                else if (rawType.includes('TAKE_PROFIT') || rawType.includes('PROFIT')) canonicalType = 'TAKE_PROFIT_MARKET'
+              }
+            }
+            return {
+              algoId: o.algoId,
+              clientAlgoId: o.clientAlgoId,
+              symbol: o.symbol,
+              side: o.side,
+              type: canonicalType,
+              tpIdx,
+              triggerPrice: Number(o.triggerPrice ?? anyO.stopPrice ?? 0),
+              quantity: Number(qtyStr),
+              reduceOnly: o.reduceOnly,
+              createdAt: Number(anyO.bookTime ?? anyO.createTime ?? anyO.updateTime ?? 0) || null,
+            }
+          })
+          algoOrdersCache.at = now
+        }
+      } catch (e: any) {
+        console.warn('[breakoutLiveC] /status algoOrders fetch failed:', e.message)
+      }
+    }
+
     res.json({
       connected: true,
       net: creds.net,
@@ -246,7 +334,8 @@ router.get('/status', async (_req, res) => {
         leverage: p.leverage,
         marginType: p.marginType,
       })),
-      orders: [],
+      algoOrders: algoOrdersCache.data,
+      algoOrdersAge: now - algoOrdersCache.at,
     })
   } catch (e: any) {
     const msg = e instanceof BinanceApiError ? e.message : e.message

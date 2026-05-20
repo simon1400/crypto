@@ -38,7 +38,7 @@ export default function TopStats({
   // "Депо с открытыми" = walletBalance + unrealized (margin balance в Binance UI).
   const depoValue = isLive ? (liveWalletBalance ?? 0) : config.currentDepositUsd
   const depoSub = isLive
-    ? `available $${(liveAvailable ?? 0).toFixed(2)} · baseline $${config.startingDepositUsd.toFixed(2)}`
+    ? `свободно $${(liveAvailable ?? 0).toFixed(2)} · старт $${config.startingDepositUsd.toFixed(2)}`
     : `из $${config.startingDepositUsd}`
   const depoTone: 'long' | 'short' = (isLive ? depoValue >= config.startingDepositUsd : config.currentDepositUsd >= config.startingDepositUsd) ? 'long' : 'short'
 
@@ -63,7 +63,7 @@ export default function TopStats({
         sub={depoSub} tone={depoTone} />
       <Stat label="Депо с открытыми" value={`$${equityValue.toFixed(2)}`}
         sub={openCount > 0
-          ? `${equityUnrealized >= 0 ? '+' : ''}$${equityUnrealized.toFixed(2)} unrealized`
+          ? `${equityUnrealized >= 0 ? '+' : ''}$${equityUnrealized.toFixed(2)} нереализ.`
           : 'нет открытых'}
         tone={equityValue >= config.startingDepositUsd ? 'long' : 'short'} />
       <Stat label="Доходность" value={`${returnValue >= 0 ? '+' : ''}${returnValue.toFixed(1)}%`}

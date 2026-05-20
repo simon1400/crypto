@@ -33,6 +33,7 @@ import AboutStrategy from '../components/breakoutPaper/AboutStrategy'
 import SignalsTable from '../components/breakoutPaper/SignalsTable'
 import PendingTable from '../components/breakoutPaper/PendingTable'
 import AttemptsTable from '../components/breakoutPaper/AttemptsTable'
+import ExchangeOrdersTable from '../components/breakoutPaper/ExchangeOrdersTable'
 import TradesTable from '../components/breakoutPaper/TradesTable'
 import TradeCards from '../components/breakoutPaper/TradeCards'
 import BySymbolBreakdown from '../components/breakoutPaper/BySymbolBreakdown'
@@ -447,6 +448,9 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         {isLive && (
           <FilterButton active={statusFilter === 'ATTEMPTS'} onClick={handleTabChange('ATTEMPTS')}>Отклонённые</FilterButton>
         )}
+        {isLive && (
+          <FilterButton active={statusFilter === 'EXCHANGE'} onClick={handleTabChange('EXCHANGE')}>Биржа</FilterButton>
+        )}
       </div>
 
       {statusFilter === 'SIGNALS' && (
@@ -469,7 +473,19 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         />
       )}
 
-      {statusFilter !== 'SIGNALS' && statusFilter !== 'PENDING' && statusFilter !== 'ATTEMPTS' && (
+      {statusFilter === 'EXCHANGE' && isLive && (
+        <ExchangeOrdersTable
+          liveStatus={liveStatus}
+          openSymbols={openTradesAll.map(t => t.symbol)}
+          loading={loading}
+          onForceRefresh={async () => {
+            const s = await getLiveStatus(true)
+            setLiveStatus(s)
+          }}
+        />
+      )}
+
+      {statusFilter !== 'SIGNALS' && statusFilter !== 'PENDING' && statusFilter !== 'ATTEMPTS' && statusFilter !== 'EXCHANGE' && (
         <>
           <TradeCards
             trades={trades} sortedTrades={sortedTrades}
