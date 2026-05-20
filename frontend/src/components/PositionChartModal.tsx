@@ -317,25 +317,15 @@ export default function PositionChartModal({ position, onClose }: Props) {
     }
 
     if (position.partialCloses && position.partialCloses.length > 0) {
-      // Find the bar where price first touched the close level after entry —
-      // visually anchors the marker to the actual wick that hit it. Useful when
-      // closedAt is the click-time (manual fast-close) rather than the candle
-      // time (auto-engine close). Falls back to closedAt if no touch found.
-      const findTouchBar = (price: number, isSlClose: boolean): UTCTimestamp | null => {
-        if (entryTime == null) return null
-        for (const k of klines) {
-          if ((k.time as number) < (entryTime as number)) continue
-          const touchedTp = isLong ? k.high >= price : k.low <= price
-          const touchedSl = isLong ? k.low <= price : k.high >= price
-          if (isSlClose ? touchedSl : touchedTp) return k.time as UTCTimestamp
-        }
-        return null
-      }
+      // Anchor each marker to the bar containing the actual fill time. Earlier
+      // we tried to find the first bar where price wicked the close level, but
+      // that lies — wicks can pierce a level on a bar before the fill actually
+      // executes (e.g. our TP price = level + 1 tick, or kline-watchdog backfill
+      // delay). The DB closedAt IS the truth — snap it to the bar grid.
       for (const close of position.partialCloses) {
         const closeSec = toUnix(close.closedAt)
         if (closeSec == null) continue
-        const touchBar = findTouchBar(close.price, !!close.isSL)
-        const time = touchBar ?? snapToBar(closeSec, intervalSec)
+        const time = snapToBar(closeSec, intervalSec)
         markers.push({
           time,
           position: close.isSL ? (isLong ? 'belowBar' : 'aboveBar') : (isLong ? 'aboveBar' : 'belowBar'),
