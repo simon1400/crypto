@@ -9,6 +9,7 @@ import { refreshAggTradeSubscriptions } from './aggTrade'
 import { flattenAllOpenC, cancelOrphanPendingLimits, cancelAllPendingLimits } from './flatten'
 import { pruneOldAttempts } from './attempts'
 import { sweepClosedRowDust } from './reconcile'
+import { sendLiveCEodSummary } from './eod'
 
 /**
  * Placement tick — mirrors paper C cadence. Virtual limits live only in DB;
@@ -89,6 +90,17 @@ export async function runEodTick(): Promise<void> {
       } catch (e: any) {
         console.error(`${LOG} EOD dust sweep failed: ${e.message}`)
       }
+    }
+    // Telegram report — full list of closes for the day with Σ P&L. Runs LAST
+    // so WS refines from the flatten MARKETs land on the closes[] rows first
+    // (handleExitFillUpdate writes Binance's exact o.rp/o.n) and the report
+    // numbers match the dashboard's "Закрытые" tab. There's a small race where
+    // a refine could land just after the report sends — acceptable for now;
+    // the values would be within rounding error of the placeholder.
+    try {
+      await sendLiveCEodSummary(utcDate)
+    } catch (e: any) {
+      console.error(`${LOG} EOD summary failed: ${e.message}`)
     }
   }
 

@@ -151,6 +151,27 @@ export interface AccountInfo {
   positions: PositionRisk[]
 }
 
+/**
+ * One filled trade row from /fapi/v1/userTrades. Field naming follows Binance's
+ * raw response (lowercase, strings — they shorten property names like `id`,
+ * `qty`, `commission`).
+ */
+export interface UserTrade {
+  symbol: string
+  id: number
+  orderId: number
+  side: 'BUY' | 'SELL'
+  price: string
+  qty: string
+  quoteQty: string
+  commission: string
+  commissionAsset: string
+  realizedPnl: string
+  time: number
+  buyer: boolean
+  maker: boolean
+}
+
 export interface SymbolFilter {
   symbol: string
   tickSize: number
@@ -325,6 +346,20 @@ export class BinanceFuturesClient {
   async getOrder(symbol: string, opts: { orderId?: number; origClientOrderId?: string }): Promise<OrderResponse> {
     const params: Record<string, string | number> = { symbol, ...opts }
     return this.signedGet<OrderResponse>('/fapi/v1/order', params)
+  }
+
+  /**
+   * Pull user trades (fills) for a symbol within a time window. Returns one
+   * row per fill with exact qty, price, commission, realized PnL. Used by
+   * the EOD reconciliation script to backfill `closes[].pnlUsd` for rows
+   * where the WS event was missed (pre-2026-05-20 bug). Weight 5 per call.
+   */
+  async getUserTrades(symbol: string, opts: { startTime?: number; endTime?: number; limit?: number } = {}): Promise<UserTrade[]> {
+    const params: Record<string, string | number> = { symbol }
+    if (opts.startTime !== undefined) params.startTime = opts.startTime
+    if (opts.endTime !== undefined) params.endTime = opts.endTime
+    if (opts.limit !== undefined) params.limit = opts.limit
+    return this.signedGet<UserTrade[]>('/fapi/v1/userTrades', params)
   }
 
   // --------------------------------------------------------------------------

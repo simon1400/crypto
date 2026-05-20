@@ -413,6 +413,10 @@ model BreakoutLiveConfigC {
 
   startedAt DateTime  @default(now())
   resetAt   DateTime?
+  // Date (YYYY-MM-DD UTC) of the last EOD summary Telegram report. Used as an
+  // idempotency marker so a process restart in the 23:55-23:59 window doesn't
+  // re-fire the report.
+  lastEodReportDate String?
   updatedAt DateTime  @updatedAt
   createdAt DateTime  @default(now())
 }

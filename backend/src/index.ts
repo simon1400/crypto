@@ -12,11 +12,7 @@ import breakoutPaperRouter from './routes/breakoutPaperA'
 import breakoutPaperBRouter from './routes/breakoutPaperB'
 import breakoutPaperCRouter from './routes/breakoutPaperC'
 import breakoutLiveCRouter from './routes/breakoutLiveC'
-import { startBreakoutLiveScanner, stopBreakoutLiveScanner } from './services/dailyBreakoutLiveScanner'
-import { startBreakoutPaperTrader, stopBreakoutPaperTrader, startBreakoutEodSummary, stopBreakoutEodSummary } from './services/dailyBreakoutPaper'
-import { startBreakoutLimitTraderC, stopBreakoutLimitTraderC } from './services/dailyBreakoutLimitTrader'
 import { startBreakoutLiveTraderC, stopBreakoutLiveTraderC } from './services/dailyBreakoutLiveC'
-import { startBreakoutWsTracker, stopBreakoutWsTracker } from './services/breakoutWsTracker'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -48,20 +44,12 @@ app.use('/api/breakout-live-c', breakoutLiveCRouter)
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
 
-  // === Daily Breakout strategy live scanner & trackers ===
-  startBreakoutLiveScanner()
-  startBreakoutPaperTrader('A')
-  startBreakoutPaperTrader('B')
-  // Variant C — limit-on-rangeEdge experimental copy. Reads same signal stream
-  // as A/B; uses limit fills instead of market entry. See dailyBreakoutLimitTrader.ts.
-  // After PENDING_LIMIT fills → status=OPEN → tracking handled by paper trader 'C'
-  // through the shared trackOnePaper logic.
-  startBreakoutPaperTrader('C')
-  startBreakoutLimitTraderC()
-  startBreakoutWsTracker()
-  startBreakoutEodSummary()
-
-  // === Variant C LIVE (Binance Futures real-money twin of paper C) ===
+  // === Daily Breakout — only LIVE C runs now (2026-05-20 decision) ===
+  // Paper A/B/C, signal scanner, ws tracker, EOD summary and limit trader are
+  // all stopped — LIVE C is the only active path. Their REST endpoints
+  // (/api/breakout-paper*) stay registered so the historical DB is still
+  // queryable, but no new paper trades are opened.
+  //
   // Connects to Binance + user-data WS to stream order/account events. Trading
   // is gated by BreakoutLiveConfigC.enabled (toggled from UI). If creds aren't
   // configured yet, start() is a no-op — restart triggered when /settings saves
@@ -74,14 +62,7 @@ async function gracefulShutdown(signal: string) {
 
   server.close()
 
-  stopBreakoutLiveScanner()
-  stopBreakoutPaperTrader('A')
-  stopBreakoutPaperTrader('B')
-  stopBreakoutPaperTrader('C')
-  stopBreakoutLimitTraderC()
   stopBreakoutLiveTraderC()
-  stopBreakoutWsTracker()
-  stopBreakoutEodSummary()
 
   await prisma.$disconnect()
 
