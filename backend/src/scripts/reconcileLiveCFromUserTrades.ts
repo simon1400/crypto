@@ -22,6 +22,7 @@
 
 import * as crypto from 'crypto'
 import { prisma } from '../db/prisma'
+import { decrypt } from '../services/encryption'
 
 const APPLY = process.argv.includes('--apply')
 const ID_ARG = process.argv.find((a) => a.startsWith('--id='))
@@ -38,31 +39,6 @@ const REST_BASE = {
   prod: 'https://fapi.binance.com',
 }
 
-async function decryptOrPlain(value: string | null | undefined): Promise<string | null> {
-  if (!value) return null
-  // The BotConfig encrypts keys with ENCRYPTION_KEY (Buffer => aes-256-gcm).
-  // Mirror that here so we don't depend on the service module.
-  const KEY = process.env.ENCRYPTION_KEY
-  if (!KEY) {
-    // Assume value is already plaintext.
-    return value
-  }
-  try {
-    const buf = Buffer.from(value, 'base64')
-    if (buf.length < 12 + 16 + 1) return value  // not encrypted
-    const iv = buf.subarray(0, 12)
-    const tag = buf.subarray(12, 28)
-    const enc = buf.subarray(28)
-    const keyBuf = Buffer.from(KEY, 'hex')
-    const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuf, iv)
-    decipher.setAuthTag(tag)
-    const dec = Buffer.concat([decipher.update(enc), decipher.final()])
-    return dec.toString('utf8')
-  } catch {
-    return value
-  }
-}
-
 async function getCreds(): Promise<BinanceCreds | null> {
   const bot = await prisma.botConfig.findUnique({ where: { id: 1 } })
   const cfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
@@ -70,9 +46,9 @@ async function getCreds(): Promise<BinanceCreds | null> {
   const net: 'testnet' | 'prod' = cfg.useTestnet ? 'testnet' : 'prod'
   const rawKey = net === 'testnet' ? (bot as any).binanceTestnetApiKey : (bot as any).binanceProdApiKey
   const rawSec = net === 'testnet' ? (bot as any).binanceTestnetApiSecret : (bot as any).binanceProdApiSecret
-  const apiKey = await decryptOrPlain(rawKey)
-  const apiSecret = await decryptOrPlain(rawSec)
-  if (!apiKey || !apiSecret) return null
+  if (!rawKey || !rawSec) return null
+  const apiKey = decrypt(rawKey)
+  const apiSecret = decrypt(rawSec)
   return { apiKey, apiSecret, net }
 }
 
