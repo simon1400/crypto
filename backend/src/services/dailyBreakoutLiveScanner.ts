@@ -44,6 +44,13 @@ import { getBtcAdx1h, BTC_ADX_THRESHOLD } from './btcRegime'
 // NOTE: backtest uses idealised rangeEdge entry; live market-entry (A/B) typically
 // underperforms backtest by 30-50% on R/tr. Replacements were chosen for both
 // strong TEST and stable TRAIN (not overfit single-period spikes).
+// 2026-05-20 refresh: removed KASUSDT and 1000BONKUSDT — both were repeatedly
+// rejected on Binance with -4005 MARKET_LOT_SIZE error in live placement.
+// Replaced with AVAXUSDT and LINKUSDT — picked for the largest MARKET_LOT_SIZE
+// headroom in the candidate pool (typical_qty / marketMax < 5%) and established
+// L1/DeFi liquidity. No edge backtest run for these — primary criterion was
+// "guaranteed to fit Binance order-size limits", letting them earn their place
+// in live forward-walk.
 export const DEFAULT_BREAKOUT_SETUPS: string[] = [
   // Survivors from previous prod set (re-verified 2026-05-17 walk-forward)
   'ETHUSDT',         // TEST +0.63 N=22
@@ -58,18 +65,25 @@ export const DEFAULT_BREAKOUT_SETUPS: string[] = [
   'ARUSDT',          // TEST +0.35 N=15
   'DOGEUSDT',        // TEST +0.48 N=13
   'TRUMPUSDT',       // TEST +0.22 N=35
-  'KASUSDT',         // TEST +0.20 N=56 (borderline)
   'FARTCOINUSDT',    // TEST +0.25 N=31
   'AEROUSDT',        // TEST +0.33 N=48
   'POLUSDT',         // TEST +0.23 N=84
   'VVVUSDT',         // TEST +0.23 N=71
   'USELESSUSDT',     // TEST +0.31 N=12
   'SIRENUSDT',       // TEST +0.22 N=47
-  '1000BONKUSDT',    // TEST +0.46 N=18
   // Replacements 2026-05-17 — stability filter (TRAIN > 0, TEST N >= 21, TEST R/tr >= +0.25)
   'ADAUSDT',         // TEST +0.25 N=21 (TRAIN +0.21 — most stable TRAIN≈TEST)
   'UBUSDT',          // TEST +0.34 N=67 (largest TEST sample of new ACCEPTs)
   'VANAUSDT',        // TEST +0.31 N=49
+  // Replacements for KASUSDT + 1000BONKUSDT (2026-05-20) — both were hitting
+  // Binance -4005 MARKET_LOT_SIZE rejections in live placement. Picked by:
+  //   1) Largest MARKET_LOT_SIZE headroom (typical_qty / marketMax < 5%)
+  //   2) Established L1/DeFi blue chips (deep liquidity, no perp-only volatility)
+  //   3) Not already in universe
+  // AVAXUSDT: typical_qty=1.4K / marketMax=30K  → 21× headroom, L1 top-10
+  // LINKUSDT: typical_qty=1.3K / marketMax=50K  → 37× headroom, DeFi blue chip
+  'AVAXUSDT',        // replacement for KAS — large headroom, L1 blue chip
+  'LINKUSDT',        // replacement for 1000BONK — large headroom, DeFi blue chip
 ]
 
 /** Загружает последние 36+24+1 = ~60 5m свечей чтобы хватило range + volume window + last bar */
