@@ -24,7 +24,7 @@ import { sendLiveTelegram } from './telegram'
 import { cancelSlOnExchange, retrailSlOnExchange } from './exchangeSl'
 import { cancelTpOnExchange, cancelAllTpsOnExchange } from './exchangeTp'
 import { seedSnapshotFromRest } from './snapshot'
-import { sweepDustForSymbol, cancelAllExchangeOrdersForTrade } from './reconcile'
+import { sweepDustForSymbol, cancelAllExchangeOrdersForTrade, sweepStrayAlgoOrders, closeLowMarginPositions } from './reconcile'
 
 /**
  * Rebuild realizedPnlUsd / feesPaidUsd / netPnlUsd as absolute values from the
@@ -305,9 +305,37 @@ export async function applyVirtualClose(
       await sweepDustForSymbol(state.current.client, fresh.symbol).catch((e) =>
         console.warn(`${LOG} post-close sweepDustForSymbol failed: ${e?.message ?? e}`))
     }
+    // Stray-algo sweep right after a terminal close — picks up any random-cid
+    // orphans (Binance auto-cid when our signed POST dropped clientAlgoId on a
+    // rate-limited retry). Cheaper than periodic 60s sweep because runs only
+    // on exit events, not idle ticks.
+    if (state.current) {
+      await sweepStrayAlgoOrders(state.current.client).catch((e) =>
+        console.warn(`${LOG} post-close sweepStrayAlgoOrders failed: ${e?.message ?? e}`))
+    }
+    // Close any positions whose isolated margin dropped below $1 — they're
+    // effectively dust on the book (post-fee/funding/PnL margin erosion). The
+    // exit event is a good moment because we already touched the wallet
+    // snapshot and don't need an extra REST hit during idle.
+    if (state.current) {
+      await closeLowMarginPositions(state.current.client).catch((e) =>
+        console.warn(`${LOG} post-close closeLowMarginPositions failed: ${e?.message ?? e}`))
+    }
   } else if (reason === 'TP1' || reason === 'TP2') {
     await retrailSlOnExchange(fresh.id).catch((e) =>
       console.warn(`${LOG} retrailSlOnExchange threw: ${e?.message ?? e}`))
+    // Same stray-algo sweep on TP partial close — orphans with stale qty
+    // (created at original position size) outlive the retrail and need
+    // cleanup before they get triggered on the wrong size.
+    if (state.current) {
+      await sweepStrayAlgoOrders(state.current.client).catch((e) =>
+        console.warn(`${LOG} post-TP sweepStrayAlgoOrders failed: ${e?.message ?? e}`))
+    }
+    // Also check for any below-$1-margin dust positions while we're at it.
+    if (state.current) {
+      await closeLowMarginPositions(state.current.client).catch((e) =>
+        console.warn(`${LOG} post-TP closeLowMarginPositions failed: ${e?.message ?? e}`))
+    }
   }
 
   // Force-refresh balance from REST after any exit. Realized PnL just hit the

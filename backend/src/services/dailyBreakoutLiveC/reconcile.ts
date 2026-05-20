@@ -320,6 +320,84 @@ export async function sweepClosedRowDust(client: BinanceFuturesClient): Promise<
 }
 
 /**
+ * Close exchange-side dust positions whose isolated margin dropped below $1.
+ *
+ * Scenario: DB row already CLOSED (TP3 fully filled, or SL hit, or manual
+ * close), but Binance UI still shows a tiny residual position on the symbol
+ * with "Margin 0.00 USDT (Isolated)" — leftover after step-rounding pushed
+ * the close qty 1-2 lot sizes below the actual fill amount. The MARKET
+ * reduceOnly at terminal close emptied 99.99% of the position; the remainder
+ * sits at sub-dollar margin and just clutters the position tab.
+ *
+ * Only touches positions WITHOUT an active DB row — closes the exchange-side
+ * remainder. Doesn't try to finalize DB (DB is already final).
+ */
+export async function closeLowMarginPositions(client: BinanceFuturesClient, marginFloorUsd = 1): Promise<{ closed: number }> {
+  let positions: Awaited<ReturnType<typeof client.getOpenPositions>>
+  try {
+    positions = await client.getOpenPositions()
+  } catch (e: any) {
+    console.warn(`${LOG} closeLowMarginPositions: getOpenPositions failed: ${e.message}`)
+    return { closed: 0 }
+  }
+  let closed = 0
+  const filtersMap = state.current ? await getFilters(state.current.client).catch(() => null) : null
+  for (const p of positions) {
+    const amt = Number(p.positionAmt)
+    if (amt === 0) continue
+    // isolatedMargin is the field Binance UI shows as "Margin (Isolated)".
+    // For cross-margin positions it may be undefined — skip those (they share
+    // the wallet, not a per-position margin to compare against).
+    const isoMargin = Number((p as any).isolatedMargin ?? 0)
+    if (!isoMargin || isoMargin >= marginFloorUsd) continue
+
+    // Only act when DB has NO active row for this symbol. If there's still an
+    // OPEN/TP*_HIT/PENDING row, the small margin is intentional (e.g. just
+    // after entry on a 50x position the iso margin is tiny by design) — don't
+    // touch a live trade.
+    const activeRow = await prisma.breakoutLiveTradeC.findFirst({
+      where: {
+        symbol: p.symbol,
+        OR: [
+          { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+          { limitOrderState: 'PENDING_LIMIT' },
+        ],
+      },
+    })
+    if (activeRow) continue
+
+    const f = filtersMap?.get(p.symbol)
+    if (!f) {
+      console.warn(`${LOG} closeLowMargin ${p.symbol} amt=${amt} isoMargin=${isoMargin.toFixed(4)}: no filter — skipping`)
+      continue
+    }
+    const closeSide: 'BUY' | 'SELL' = amt > 0 ? 'SELL' : 'BUY'
+    const step = f.stepSize
+    let qty = Math.floor(Math.abs(amt) / step) * step
+    qty = Number(qty.toFixed(f.quantityPrecision))
+    if (qty < f.minQty) {
+      console.warn(`${LOG} closeLowMargin ${p.symbol} amt=${amt} < minQty ${f.minQty} — exchange dust, can't close via order`)
+      continue
+    }
+    try {
+      await client.placeOrder({
+        symbol: p.symbol,
+        side: closeSide,
+        type: 'MARKET',
+        quantity: qty,
+        reduceOnly: true,
+      })
+      console.log(`${LOG} closeLowMargin closed exchange-side dust ${p.symbol} qty=${qty} isoMargin=$${isoMargin.toFixed(4)} (< $${marginFloorUsd})`)
+      closed++
+    } catch (e: any) {
+      if (e instanceof BinanceApiError && e.code === -2022) continue  // already gone
+      console.warn(`${LOG} closeLowMargin ${p.symbol} qty=${qty} failed: ${e.message}`)
+    }
+  }
+  return { closed }
+}
+
+/**
  * Targeted dust sweep for a single symbol — call right after a terminal close
  * so any 1-step residue gets cleared immediately instead of waiting for the
  * boot/EOD sweep. Reads positionAmt from REST (snapshot may not have refreshed
