@@ -122,10 +122,13 @@ export async function flattenOneOpenLiveC(tradeId: number, reason: string): Prom
   if (!ACTIVE_STATUSES.includes(t.status as any)) {
     return { ok: false, error: `Trade #${tradeId} is not open (status=${t.status})` }
   }
+  lastFlattenError.delete(tradeId)
   const r = await flattenOneRow(t, reason)
   if (r === 'closed') return { ok: true, closed: true }
   if (r === 'finalized') return { ok: true, closed: true }
-  return { ok: false, error: 'MARKET reduceOnly failed' }
+  const err = lastFlattenError.get(tradeId) ?? 'MARKET reduceOnly failed'
+  lastFlattenError.delete(tradeId)
+  return { ok: false, error: err }
 }
 
 /**
@@ -231,15 +234,43 @@ async function flattenOneRow(t: any, reason: string): Promise<'closed' | 'finali
   const cidReason = 'SL' as const
   const exitCid = `exL${t.id}_${cidReason}`
 
+  // Split into chunks if remaining position exceeds MARKET_LOT_SIZE. Symmetric
+  // with the chunked entry path in aggTrade.ts — KAS marketMaxQty=10000 so a
+  // 106k position needs 11+ legs. Without this split, flattenOneRow used to
+  // reject with -4005 "Quantity greater than max quantity" and the manual
+  // "Закрыть по рынку" button reported MARKET reduceOnly failed (2026-05-20
+  // #4925 KASUSDT after the chunked-entry positionUnits truncation got fixed
+  // and the row finally reflected real exchange qty).
+  const marketCap = Math.max(f.minQty, f.marketMaxQty || qty)
+  const chunks: number[] = []
+  if (qty <= marketCap) {
+    chunks.push(qty)
+  } else {
+    let remaining = qty
+    while (remaining > 1e-9) {
+      const chunk = Math.min(remaining, marketCap)
+      let qc = Math.floor(chunk / step) * step
+      qc = Number(qc.toFixed(f.quantityPrecision))
+      if (qc < f.minQty) break
+      chunks.push(qc)
+      remaining -= qc
+    }
+    console.log(`${LOG} flatten #${t.id} ${t.symbol} qty ${qty} > MARKET_LOT_SIZE.maxQty ${marketCap} — splitting into ${chunks.length} legs`)
+  }
+
   try {
-    await state.current.client.placeOrder({
-      symbol: t.symbol,
-      side: closeSide,
-      type: 'MARKET',
-      quantity: qty,
-      reduceOnly: true,
-      newClientOrderId: exitCid,
-    })
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkQty = chunks[i]
+      const cidForChunk = chunks.length === 1 ? exitCid : `${exitCid}_${i + 1}`
+      await state.current.client.placeOrder({
+        symbol: t.symbol,
+        side: closeSide,
+        type: 'MARKET',
+        quantity: chunkQty,
+        reduceOnly: true,
+        newClientOrderId: cidForChunk,
+      })
+    }
     await prisma.breakoutLiveTradeC.update({
       where: { id: t.id },
       data: {
@@ -266,10 +297,16 @@ async function flattenOneRow(t: any, reason: string): Promise<'closed' | 'finali
     // event will then overwrite the entry and re-recompute, converging to
     // the exact figures.
     await recomputeTradeMoney(t.id).catch(() => { /* noop */ })
-    console.log(`${LOG} flattened #${t.id} ${t.symbol} ${t.side} qty ${qty} via MARKET (${reason}) cid=${exitCid}`)
+    console.log(`${LOG} flattened #${t.id} ${t.symbol} ${t.side} qty ${qty} via MARKET (${reason}) cid=${exitCid}${chunks.length > 1 ? ` × ${chunks.length} legs` : ''}`)
     return 'closed'
   } catch (e: any) {
     console.warn(`${LOG} flatten #${t.id} MARKET failed: ${e.message}`)
+    lastFlattenError.set(t.id, e.message)
     return 'failed'
   }
 }
+
+// Per-trade last flatten error message, surfaced by /close-market route so
+// the UI can show the user the actual Binance reason instead of the generic
+// "MARKET reduceOnly failed".
+export const lastFlattenError = new Map<number, string>()
