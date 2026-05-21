@@ -211,8 +211,12 @@ export async function computeStatsResponse(cm: any, tm: any, variant?: BreakoutV
         const residual = snap.total - cfg.startingDepositUsd - totalRealized
         if (Math.abs(residual) > 0.005) {
           const today = new Date().toISOString().slice(0, 10)
+          const todayHasCloses = byDay[today] !== undefined
           const lastIdx = equityCurve.findIndex((p) => p.date === today)
           if (lastIdx >= 0) {
+            // У today есть реальные closes — residual это дрейф wallet от
+            // суммы closes (entry fees ещё открытых позиций + funding). Кладём
+            // его в pnl дня — это часть фактического движения капитала.
             equityCurve[lastIdx] = {
               date: today,
               pnl: equityCurve[lastIdx].pnl + residual,
@@ -221,13 +225,20 @@ export async function computeStatsResponse(cm: any, tm: any, variant?: BreakoutV
             for (let i = lastIdx + 1; i < equityCurve.length; i++) {
               equityCurve[i] = { ...equityCurve[i], equity: equityCurve[i].equity + residual }
             }
-          } else {
+          } else if (todayHasCloses) {
+            // closes сегодня есть, но в кривую попали как «дрейф» прошлых
+            // дней — добавим today отдельно, чтобы P&L дня отражал residual.
             equityCurve.push({
               date: today,
               pnl: residual,
               equity: cfg.startingDepositUsd + totalRealized + residual,
             })
           }
+          // else: реализованных closes за today UTC нет — это entry fees
+          // ещё-открытых позиций и funding по живым. Не создаём фейковую
+          // строку «P&L today = residual$». "Сейчас" в шапке покажет
+          // baseline+Σrealized, а разница с walletBalance — это unrealized
+          // открытых позиций, не P&L дня.
         }
       }
     } catch (e: any) {
