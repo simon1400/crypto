@@ -105,6 +105,46 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
     })
     if (claim.count !== 1) return  // someone else got here first
 
+    // Fill-time risk gates (moved here from placement 2026-05-21 — user wants
+    // PENDING_LIMIT rows to NOT block other setups from being queued, only
+    // check capacity when an actual fill is about to happen):
+    //   1. maxConcurrentPositions (OPEN/TP1_HIT/TP2_HIT only — pendings excluded)
+    //   2. Margin cap: locked + new ≤ 90% × walletBalance
+    // If either gate fails, roll back to PENDING so the next tick can retry —
+    // by then a different position may have closed and freed capacity.
+    {
+      const gateCfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
+      const maxConcurrent = (gateCfg?.maxConcurrentPositions as number | undefined) ?? 20
+      const activeRows = await prisma.breakoutLiveTradeC.findMany({
+        where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+        select: { marginUsd: true, closes: true },
+      })
+      if (activeRows.length >= maxConcurrent) {
+        console.log(`${LOG} fillVirtual #${trade.id} ${trade.symbol} — rolled back to PENDING: maxConcurrent ${activeRows.length}/${maxConcurrent}`)
+        await prisma.breakoutLiveTradeC.updateMany({
+          where: { id: trade.id, limitOrderState: 'FILLING' },
+          data: { limitOrderState: 'PENDING_LIMIT' },
+        })
+        return
+      }
+      const lockedMargin = activeRows.reduce((sum, r) => {
+        const closesArr = ((r.closes as any[]) ?? []) as Array<{ percent?: number }>
+        const closedFrac = closesArr.reduce((a, c) => a + (c.percent ?? 0), 0) / 100
+        return sum + (r.marginUsd ?? 0) * Math.max(0, 1 - closedFrac)
+      }, 0)
+      const walletTotal = snapshot.current?.total ?? gateCfg?.currentDepositUsd ?? 0
+      const cap = walletTotal * 0.90
+      const newMargin = trade.marginUsd ?? 0
+      if (walletTotal > 0 && lockedMargin + newMargin > cap) {
+        console.log(`${LOG} fillVirtual #${trade.id} ${trade.symbol} — rolled back to PENDING: margin cap ${lockedMargin.toFixed(2)}+${newMargin.toFixed(2)} > ${cap.toFixed(2)}`)
+        await prisma.breakoutLiveTradeC.updateMany({
+          where: { id: trade.id, limitOrderState: 'FILLING' },
+          data: { limitOrderState: 'PENDING_LIMIT' },
+        })
+        return
+      }
+    }
+
     // Slippage / TP-cascade guard.
     //
     // If the trigger price is far above limitOrderPrice (LONG) or far below it
