@@ -101,11 +101,17 @@ export function outcomeBadgeClasses(
     return { bg: PAPER_STATUS_BADGE[status].bg, text: PAPER_STATUS_BADGE[status].text }
   }
   // EOD-FLAT / manual / kill-switch на LIVE C доходят как SL_HIT с reasonNote.
-  // Цвет должен быть по знаку P&L, а не «всегда красный как SL».
+  // Цвет — по знаку P&L (не «всегда красный»), плюс заметный outline чтобы
+  // визуально отличать market-close от честного TP/SL.
   const finalNote = closes && closes.length > 0 ? closes[closes.length - 1]?.reasonNote : undefined
   const isFlattenOverride = finalNote === 'EOD-FLAT' || finalNote === 'manual' || finalNote === 'kill-switch'
   if (status === 'SL_HIT' && !isFlattenOverride) return { bg: 'bg-short/15', text: 'text-short' }
-  // CLOSED / TP3_HIT / EXPIRED / flatten-override → цвет по знаку P&L
+  if (isFlattenOverride) {
+    if (pnl > 0) return { bg: 'bg-long/5 ring-1 ring-inset ring-long/40', text: 'text-long' }
+    if (pnl < 0) return { bg: 'bg-short/5 ring-1 ring-inset ring-short/40', text: 'text-short' }
+    return { bg: 'bg-neutral/5 ring-1 ring-inset ring-neutral/40', text: 'text-neutral' }
+  }
+  // CLOSED / TP3_HIT / EXPIRED → цвет по знаку P&L
   if (pnl > 0) return { bg: 'bg-long/15', text: 'text-long' }
   if (pnl < 0) return { bg: 'bg-short/10', text: 'text-short' }
   return { bg: 'bg-neutral/15', text: 'text-neutral' }
