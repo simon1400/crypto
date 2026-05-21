@@ -621,21 +621,33 @@ export default function PaperTradeModal({ trade: initialTrade, live = null, onCl
                       className="bg-input border border-input rounded px-2 py-0.5 font-mono text-xs" />
                     <button onClick={() => removeClose(i)} className="text-short hover:text-short/80 px-1">×</button>
                   </div>
-                ) : (
-                  <div key={i} className="grid grid-cols-5 gap-2 bg-card border border-input rounded p-2 items-center">
-                    <span className="font-mono">{c.reason} @ {formatPrice(c.price)}</span>
-                    <span className="text-text-secondary">{c.percent.toFixed(0)}%</span>
-                    <span className={`font-mono text-sm ${c.pnlUsd > 0 ? 'text-long' : c.pnlUsd < 0 ? 'text-short' : ''}`}>
-                      {fmtUsd(c.pnlUsd)}
-                    </span>
-                    <span className={`font-mono text-xs ${c.pnlR > 0 ? 'text-long' : c.pnlR < 0 ? 'text-short' : ''}`}>
-                      {c.pnlR >= 0 ? '+' : ''}{c.pnlR.toFixed(2)}R
-                    </span>
-                    <span className="text-xs text-text-secondary text-right" title={new Date(c.closedAt).toLocaleString('ru-RU')}>
-                      {new Date(c.closedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                  </div>
-                ))}
+                ) : (() => {
+                  // LIVE C EOD-FLAT / manual / kill-switch close rows are written
+                  // by flatten.ts without pnlR (only pnlUsd placeholder until WS
+                  // refine arrives). Guard every numeric to keep the modal from
+                  // crashing the whole "Закрытые" tab on click.
+                  const percent = Number(c.percent ?? 0)
+                  const pnlUsd = Number(c.pnlUsd ?? 0)
+                  const pnlR = Number(c.pnlR ?? 0)
+                  const reasonLabel = (c as any).reasonNote && (c as any).reasonNote !== c.reason
+                    ? (c as any).reasonNote
+                    : c.reason
+                  return (
+                    <div key={i} className="grid grid-cols-5 gap-2 bg-card border border-input rounded p-2 items-center">
+                      <span className="font-mono">{reasonLabel} @ {formatPrice(c.price)}</span>
+                      <span className="text-text-secondary">{percent.toFixed(0)}%</span>
+                      <span className={`font-mono text-sm ${pnlUsd > 0 ? 'text-long' : pnlUsd < 0 ? 'text-short' : ''}`}>
+                        {fmtUsd(pnlUsd)}
+                      </span>
+                      <span className={`font-mono text-xs ${pnlR > 0 ? 'text-long' : pnlR < 0 ? 'text-short' : ''}`}>
+                        {pnlR >= 0 ? '+' : ''}{pnlR.toFixed(2)}R
+                      </span>
+                      <span className="text-xs text-text-secondary text-right" title={new Date(c.closedAt).toLocaleString('ru-RU')}>
+                        {new Date(c.closedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  )
+                })())}
               </div>
             </>
           )}
