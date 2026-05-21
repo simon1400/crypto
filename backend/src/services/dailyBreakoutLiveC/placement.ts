@@ -68,20 +68,24 @@ export async function placeLimitsForRanges(
   const utcDate = new Date().toISOString().slice(0, 10)
   const todayStartUtc = new Date(`${utcDate}T00:00:00.000Z`)
 
-  // Early-exit: if every symbol in the universe already has a row for today,
-  // there's nothing to place — skip the whole cycle (no klines fetch, no
-  // markPrice query, no DB writes). The per-symbol loop below would do the
-  // same skip via `existing` check, but that costs N × klines.fetch first.
-  // Once per day the first cycle after 03:00 UTC creates all pairs; every
-  // subsequent cycle until EOD is now a single SELECT + return.
+  // Early-exit: if every symbol in the universe already has a non-CANCELLED
+  // row for today, there's nothing to place — skip the whole cycle. We
+  // exclude CANCELLED rows because they represent pairs that never actually
+  // worked (slippage-cancel before fill, sizing-fail at fill time, orphan
+  // cleanup, etc.) — for those symbols the breakout can still legitimately
+  // happen later today UTC, so the placement cycle should re-queue a fresh
+  // pair instead of being permanently locked out by yesterday's failed try.
   const todayRowSymbols = await prisma.breakoutLiveTradeC.findMany({
-    where: { openedAt: { gte: todayStartUtc } },
+    where: {
+      openedAt: { gte: todayStartUtc },
+      NOT: { status: 'CANCELLED' },
+    },
     select: { symbol: true },
     distinct: ['symbol'],
   })
   const coveredSymbols = new Set(todayRowSymbols.map((r) => r.symbol))
   if (symbols.every((s) => coveredSymbols.has(s))) {
-    // All universe symbols already have today's pair — nothing to do.
+    // All universe symbols already have an active/closed pair — nothing to do.
     return
   }
 
@@ -130,10 +134,18 @@ export async function placeLimitsForRanges(
 
   for (const symbol of symbols) {
     try {
-      // Skip if we already have any C-live row for this symbol today (PENDING,
-      // OPEN, CLOSED — doesn't matter, only one pair per symbol per day).
+      // Skip if we already have a non-CANCELLED row for this symbol today
+      // (PENDING_LIMIT, OPEN, TP1_HIT, TP2_HIT, CLOSED, SL_HIT, EXPIRED — any
+      // state where the pair is either active or actually traded). CANCELLED
+      // rows are ignored: they mean the pair never fired (slippage-cancel,
+      // sizing-fail, orphan cleanup before fill) so the symbol still deserves
+      // a fresh try today.
       const existing = await prisma.breakoutLiveTradeC.findFirst({
-        where: { symbol, openedAt: { gte: todayStartUtc } },
+        where: {
+          symbol,
+          openedAt: { gte: todayStartUtc },
+          NOT: { status: 'CANCELLED' },
+        },
       })
       if (existing) continue
 
