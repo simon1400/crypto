@@ -111,10 +111,14 @@ export async function sendLiveCEodSummary(utcDate: string, opts?: { force?: bool
   }
 
   // Persist marker so we don't re-send within the 23:55-23:59 window.
-  await prisma.breakoutLiveConfigC.update({
-    where: { id: 1 },
-    data: { lastEodReportDate: utcDate } as any,
-  }).catch((e) => console.warn(`${LOG} EOD marker persist failed: ${e?.message ?? e}`))
+  // Skip in force mode (POST /eod/test) — otherwise a manual test earlier in
+  // the day blocks the real EOD-tick from sending the actual summary.
+  if (!opts?.force) {
+    await prisma.breakoutLiveConfigC.update({
+      where: { id: 1 },
+      data: { lastEodReportDate: utcDate } as any,
+    }).catch((e) => console.warn(`${LOG} EOD marker persist failed: ${e?.message ?? e}`))
+  }
 
   console.log(`${LOG} EOD summary sent for ${utcDate}: ${rows.length} trade(s), Σ ${totalPnl.toFixed(2)}$`)
 }
