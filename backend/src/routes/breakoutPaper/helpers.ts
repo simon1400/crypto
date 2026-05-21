@@ -189,10 +189,30 @@ export async function computeStatsResponse(cm: any, tm: any, variant?: BreakoutV
   }
 
   const equityCurve: Array<{ date: string; pnl: number; equity: number }> = []
+  // LIVE: prefer EOD wallet snapshot for past dates — that's the actual
+  // end-of-day equity captured right after EOD-FLAT closed all positions.
+  // The realized-by-day running sum would over-shoot by entry fees of
+  // positions opened earlier the same day but still open at EOD-FLAT time.
+  // For today UTC (no EOD snapshot yet) keep the running sum — wallet-anchor
+  // below adjusts for live drift.
+  const eodEquityByDate = variant === 'LIVE'
+    ? ((cfg as any).eodEquityByDate ?? {}) as Record<string, number>
+    : {}
+  const todayUtc = new Date().toISOString().slice(0, 10)
   let running = cfg.startingDepositUsd
+  let prevEquity = cfg.startingDepositUsd
   for (const date of Object.keys(byDay).sort()) {
     running += byDay[date]
-    equityCurve.push({ date, pnl: byDay[date], equity: running })
+    const eodEquity = eodEquityByDate[date]
+    const useSnapshot = variant === 'LIVE' && date !== todayUtc && typeof eodEquity === 'number'
+    const equity = useSnapshot ? eodEquity : running
+    // P&L дня = (equity дня) − (equity предыдущего дня). Для snapshot-режима
+    // это включает funding и любые расходы, которые до EOD-FLAT висели на
+    // открытых позициях этого дня — фактическая дневная дельта кошелька.
+    const dayPnl = useSnapshot ? equity - prevEquity : byDay[date]
+    if (useSnapshot) running = eodEquity  // re-anchor
+    equityCurve.push({ date, pnl: dayPnl, equity })
+    prevEquity = equity
   }
 
   // For LIVE the curve should anchor to the actual Binance walletBalance so

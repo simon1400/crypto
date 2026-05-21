@@ -113,10 +113,16 @@ export async function sendLiveCEodSummary(utcDate: string, opts?: { force?: bool
   // Persist marker so we don't re-send within the 23:55-23:59 window.
   // Skip in force mode (POST /eod/test) — otherwise a manual test earlier in
   // the day blocks the real EOD-tick from sending the actual summary.
+  // Also snapshot the EOD wallet balance for this UTC date so the equity-curve
+  // table can show end-of-day equity rather than the intraday realized-only sum
+  // (which over-shoots by entry fees of positions opened earlier the same day
+  // but still open at EOD-FLAT time).
   if (!opts?.force) {
+    const existing = ((cfg as any).eodEquityByDate ?? {}) as Record<string, number>
+    const eodEquityByDate = { ...existing, [utcDate]: depo }
     await prisma.breakoutLiveConfigC.update({
       where: { id: 1 },
-      data: { lastEodReportDate: utcDate } as any,
+      data: { lastEodReportDate: utcDate, eodEquityByDate } as any,
     }).catch((e) => console.warn(`${LOG} EOD marker persist failed: ${e?.message ?? e}`))
   }
 

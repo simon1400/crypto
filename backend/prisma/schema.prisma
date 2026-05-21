@@ -407,6 +407,13 @@ model BreakoutLiveConfigC {
   // idempotency marker so a process restart in the 23:55-23:59 window doesn't
   // re-fire the report.
   lastEodReportDate String?
+  // EOD wallet snapshot per UTC date: { "2026-05-20": 5332.77, ... }. Captured
+  // after EOD-FLAT flattens all positions (~23:55 UTC), so it represents the
+  // actual end-of-day equity rather than the intraday peak. Used by the
+  // equity-curve table to show "Депозит" at day-close, not the realized-only
+  // running sum which over-shoots by entry fees of fresh positions opened
+  // earlier the same day.
+  eodEquityByDate Json @default("{}")
   updatedAt DateTime  @updatedAt
   createdAt DateTime  @default(now())
 }
