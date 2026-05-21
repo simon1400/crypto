@@ -526,7 +526,11 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
       )}
 
       {stats && stats.equityCurve.length > 0 && (
-        <EquityCurveSection stats={stats} startEquity={config.startingDepositUsd} />
+        <EquityCurveSection
+          stats={stats}
+          startEquity={config.startingDepositUsd}
+          currentEquityOverride={isLive ? (liveStatus?.walletBalanceUsdt ?? null) : null}
+        />
       )}
 
       {selectedTrade && (

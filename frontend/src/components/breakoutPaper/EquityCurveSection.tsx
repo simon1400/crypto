@@ -5,14 +5,19 @@ import EquityChart from '../EquityChart'
 interface Props {
   stats: PaperStats
   startEquity: number
+  /** Optional override for the "Сейчас" header value. Used by LIVE to show the
+   *  exchange walletBalance even when today's row hasn't been created yet
+   *  (no closes for today UTC → curve still ends at yesterday's equity). */
+  currentEquityOverride?: number | null
 }
 
 /** Equity curve: header stats + last-30-days daily P&L table + chart. */
-export default function EquityCurveSection({ stats, startEquity }: Props) {
+export default function EquityCurveSection({ stats, startEquity, currentEquityOverride = null }: Props) {
   const curve = stats.equityCurve
   if (curve.length === 0) return null
 
-  const lastEquity = curve[curve.length - 1].equity
+  const curveLastEquity = curve[curve.length - 1].equity
+  const lastEquity = currentEquityOverride != null ? currentEquityOverride : curveLastEquity
   const totalPnl = lastEquity - startEquity
   const totalPct = startEquity > 0 ? (totalPnl / startEquity) * 100 : 0
   const peak = curve.reduce((m, p) => Math.max(m, p.equity), startEquity)
