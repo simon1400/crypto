@@ -110,7 +110,7 @@ export interface BreakoutStats {
   winRate: number
   returnPct: number
   bySymbol: Record<string, { trades: number; wins: number; pnl: number }>
-  equityCurve: Array<{ date: string; pnl: number; equity: number }>
+  equityCurve: Array<{ date: string; pnl: number; equity: number; residual?: number }>
 }
 
 export interface BreakoutSignal {

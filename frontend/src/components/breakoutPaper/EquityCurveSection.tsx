@@ -46,6 +46,8 @@ export default function EquityCurveSection({ stats, startEquity, currentEquityOv
             <thead className="bg-input/50 text-text-secondary text-xs">
               <tr>
                 <th className="text-left px-3 py-2 font-medium">Дата</th>
+                <th className="text-right px-3 py-2 font-medium" title="P&L по фактически закрытым сделкам за день (TP/SL/Manual/EOD)">Закрытые</th>
+                <th className="text-right px-3 py-2 font-medium" title="Комиссии за вход + funding по позициям, открытым сегодня но ещё не закрытым">Комиссии/прочее</th>
                 <th className="text-right px-3 py-2 font-medium">P&L дня</th>
                 <th className="text-right px-3 py-2 font-medium">% дня</th>
                 <th className="text-right px-3 py-2 font-medium">Депозит</th>
@@ -56,21 +58,31 @@ export default function EquityCurveSection({ stats, startEquity, currentEquityOv
               {curve.slice(-30).reverse().map((p, idx, arr) => {
                 const delta = p.equity - startEquity
                 const prevEquity = arr[idx + 1]?.equity ?? startEquity
-                const dayPct = prevEquity > 0 ? (p.pnl / prevEquity) * 100 : 0
+                const residual = p.residual ?? 0
+                const totalDay = p.pnl + residual
+                const dayPct = prevEquity > 0 ? (totalDay / prevEquity) * 100 : 0
+                const colorOf = (v: number) =>
+                  v > 0 ? 'text-long' : v < 0 ? 'text-short' : 'text-text-secondary'
                 return (
                   <tr
                     key={p.date}
                     className={`border-t border-input/60 hover:bg-input/40 transition-colors ${idx % 2 === 1 ? 'bg-input/10' : ''}`}
                   >
                     <td className="text-text-secondary px-3 py-1.5">{p.date}</td>
-                    <td className={`text-right px-3 py-1.5 ${p.pnl > 0 ? 'text-long' : p.pnl < 0 ? 'text-short' : 'text-text-secondary'}`}>
+                    <td className={`text-right px-3 py-1.5 ${colorOf(p.pnl)}`}>
                       {fmt2Signed(p.pnl)}$
                     </td>
-                    <td className={`text-right px-3 py-1.5 ${p.pnl > 0 ? 'text-long' : p.pnl < 0 ? 'text-short' : 'text-text-secondary'}`}>
+                    <td className={`text-right px-3 py-1.5 ${residual !== 0 ? colorOf(residual) : 'text-text-secondary'}`}>
+                      {residual !== 0 ? `${fmt2Signed(residual)}$` : '—'}
+                    </td>
+                    <td className={`text-right px-3 py-1.5 font-semibold ${colorOf(totalDay)}`}>
+                      {fmt2Signed(totalDay)}$
+                    </td>
+                    <td className={`text-right px-3 py-1.5 ${colorOf(totalDay)}`}>
                       {fmt2Signed(dayPct)}%
                     </td>
                     <td className="text-right px-3 py-1.5 text-text-primary">${p.equity.toFixed(2)}</td>
-                    <td className={`text-right px-3 py-1.5 ${delta > 0 ? 'text-long' : delta < 0 ? 'text-short' : 'text-text-secondary'}`}>
+                    <td className={`text-right px-3 py-1.5 ${colorOf(delta)}`}>
                       {fmt2Signed(delta)}$
                     </td>
                   </tr>

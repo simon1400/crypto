@@ -188,7 +188,7 @@ export async function computeStatsResponse(cm: any, tm: any, variant?: BreakoutV
     }
   }
 
-  const equityCurve: Array<{ date: string; pnl: number; equity: number }> = []
+  const equityCurve: Array<{ date: string; pnl: number; equity: number; residual?: number }> = []
   // LIVE: prefer EOD wallet snapshot for past dates — that's the actual
   // end-of-day equity captured right after EOD-FLAT closed all positions.
   // The realized-by-day running sum would over-shoot by entry fees of
@@ -235,23 +235,29 @@ export async function computeStatsResponse(cm: any, tm: any, variant?: BreakoutV
           const lastIdx = equityCurve.findIndex((p) => p.date === today)
           if (lastIdx >= 0) {
             // У today есть реальные closes — residual это дрейф wallet от
-            // суммы closes (entry fees ещё открытых позиций + funding). Кладём
-            // его в pnl дня — это часть фактического движения капитала.
+            // суммы closes (entry fees ещё открытых позиций + funding). НЕ
+            // подмешиваем его в `pnl` (это исказит "P&L дня": пользователь
+            // видит -305$ при -210$ по закрытым SL). Кладём в отдельное поле
+            // residual, фронт показывает его отдельной строкой "~ откр.поз".
+            // equity всё равно сдвигаем на residual, чтобы "Депозит" в строке
+            // today совпадал с "Сейчас" (walletBalance) в шапке.
             equityCurve[lastIdx] = {
-              date: today,
-              pnl: equityCurve[lastIdx].pnl + residual,
+              ...equityCurve[lastIdx],
               equity: equityCurve[lastIdx].equity + residual,
+              residual,
             }
             for (let i = lastIdx + 1; i < equityCurve.length; i++) {
               equityCurve[i] = { ...equityCurve[i], equity: equityCurve[i].equity + residual }
             }
           } else if (todayHasCloses) {
             // closes сегодня есть, но в кривую попали как «дрейф» прошлых
-            // дней — добавим today отдельно, чтобы P&L дня отражал residual.
+            // дней — добавим today отдельно. residual в отдельном поле, чтобы
+            // UI не накапливал его в "P&L дня".
             equityCurve.push({
               date: today,
-              pnl: residual,
+              pnl: 0,
               equity: cfg.startingDepositUsd + totalRealized + residual,
+              residual,
             })
           }
           // else: реализованных closes за today UTC нет — это entry fees
