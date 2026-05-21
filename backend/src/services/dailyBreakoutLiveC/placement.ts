@@ -113,6 +113,8 @@ export async function placeLimitsForRanges(
     select: {
       status: true,
       limitOrderState: true,
+      symbol: true,
+      side: true,
       positionSizeUsd: true,
       marginUsd: true,
       leverage: true,
@@ -120,15 +122,30 @@ export async function placeLimitsForRanges(
     },
   })
   const openOrPendingCount = activeRowsForBudget.length
-  const lockedMarginUsd = activeRowsForBudget.reduce((sum, r) => {
-    // For active positions we discount the closed fraction (TP1/TP2 already
-    // released that share of margin). For pending limits the full marginUsd
-    // is the worst-case lock should they fill.
-    const closesArr = ((r.closes as any[]) ?? []) as Array<{ percent?: number }>
-    const closedFrac = closesArr.reduce((a, c) => a + (c.percent ?? 0), 0) / 100
-    const remainingFrac = Math.max(0, 1 - closedFrac)
-    return sum + (r.marginUsd ?? 0) * remainingFrac
-  }, 0)
+  // Locked margin: sum filled positions (with closedFrac discount), plus per-symbol
+  // MAX of pending BUY/SELL pair margins. The Daily Breakout setup places both
+  // directions as virtual PENDING_LIMITs and the pair-cancel logic removes the
+  // opposite side as soon as one fills, so reserving both sides would
+  // double-count by ~one leg per pair — exactly what was blocking new
+  // placements on 21.05 (locked 4708 vs real margin 3194; remaining 90$ instead
+  // of ~700$).
+  const filledLocked = activeRowsForBudget
+    .filter(r => r.limitOrderState !== 'PENDING_LIMIT')
+    .reduce((sum, r) => {
+      const closesArr = ((r.closes as any[]) ?? []) as Array<{ percent?: number }>
+      const closedFrac = closesArr.reduce((a, c) => a + (c.percent ?? 0), 0) / 100
+      const remainingFrac = Math.max(0, 1 - closedFrac)
+      return sum + (r.marginUsd ?? 0) * remainingFrac
+    }, 0)
+  const pendingBySymbol = new Map<string, number>()  // symbol → MAX(BUY-margin, SELL-margin)
+  for (const r of activeRowsForBudget) {
+    if (r.limitOrderState !== 'PENDING_LIMIT') continue
+    const m = r.marginUsd ?? 0
+    const prev = pendingBySymbol.get(r.symbol) ?? 0
+    if (m > prev) pendingBySymbol.set(r.symbol, m)
+  }
+  const pendingLocked = Array.from(pendingBySymbol.values()).reduce((a, b) => a + b, 0)
+  const lockedMarginUsd = filledLocked + pendingLocked
   // 90% of walletBalance is the hard ceiling; the remaining 10% is buffer
   // for funding, exit slippage, and the pair-fill race window.
   const totalBudget = snap.total * 0.90

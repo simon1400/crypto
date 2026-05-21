@@ -24,6 +24,39 @@ export interface AttemptArgs {
 
 export async function recordAttempt(a: AttemptArgs): Promise<void> {
   try {
+    // Dedupe non-PLACED rows: every cycle (60s) re-evaluates each symbol×side
+    // and most of the time the gate/filter reason hasn't changed since the
+    // previous cycle. Without dedupe the table accumulates ~25k rows/day for
+    // 24 symbols × 2 sides × 1 cycle/min × 18h trading window — making the
+    // "Отклонённые" tab unreadable. We only keep the latest row per
+    // (symbol, side, status, reasonCode, rangeDate) and update its timestamp
+    // / supporting fields when it re-fires.
+    if (a.status !== 'PLACED') {
+      const existing = await prisma.breakoutLiveAttemptC.findFirst({
+        where: {
+          symbol: a.symbol,
+          side: a.side,
+          rangeDate: a.rangeDate,
+          status: a.status,
+          reasonCode: a.reasonCode ?? null,
+        },
+        select: { id: true },
+      })
+      if (existing) {
+        await prisma.breakoutLiveAttemptC.update({
+          where: { id: existing.id },
+          data: {
+            reasonText: a.reasonText ?? null,
+            limitPrice: a.limitPrice ?? null,
+            markPrice: a.markPrice ?? null,
+            rangeHigh: a.rangeHigh ?? null,
+            rangeLow: a.rangeLow ?? null,
+            attemptedAt: new Date(),
+          },
+        })
+        return
+      }
+    }
     await prisma.breakoutLiveAttemptC.create({
       data: {
         symbol: a.symbol,
