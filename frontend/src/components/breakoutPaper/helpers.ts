@@ -37,10 +37,29 @@ export function paperTradeToPosition(
  * «TP1 → EXP», «SL» и т.д. Это полезнее чем generic «Закрыта», потому что одной
  * меткой видно куда дошла сделка перед финальным выходом.
  */
-export function buildOutcomeLabel(status: string, closes?: Array<{ reason?: string }>): string {
-  const reasons = (closes ?? []).map(c => c.reason).filter(Boolean) as string[]
+export function buildOutcomeLabel(
+  status: string,
+  closes?: Array<{ reason?: string; reasonNote?: string }>,
+): string {
+  const arr = closes ?? []
+  const reasons = arr.map(c => c.reason).filter(Boolean) as string[]
   const tps = reasons.filter(r => r === 'TP1' || r === 'TP2' || r === 'TP3')
   const finalReason = reasons[reasons.length - 1]
+  const finalNote = arr[arr.length - 1]?.reasonNote
+
+  // LIVE-C flatten paths (EOD-FLAT, manual, kill-switch) write the final close
+  // row with reason='SL' for cid routing, but reasonNote holds the human label.
+  // Detect and override the SL-trailing chain so it doesn't display "TP1 → SL@BE"
+  // when the market-close was actually an EOD flatten.
+  const FLATTEN_NOTES: Record<string, string> = {
+    'EOD-FLAT': 'EOD',
+    'manual': 'Manual',
+    'kill-switch': 'Kill',
+  }
+  if (finalReason === 'SL' && finalNote && FLATTEN_NOTES[finalNote]) {
+    const label = FLATTEN_NOTES[finalNote]
+    return tps.length > 0 ? `${tps.join(' → ')} → ${label}` : label
+  }
 
   if (isOpenStatus(status)) {
     return PAPER_STATUS_BADGE[status]?.label ?? status
@@ -73,12 +92,20 @@ export function buildOutcomeLabel(status: string, closes?: Array<{ reason?: stri
   return PAPER_STATUS_BADGE[status]?.label ?? status
 }
 
-export function outcomeBadgeClasses(status: string, pnl: number): { bg: string; text: string } {
+export function outcomeBadgeClasses(
+  status: string,
+  pnl: number,
+  closes?: Array<{ reason?: string; reasonNote?: string }>,
+): { bg: string; text: string } {
   if (isOpenStatus(status)) {
     return { bg: PAPER_STATUS_BADGE[status].bg, text: PAPER_STATUS_BADGE[status].text }
   }
-  if (status === 'SL_HIT') return { bg: 'bg-short/15', text: 'text-short' }
-  // CLOSED / TP3_HIT / EXPIRED → цвет по знаку P&L
+  // EOD-FLAT / manual / kill-switch на LIVE C доходят как SL_HIT с reasonNote.
+  // Цвет должен быть по знаку P&L, а не «всегда красный как SL».
+  const finalNote = closes && closes.length > 0 ? closes[closes.length - 1]?.reasonNote : undefined
+  const isFlattenOverride = finalNote === 'EOD-FLAT' || finalNote === 'manual' || finalNote === 'kill-switch'
+  if (status === 'SL_HIT' && !isFlattenOverride) return { bg: 'bg-short/15', text: 'text-short' }
+  // CLOSED / TP3_HIT / EXPIRED / flatten-override → цвет по знаку P&L
   if (pnl > 0) return { bg: 'bg-long/15', text: 'text-long' }
   if (pnl < 0) return { bg: 'bg-short/10', text: 'text-short' }
   return { bg: 'bg-neutral/15', text: 'text-neutral' }

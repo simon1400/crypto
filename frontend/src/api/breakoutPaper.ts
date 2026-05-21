@@ -61,6 +61,7 @@ export interface BreakoutClose {
   pnlUsd: number
   closedAt: string
   reason: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'EXPIRED' | 'MANUAL' | 'MARGIN'
+  reasonNote?: string  // human label for LIVE flatten paths: 'EOD-FLAT' | 'manual' | 'kill-switch' | …
 }
 
 export interface BreakoutTrade {
