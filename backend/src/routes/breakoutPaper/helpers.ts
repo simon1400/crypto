@@ -220,15 +220,28 @@ export async function computeStatsResponse(cm: any, tm: any, variant?: BreakoutV
   // top of the page. The wallet already includes entry-fees of currently open
   // positions and accrued funding ("прочее ...$"), neither of which is a
   // realized close — so by-day attribution from closes[] would otherwise drift
-  // above wallet by exactly that amount. Book the residual (wallet − baseline
-  // − Σ realized) as today's "other" P&L so the running total converges.
+  // above wallet by exactly that amount. Book the residual (wallet − expected
+  // equity from yesterday snapshot+today byDay) as today's "other" P&L so the
+  // running total converges.
   if (variant === 'LIVE' && cfg.startingDepositUsd > 0) {
     try {
       const { getLiveSnapshot } = await import('../../services/dailyBreakoutLiveC')
       const snap = await getLiveSnapshot()
       if (snap && snap.total > 0) {
-        const totalRealized = Object.values(byDay).reduce((a, b) => a + b, 0)
-        const residual = snap.total - cfg.startingDepositUsd - totalRealized
+        // Anchor base = latest EOD snapshot before today + today's realized
+        // sum. Old version used baseline + Σ(all byDay) which ignores that
+        // we re-anchor to EOD snapshots above (running = eodEquity for past
+        // dates). Those re-anchors absorbed cumulative drift (funding +
+        // entry-fees of mid-day positions still open at EOD-FLAT time), so
+        // residual must be measured from snapshot, not from re-summed byDay.
+        const today = new Date().toISOString().slice(0, 10)
+        const todayByDay = byDay[today] ?? 0
+        const snapshotDates = Object.keys(eodEquityByDate).filter((d) => d < today).sort()
+        const latestSnapshotDate = snapshotDates.length > 0 ? snapshotDates[snapshotDates.length - 1] : null
+        const expectedEquity = latestSnapshotDate
+          ? eodEquityByDate[latestSnapshotDate] + todayByDay
+          : cfg.startingDepositUsd + Object.values(byDay).reduce((a, b) => a + b, 0)
+        const residual = snap.total - expectedEquity
         if (Math.abs(residual) > 0.005) {
           const today = new Date().toISOString().slice(0, 10)
           const todayHasCloses = byDay[today] !== undefined
@@ -252,11 +265,12 @@ export async function computeStatsResponse(cm: any, tm: any, variant?: BreakoutV
           } else if (todayHasCloses) {
             // closes сегодня есть, но в кривую попали как «дрейф» прошлых
             // дней — добавим today отдельно. residual в отдельном поле, чтобы
-            // UI не накапливал его в "P&L дня".
+            // UI не накапливал его в "P&L дня". equity = snap.total чтобы
+            // совпало с walletBalance в шапке.
             equityCurve.push({
               date: today,
               pnl: 0,
-              equity: cfg.startingDepositUsd + totalRealized + residual,
+              equity: snap.total,
               residual,
             })
           }
