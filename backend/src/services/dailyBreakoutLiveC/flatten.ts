@@ -43,8 +43,11 @@ export async function flattenAllOpenC(reason: string): Promise<{ closed: number;
 
   console.log(`${LOG} flatten complete (${reason}): ${closed} closed, ${failed} failed`)
 
-  if (closed > 0 || failed > 0) {
-    const emoji = reason === 'EOD-FLAT' ? '🌙' : '🛑'
+  // EOD-FLAT skips the bulk-close Telegram message — the EOD summary that
+  // follows (sendLiveCEodSummary) already lists every closed row with P&L.
+  // Kill-switch keeps the announcement so the operator sees the flush fired.
+  if (reason !== 'EOD-FLAT' && (closed > 0 || failed > 0)) {
+    const emoji = '🛑'
     await sendLiveTelegram([
       `${emoji} <b>${reason}</b>  · позиции закрыты по рынку`,
       `━━━━━━━━━━━━━━━━━━`,

@@ -287,6 +287,14 @@ async function handleExitFillUpdate(
   // authoritative P&L from Binance instead of the virtual triggerPrice
   // estimate. notifyExitTelegram reads the freshly-updated row, so realized
   // PnL, fees and any accrued funding are folded in correctly.
+  //
+  // Skip per-trade notification for bulk closes (EOD-FLAT, kill-switch, manual
+  // "close-market"). The EOD summary message already lists every closed row;
+  // sending a dozen individual "позиция закрыта" cards on top is just noise.
+  const noteRaw = (prev as any)?.reasonNote
+  const note = typeof noteRaw === 'string' ? noteRaw : ''
+  const isBulkClose = note === 'EOD-FLAT' || note === 'kill-switch' || note === 'manual'
+  if (isBulkClose) return
   const slicePercent = (prev as any)?.percent ?? 100
   const sliceFrac = slicePercent / 100
   await notifyExitTelegram(tradeId, reason, exactFillPrice, sliceFrac, exactRealizedPnl, false)

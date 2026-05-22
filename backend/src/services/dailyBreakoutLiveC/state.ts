@@ -13,7 +13,10 @@ import type { BinanceFuturesClient, SymbolFilter } from '../exchanges/binanceFut
 import type { BinanceUserDataStream, BinanceMarketDataStream } from '../exchanges/binanceFuturesWs'
 
 export const LOG = '[BreakoutLiveC]'
-export const TG_PREFIX = '⚠️ <b>[LIVE C]</b> '
+// Empty by design — user asked to drop the "⚠️ [LIVE C]" badge from every
+// Telegram message (2026-05-22). Kept as a const so callers don't need to be
+// touched; flip back here if a per-message prefix is ever needed again.
+export const TG_PREFIX = ''
 
 // === Running state — set in startBreakoutLiveTraderC, cleared in stop. ===
 
