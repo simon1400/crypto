@@ -11,6 +11,7 @@
 
 import { prisma } from '../../db/prisma'
 import { snapshot, ACTIVE_STATUSES } from './state'
+import { isLiveCircuitBreakerTripped } from './breaker'
 
 export type GuardStatus = 'OK' | 'TRIPPED' | 'NOT_ENFORCED' | 'INFO'
 
@@ -94,50 +95,59 @@ export async function getLiveGuards(): Promise<GuardsResponse> {
   const walletAvailable = snapshot.current?.available ?? cfg?.currentDepositUsd ?? 0
   const snapshotAge = snapshot.current ? Date.now() - snapshot.current.updatedAt : null
 
-  // Start-of-day deposit, same reconstruction as breaker.ts.
-  const sodDeposit = Math.max(1, walletTotal - dailyPnl)
-  const dailyPnlPct = (dailyPnl / sodDeposit) * 100
+  // Re-use the real breaker so guard numbers match what placement.ts sees.
+  // breaker.ts reconstructs startOfDayDeposit from cfg.currentDepositUsd (which
+  // mirrors Binance availableBalance, not walletTotal) — using a different
+  // formula here showed −9% while the breaker had already tripped at −18%.
+  const breakerResult = cfg
+    ? await isLiveCircuitBreakerTripped(cfg)
+    : { tripped: false, reason: '', realizedR: dailyR, netPnlUsd: dailyPnl, pnlPct: 0 }
+  const dailyPnlPct = breakerResult.pnlPct
 
+  // Weekly start-of-week reconstruction kept local — no enforcement path uses it.
   const sowDeposit = Math.max(1, walletTotal - weeklyPnl)
   const weeklyPnlPct = (weeklyPnl / sowDeposit) * 100
 
   // === 1. Daily loss limit (R) ===========================================
-  // Active gate in breaker.ts. dailyR is signed; trips when <= -limit.
+  // Mirrors breaker.ts: trips when sum(realizedR) <= -limit.
   {
     const limit = Math.abs(cfg?.dailyLossLimitR ?? 8)
-    const tripped = dailyR <= -limit
-    // Remaining = how many R until trip. Positive = still room.
-    const remaining = limit + dailyR  // dailyR negative shrinks this
+    const rTripped = breakerResult.realizedR <= -limit
+    const remaining = limit + breakerResult.realizedR
     guards.push({
       key: 'daily_loss_r',
       label: 'Дневной лимит (R)',
       description: 'Σ realizedR закрытых сегодня UTC. Превышение → блок новых лимиток + отмена PENDING.',
-      status: tripped ? 'TRIPPED' : 'OK',
-      current: dailyR,
+      status: rTripped ? 'TRIPPED' : 'OK',
+      current: breakerResult.realizedR,
       limit: -limit,
       remaining,
       unit: 'R',
-      fillRatio: clamp(-dailyR / limit, 0, 1),
+      fillRatio: clamp(-breakerResult.realizedR / limit, 0, 1),
       resetsAt: 'next-utc-day',
     })
   }
 
   // === 2. Daily loss limit (%) ===========================================
+  // Use breakerResult.pnlPct so the displayed % matches what the breaker gate
+  // actually compares against. The `reason` string from breaker is shown as a
+  // note so the user sees which leg of the OR-condition tripped.
   {
     const limit = Math.abs(cfg?.dailyLossLimitPct ?? 10)
-    const tripped = dailyPnlPct <= -limit
+    const pctTripped = dailyPnlPct <= -limit
     const remaining = limit + dailyPnlPct
     guards.push({
       key: 'daily_loss_pct',
       label: 'Дневной лимит (%)',
-      description: 'Σ netPnlUsd сегодня / startOfDayDeposit. Превышение → блок новых лимиток + отмена PENDING.',
-      status: tripped ? 'TRIPPED' : 'OK',
+      description: 'Σ netPnlUsd сегодня / SOD-wallet (вчерашний EOD-snapshot). Если breaker сработал, при возврате pnl выше лимита он автоматически снимется на след. placement-цикле.',
+      status: pctTripped ? 'TRIPPED' : 'OK',
       current: dailyPnlPct,
       limit: -limit,
       remaining,
       unit: '%',
       fillRatio: clamp(-dailyPnlPct / limit, 0, 1),
       resetsAt: 'next-utc-day',
+      note: breakerResult.tripped ? `Breaker сейчас активен: ${breakerResult.reason}` : undefined,
     })
   }
 

@@ -12,7 +12,7 @@
 import { prisma } from '../../db/prisma'
 import type { BinanceFuturesClient } from '../exchanges/binanceFutures'
 import { BinanceApiError } from '../exchanges/binanceFutures'
-import { LOG, breakerGuard } from './state'
+import { LOG, breakerGuard, snapshot } from './state'
 import { fmtPnl } from './formatters'
 import { sendLiveTelegram } from './telegram'
 
@@ -52,7 +52,29 @@ export async function isLiveCircuitBreakerTripped(cfg: any): Promise<CircuitBrea
     sumPnl += t.netPnlUsd ?? 0
   }
 
-  const startOfDayDeposit = Math.max(1, (cfg.currentDepositUsd ?? 1) - sumPnl)
+  // Stable SOD wallet reconstruction.
+  //
+  // The OLD method `cfg.currentDepositUsd - sumPnl` is brittle: currentDepositUsd
+  // mirrors availableBalance (drops as margin locks). With 10 open positions
+  // and unrealized loss, available collapses → SOD looks small → pnlPct gets
+  // amplified to e.g. -18% while real loss is -9%. The breaker would then trip,
+  // cancel pending, and stay tripped while positions stayed open.
+  //
+  // We now read the prior UTC day's wallet snapshot saved by the EOD job
+  // (eodEquityByDate[yesterday]) — that IS the start-of-day wallet for today.
+  // Falls back to walletTotal (snapshot.total) − sumPnl − sumUnrealized when
+  // no prior snapshot exists (e.g. very first day of trading).
+  const todayDate = todayStart.toISOString().slice(0, 10)
+  const yesterdayDate = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const eodMap = ((cfg as any).eodEquityByDate ?? {}) as Record<string, number>
+  let startOfDayDeposit = eodMap[yesterdayDate] ?? eodMap[todayDate] ?? 0
+  if (!startOfDayDeposit || startOfDayDeposit < 1) {
+    // Fallback: walletTotal − sumPnl removes today's realized closes, giving
+    // a deposit number that's at least close to wallet-at-00:00-UTC. Better
+    // than availableBalance-based reconstruction.
+    const walletTotal = snapshot.current?.total ?? cfg.currentDepositUsd ?? 1
+    startOfDayDeposit = Math.max(1, walletTotal - sumPnl)
+  }
   const pnlPct = (sumPnl / startOfDayDeposit) * 100
 
   const rLimit = -Math.abs(cfg.dailyLossLimitR ?? 8)
