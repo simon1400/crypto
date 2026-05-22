@@ -139,7 +139,7 @@ export async function getLiveGuards(): Promise<GuardsResponse> {
     guards.push({
       key: 'daily_loss_pct',
       label: 'Дневной лимит (%)',
-      description: 'Σ netPnlUsd сегодня / SOD-wallet (вчерашний EOD-snapshot). Если breaker сработал, при возврате pnl выше лимита он автоматически снимется на след. placement-цикле.',
+      description: '(wallet сейчас − SOD-wallet) / SOD-wallet (вчерашний EOD-snapshot). Включает закрытые + комиссии + funding + unrealized — то же значение что "% дня" в кривой капитала. При возврате выше лимита блок снимается на след. placement-цикле.',
       status: pctTripped ? 'TRIPPED' : 'OK',
       current: dailyPnlPct,
       limit: -limit,

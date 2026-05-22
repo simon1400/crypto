@@ -107,7 +107,17 @@ export async function isLiveCircuitBreakerTripped(cfg: any): Promise<CircuitBrea
     const walletTotal = snapshot.current?.total ?? cfg.currentDepositUsd ?? 1
     startOfDayDeposit = Math.max(1, walletTotal - sumPnl)
   }
-  const pnlPct = (sumPnl / startOfDayDeposit) * 100
+  // P&L дня = изменение wallet от SOD до текущего. Это включает realized closes,
+  // entry fees + funding на ещё открытых позициях И unrealized — ровно то же
+  // самое значение что строится в кривой капитала ("P&L дня" = pnl + residual).
+  // Без residual гард показывал -6.69% против -7.08% в кривой (разница = fees +
+  // funding текущих open). С wallet-дельтой гард 1-в-1 совпадает с UI.
+  //
+  // sumPnl остаётся в return как "realized closes only" — для логов и audit
+  // (отдельно от tripping pct).
+  const walletNow = snapshot.current?.total ?? cfg.currentDepositUsd ?? startOfDayDeposit
+  const dayPnlForBreaker = walletNow - startOfDayDeposit
+  const pnlPct = (dayPnlForBreaker / startOfDayDeposit) * 100
 
   const rLimit = -Math.abs(cfg.dailyLossLimitR ?? 8)
   const pctLimit = -Math.abs(cfg.dailyLossLimitPct ?? 10)
