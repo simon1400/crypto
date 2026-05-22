@@ -272,3 +272,28 @@ export async function clearLiveAttempts(rangeDate?: string): Promise<{ deleted: 
   const q = rangeDate ? `?rangeDate=${encodeURIComponent(rangeDate)}` : ''
   return req(`${BP}/attempts${q}`, { method: 'DELETE' })
 }
+
+// === Guards (read-only risk-gate snapshot) ===
+export type GuardStatus = 'OK' | 'TRIPPED' | 'NOT_ENFORCED' | 'INFO'
+export interface GuardRow {
+  key: string
+  label: string
+  description: string
+  status: GuardStatus
+  current: number
+  limit: number
+  remaining: number
+  unit: string
+  fillRatio: number
+  resetsAt: string | null
+  note?: string
+}
+export interface GuardsResponse {
+  computedAt: string
+  utcDate: string
+  wallet: { total: number; available: number; snapshotAge: number | null }
+  guards: GuardRow[]
+}
+export async function getLiveGuards(): Promise<GuardsResponse> {
+  return req(`${BP}/guards`)
+}

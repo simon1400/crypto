@@ -15,3 +15,4 @@ export { flattenAllOpenC as flattenAllOpenLiveC, flattenOneOpenLiveC } from './f
 export { getLastAggTradeAt } from './aggTrade'
 export { attachMissingSlTp, type RepairReport } from './repair'
 export { sendLiveCEodSummary } from './eod'
+export { getLiveGuards, type GuardRow, type GuardsResponse, type GuardStatus } from './guards'

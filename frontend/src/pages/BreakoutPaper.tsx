@@ -34,6 +34,7 @@ import SignalsTable from '../components/breakoutPaper/SignalsTable'
 import PendingTable from '../components/breakoutPaper/PendingTable'
 import AttemptsTable from '../components/breakoutPaper/AttemptsTable'
 import ExchangeOrdersTable from '../components/breakoutPaper/ExchangeOrdersTable'
+import GuardsPanel from '../components/breakoutPaper/GuardsPanel'
 import TradesTable from '../components/breakoutPaper/TradesTable'
 import TradeCards from '../components/breakoutPaper/TradeCards'
 import BySymbolBreakdown from '../components/breakoutPaper/BySymbolBreakdown'
@@ -456,6 +457,9 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         {isLive && (
           <FilterButton active={statusFilter === 'EXCHANGE'} onClick={handleTabChange('EXCHANGE')}>Биржа</FilterButton>
         )}
+        {isLive && (
+          <FilterButton active={statusFilter === 'GUARDS'} onClick={handleTabChange('GUARDS')}>Гарды</FilterButton>
+        )}
       </div>
 
       {statusFilter === 'SIGNALS' && (
@@ -496,7 +500,11 @@ export default function BreakoutPaper({ variant = 'A' }: BreakoutPaperProps = {}
         />
       )}
 
-      {statusFilter !== 'SIGNALS' && statusFilter !== 'PENDING' && statusFilter !== 'ATTEMPTS' && statusFilter !== 'EXCHANGE' && (
+      {statusFilter === 'GUARDS' && isLive && (
+        <GuardsPanel />
+      )}
+
+      {statusFilter !== 'SIGNALS' && statusFilter !== 'PENDING' && statusFilter !== 'ATTEMPTS' && statusFilter !== 'EXCHANGE' && statusFilter !== 'GUARDS' && (
         <>
           <TradeCards
             trades={trades} sortedTrades={sortedTrades}

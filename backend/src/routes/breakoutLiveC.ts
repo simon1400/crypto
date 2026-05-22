@@ -22,7 +22,7 @@ import {
 } from '../services/exchanges/binanceFutures'
 import { refreshLiveBalance } from './_liveBalanceShared'
 import { buildSharedReadHandlers } from './breakoutPaper/index'
-import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot, attachMissingSlTp, sendLiveCEodSummary } from '../services/dailyBreakoutLiveC'
+import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot, attachMissingSlTp, sendLiveCEodSummary, getLiveGuards } from '../services/dailyBreakoutLiveC'
 
 // Re-export so existing import paths (`from './breakoutLiveC'`) keep working.
 export { refreshLiveBalance }
@@ -581,6 +581,15 @@ router.post('/reset', async (_req, res) => {
 const sharedRead = buildSharedReadHandlers('LIVE')
 router.get('/trades/live', sharedRead.tradesLive)
 router.get('/stats', sharedRead.stats)
+
+router.get('/guards', async (_req, res) => {
+  try {
+    const data = await getLiveGuards()
+    res.json(data)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
 
 router.get('/trades', async (req, res) => {
   try {
