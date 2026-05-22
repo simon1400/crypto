@@ -179,7 +179,9 @@ export async function getLiveGuards(): Promise<GuardsResponse> {
   }, 0)
   {
     const cap = walletTotal * 0.9
-    const tripped = lockedMargin >= cap
+    // TRIPPED only when over the cap — exactly at cap means "max reached, new
+    // entry blocked" which we surface as a full bar but with OK status.
+    const tripped = lockedMargin > cap
     const remaining = cap - lockedMargin
     guards.push({
       key: 'margin_cap_90pct',
@@ -201,7 +203,7 @@ export async function getLiveGuards(): Promise<GuardsResponse> {
   })
   {
     const limit = cfg?.maxConcurrentPositions ?? 20
-    const tripped = openCount >= limit
+    const tripped = openCount > limit
     guards.push({
       key: 'max_concurrent',
       label: 'Max concurrent positions',
@@ -226,7 +228,7 @@ export async function getLiveGuards(): Promise<GuardsResponse> {
       _count: { _all: true },
     })
     const maxBucket = activeBySymbol.reduce((m, r) => Math.max(m, r._count._all), 0)
-    const tripped = maxBucket >= limit
+    const tripped = maxBucket > limit
     guards.push({
       key: 'max_per_symbol',
       label: 'Позиций на символ',

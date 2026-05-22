@@ -40,12 +40,15 @@ function fmtLimit(g: GuardRow): string {
 function ProgressBar({ ratio, status }: { ratio: number; status: GuardRow['status'] }) {
   const clamped = Math.max(0, Math.min(1, ratio))
   const pct = (clamped * 100).toFixed(1)
+  // OK colour ramp: ≤50% green → 50-90% yellow → >90% orange. Только TRIPPED
+  // даёт чисто-красный. Это важно для счётчиков типа "Позиций на символ" где
+  // 1/1 = лимит достигнут, но НЕ превышен.
   const color =
     status === 'TRIPPED' ? 'bg-short' :
     status === 'NOT_ENFORCED' ? 'bg-neutral/50' :
     status === 'INFO' ? 'bg-accent/50' :
-    clamped > 0.75 ? 'bg-short/80' :
-    clamped > 0.5 ? 'bg-accent' :
+    clamped > 0.9 ? 'bg-accent' :
+    clamped > 0.5 ? 'bg-accent/70' :
     'bg-long/80'
   return (
     <div className="h-1.5 w-full bg-input rounded overflow-hidden">
@@ -133,27 +136,31 @@ export default function GuardsPanel() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-3">
-                <div className="flex-1">
-                  <ProgressBar ratio={g.fillRatio} status={g.status} />
+              {/* INFO-карточки без осмысленного fillRatio (например "Риск на сделку"
+                  — это просто настройка, не порог) скрывают пустой прогресс-бар. */}
+              {!(g.status === 'INFO' && g.fillRatio === 0) && (
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <ProgressBar ratio={g.fillRatio} status={g.status} />
+                  </div>
+                  <div className="text-[11px] font-mono w-32 text-right shrink-0">
+                    {g.status === 'OK' && (
+                      <span className="text-text-secondary">
+                        Осталось <span className="text-long">{fmtRemaining(g)}</span>
+                      </span>
+                    )}
+                    {g.status === 'TRIPPED' && (
+                      <span className="text-short">превышен</span>
+                    )}
+                    {g.status === 'NOT_ENFORCED' && (
+                      <span className="text-neutral">мониторинг</span>
+                    )}
+                    {g.status === 'INFO' && (
+                      <span className="text-accent">{g.unit === 'ч' ? `до EOD ${fmtNum(g.current, 1)}ч` : ''}</span>
+                    )}
+                  </div>
                 </div>
-                <div className="text-[11px] font-mono w-32 text-right shrink-0">
-                  {g.status === 'OK' && (
-                    <span className="text-text-secondary">
-                      Осталось <span className="text-long">{fmtRemaining(g)}</span>
-                    </span>
-                  )}
-                  {g.status === 'TRIPPED' && (
-                    <span className="text-short">превышен</span>
-                  )}
-                  {g.status === 'NOT_ENFORCED' && (
-                    <span className="text-neutral">мониторинг</span>
-                  )}
-                  {g.status === 'INFO' && (
-                    <span className="text-accent">{g.unit === 'ч' ? `до EOD ${fmtNum(g.current, 1)}ч` : ''}</span>
-                  )}
-                </div>
-              </div>
+              )}
 
               {g.note && (
                 <div className="mt-1.5 text-[10px] text-text-secondary italic">↳ {g.note}</div>
