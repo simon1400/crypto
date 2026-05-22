@@ -36,20 +36,52 @@ export async function isLiveCircuitBreakerTripped(cfg: any): Promise<CircuitBrea
   const todayStart = new Date()
   todayStart.setUTCHours(0, 0, 0, 0)
 
-  // Sum from rows closed today UTC.
-  const closedToday = await prisma.breakoutLiveTradeC.findMany({
-    where: {
-      closedAt: { gte: todayStart },
-      status: { in: ['CLOSED', 'SL_HIT', 'TP3_HIT'] },
+  // Slice-level P&L attribution. The OLD method (sumPnl += t.netPnlUsd for every
+  // trade closedAt today) over-counted partial closes from prior days: a trade
+  // that hit TP1 yesterday (+$50) and SL today (-$470) has netPnlUsd=-$420 with
+  // closedAt=today, so the breaker would book -$420 today even though +$50 was
+  // realized yesterday. Match the equity-curve attribution in routes/breakoutPaper/
+  // helpers.ts so guard % equals what the user sees in "Кривая капитала · % дня".
+  //
+  // Pull every trade with at least one close — filter close events by their
+  // own closedAt below.
+  const tradesWithCloses = await prisma.breakoutLiveTradeC.findMany({
+    where: { NOT: { closes: { equals: [] } } },
+    select: {
+      status: true,
+      closes: true,
+      openedAt: true,
+      realizedR: true,
+      netPnlUsd: true,
+      realizedPnlUsd: true,
+      feesPaidUsd: true,
+      entryFeeUsd: true,
+      fundingPaidUsd: true,
     },
-    select: { realizedR: true, netPnlUsd: true },
   })
 
+  const dayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000)
+  const closedStatuses = new Set(['CLOSED', 'SL_HIT', 'TP3_HIT', 'EXPIRED'])
   let sumR = 0
   let sumPnl = 0
-  for (const t of closedToday) {
-    sumR += t.realizedR ?? 0
-    sumPnl += t.netPnlUsd ?? 0
+  for (const t of tradesWithCloses) {
+    const arr = ((t.closes as any[]) ?? []) as Array<{
+      pnlUsd?: number; pnlR?: number; feePaidUsd?: number; closedAt?: string
+    }>
+    if (arr.length === 0) continue
+    // totalNet = netPnlUsd if terminal, else realized − fees (matches helpers.ts).
+    // Used to weight per-slice net P&L by gross contribution.
+    const totalNet = closedStatuses.has(t.status)
+      ? (t.netPnlUsd ?? 0)
+      : ((t.realizedPnlUsd ?? 0) - (t.feesPaidUsd ?? 0))
+    const grossSum = arr.reduce((a, c) => a + (c.pnlUsd ?? 0), 0)
+    for (const c of arr) {
+      const ts = c.closedAt ? new Date(c.closedAt).getTime() : new Date(t.openedAt).getTime()
+      if (ts < todayStart.getTime() || ts >= dayEnd.getTime()) continue
+      const weight = grossSum !== 0 ? (c.pnlUsd ?? 0) / grossSum : 1 / arr.length
+      sumPnl += totalNet * weight
+      sumR += (c.pnlR ?? 0)
+    }
   }
 
   // Stable SOD wallet reconstruction.
