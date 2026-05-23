@@ -8,7 +8,7 @@ import { placeLimitsForRanges } from './placement'
 import { refreshAggTradeSubscriptions } from './aggTrade'
 import { flattenAllOpenC, cancelOrphanPendingLimits, cancelAllPendingLimits } from './flatten'
 import { pruneOldAttempts } from './attempts'
-import { closeLowMarginPositions, sweepStrayAlgoOrders } from './reconcile'
+import { closeLowMarginPositions, sweepStrayAlgoOrders, reconcileClosedPositionsLiveC } from './reconcile'
 import { reconcileSlTrailedLevel } from './exchangeSl'
 import { sendLiveCEodSummary } from './eod'
 
@@ -70,6 +70,15 @@ export async function runLiveCycle(): Promise<void> {
     // Runs every cycle so a 30s ban window auto-recovers on the next tick.
     await reconcileSlTrailedLevel().catch((e) =>
       console.warn(`${LOG} reconcileSlTrailedLevel threw: ${e?.message ?? e}`))
+
+    // Safety-net: detect DB rows still OPEN whose position has closed on the
+    // exchange (SL/TP fill WS event lost or cid-rewritten). Self-heals using
+    // Binance userTrades. Without this, a missed slL{id} event used to strand
+    // the row in OPEN forever — manual "Закрыть по рынку" then returns -2022
+    // "ReduceOnly Order is rejected" because there's nothing to reduce.
+    // See reconcile.ts:reconcileClosedPositionsLiveC for details.
+    await reconcileClosedPositionsLiveC(state.current.client).catch((e) =>
+      console.warn(`${LOG} reconcileClosedPositionsLiveC threw: ${e?.message ?? e}`))
   } catch (e: any) {
     console.error(`${LOG} cycle threw:`, e.message)
   } finally {

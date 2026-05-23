@@ -22,7 +22,7 @@ import {
 } from '../services/exchanges/binanceFutures'
 import { refreshLiveBalance } from './_liveBalanceShared'
 import { buildSharedReadHandlers } from './breakoutPaper/index'
-import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot, attachMissingSlTp, sendLiveCEodSummary, getLiveGuards } from '../services/dailyBreakoutLiveC'
+import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot, attachMissingSlTp, sendLiveCEodSummary, getLiveGuards, reconcileClosedPositionsLiveC } from '../services/dailyBreakoutLiveC'
 
 // Re-export so existing import paths (`from './breakoutLiveC'`) keep working.
 export { refreshLiveBalance }
@@ -867,6 +867,24 @@ router.post('/trades/repair-sltp', async (_req, res) => {
   try {
     const report = await attachMissingSlTp()
     res.json(report)
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /reconcile-closed — manually trigger the periodic safety-net that
+// finalizes DB rows still OPEN whose position is gone on the exchange. Same
+// path that runs every 60s in runLiveCycle; exposed here so the user can force
+// a re-scan immediately when they spot a stuck "phantom open" trade.
+router.post('/trades/reconcile-closed', async (_req, res) => {
+  try {
+    const cfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
+    if (!cfg) return res.status(400).json({ error: 'config missing' })
+    const creds = await getBinanceCreds(cfg.useTestnet)
+    if (!creds) return res.status(400).json({ error: 'no Binance creds configured' })
+    const client = getBinanceClient(creds)
+    const r = await reconcileClosedPositionsLiveC(client)
+    res.json({ ok: true, ...r })
   } catch (e: any) {
     res.status(500).json({ error: e.message })
   }

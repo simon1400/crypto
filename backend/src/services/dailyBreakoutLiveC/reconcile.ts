@@ -17,12 +17,13 @@
  */
 
 import { prisma } from '../../db/prisma'
-import type { BinanceFuturesClient } from '../exchanges/binanceFutures'
+import type { BinanceFuturesClient, UserTrade } from '../exchanges/binanceFutures'
 import { BinanceApiError } from '../exchanges/binanceFutures'
-import { LOG, state } from './state'
+import { LOG, state, ACTIVE_STATUSES } from './state'
 import { getFilters } from './filters'
 import { attachSlAfterEntry, cancelSlOnExchange } from './exchangeSl'
 import { attachTpsAfterEntry, cancelAllTpsOnExchange } from './exchangeTp'
+import { sendLiveTelegram } from './telegram'
 
 export interface ReconcileReport {
   hasUntrackedPositions: boolean
@@ -459,4 +460,214 @@ export async function cancelAllExchangeOrdersForTrade(
     }
   }
   return { cancelled }
+}
+
+/**
+ * Periodic safety-net: find DB rows still marked OPEN/TP1_HIT/TP2_HIT for which
+ * the exchange has no position, and finalize them by reading the actual fill(s)
+ * from /fapi/v1/userTrades.
+ *
+ * Why this exists: handleSlOrderUpdate / handleTpOrderUpdate rely on the
+ * ORDER_TRADE_UPDATE event's `clientOrderId` matching our `slL{id}` / `tpL{id}_{n}`
+ * convention. Binance preserves clientAlgoId on the resulting MARKET fill MOST
+ * of the time — but not always. We've observed cases (e.g. SEIUSDT #14050,
+ * 2026-05-23) where the SL on the exchange triggered, the position closed, but
+ * no `slL...` event was processed (cid was rewritten by Binance or the event
+ * was lost during a brief WS hiccup). The row sits OPEN in DB while the
+ * position is gone on the exchange; manual MARKET reduceOnly close then fails
+ * with -2022 "ReduceOnly Order is rejected".
+ *
+ * This function runs every cycle tick (60s) and self-heals such drift using
+ * the authoritative fill data from REST userTrades.
+ *
+ * Guarded by:
+ *   - "openedAt > 2 minutes ago" — fresh positions might not be visible in
+ *     getOpenPositions() yet right after a MARKET fill races the snapshot
+ *     refresh; skip them on this tick, catch on the next.
+ *   - Only one getOpenPositions() call per invocation; userTrades is queried
+ *     only for symbols that need finalization.
+ */
+export async function reconcileClosedPositionsLiveC(
+  client: BinanceFuturesClient,
+): Promise<{ finalized: number; checked: number }> {
+  const dbOpen = await prisma.breakoutLiveTradeC.findMany({
+    where: { status: { in: [...ACTIVE_STATUSES] } },
+  })
+  if (dbOpen.length === 0) return { finalized: 0, checked: 0 }
+
+  // Skip rows opened in the last 2 minutes — Binance can briefly show
+  // positionAmt=0 between the entry MARKET response and the position taking
+  // effect on the account snapshot. We don't want to false-finalize a trade
+  // that just opened.
+  const freshCutoff = Date.now() - 2 * 60 * 1000
+  const ripeRows = dbOpen.filter((t) => t.openedAt.getTime() < freshCutoff)
+  if (ripeRows.length === 0) return { finalized: 0, checked: 0 }
+
+  let positions: Awaited<ReturnType<typeof client.getOpenPositions>>
+  try {
+    positions = await client.getOpenPositions()
+  } catch (e: any) {
+    console.warn(`${LOG} reconcileClosed: getOpenPositions failed: ${e.message}`)
+    return { finalized: 0, checked: 0 }
+  }
+  const positionsBySymbol = new Map<string, number>()
+  for (const p of positions) positionsBySymbol.set(p.symbol, Number(p.positionAmt))
+
+  let finalized = 0
+  let checked = 0
+  for (const t of ripeRows) {
+    const amt = positionsBySymbol.get(t.symbol)
+    if (amt !== undefined && amt !== 0) continue  // position alive — nothing to do
+    checked++
+
+    try {
+      await finalizeOrphanRow(client, t)
+      finalized++
+    } catch (e: any) {
+      console.warn(`${LOG} reconcileClosed #${t.id} ${t.symbol} failed: ${e?.message ?? e}`)
+    }
+  }
+
+  if (finalized > 0) {
+    // Roll up aggregate stats (totalTrades/totalPnLUsd/peakDeposit/maxDD) after
+    // the per-row recomputeTradeMoney calls inside finalizeOrphanRow. Lazy
+    // import to break the reconcile ↔ virtualSltp cycle.
+    try {
+      const { recomputeLiveCStats } = await import('./virtualSltp')
+      await recomputeLiveCStats()
+    } catch (e: any) {
+      console.warn(`${LOG} reconcileClosed: recomputeLiveCStats failed: ${e?.message ?? e}`)
+    }
+  }
+
+  return { finalized, checked }
+}
+
+/**
+ * Finalize one DB row whose exchange position is gone. Read all userTrades
+ * since openedAt, sum the closing-side fills, and persist as a single
+ * RECONCILED close entry. Cancel any leftover SL/TP algo orders best-effort.
+ */
+async function finalizeOrphanRow(
+  client: BinanceFuturesClient,
+  trade: any,
+): Promise<void> {
+  // Tolerate clock skew + funding events around openedAt; cap at 7 days to
+  // bound the response size (Binance returns up to 1000 fills per call).
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+  const startTime = Math.max(sevenDaysAgo, trade.openedAt.getTime() - 60 * 1000)
+
+  let userTrades: UserTrade[] = []
+  try {
+    userTrades = await client.getUserTrades(trade.symbol, { startTime, limit: 1000 })
+  } catch (e: any) {
+    console.warn(`${LOG} reconcileClosed: getUserTrades ${trade.symbol} failed: ${e.message}`)
+    return
+  }
+
+  // Closing fills = opposite side, time strictly after the entry fill.
+  // We deliberately don't trust openedAt as the entry-fill timestamp (it's the
+  // row insertion time, not necessarily the fill time) — instead we anchor on
+  // the entry orderId(s) we stored at fill time.
+  const entryOrderIds = new Set<string>(
+    ((trade.entryFillOrderIds as any[]) ?? []).map(String).concat(
+      trade.binanceOrderId !== null && trade.binanceOrderId !== undefined ? [String(trade.binanceOrderId)] : [],
+    ),
+  )
+  const closingSide = trade.side === 'BUY' ? 'SELL' : 'BUY'
+  const closingFills = userTrades.filter(
+    (f) => f.side === closingSide && !entryOrderIds.has(String(f.orderId)),
+  )
+
+  if (closingFills.length === 0) {
+    console.warn(`${LOG} reconcileClosed #${trade.id} ${trade.symbol}: no closing fills found in userTrades — skipping`)
+    return
+  }
+
+  // Aggregate.
+  let totQty = 0
+  let totQuote = 0
+  let totCommission = 0
+  let totRealizedPnl = 0
+  let lastTime = 0
+  let firstOrderId = ''
+  for (const f of closingFills) {
+    const q = Number(f.qty)
+    const p = Number(f.price)
+    const c = Number(f.commission)
+    const rp = Number(f.realizedPnl)
+    totQty += q
+    totQuote += q * p
+    totCommission += c
+    totRealizedPnl += rp
+    if (f.time > lastTime) lastTime = f.time
+    if (!firstOrderId) firstOrderId = String(f.orderId)
+  }
+  const avgFillPrice = totQty > 0 ? totQuote / totQty : trade.entryPrice
+  const priorCloses = ((trade.closes as any[]) ?? []).slice()
+  const priorPercent = priorCloses.reduce((a: number, c: any) => a + (c?.percent ?? 0), 0)
+  const residualPercent = Math.max(0, 100 - priorPercent)
+
+  // If priorPercent > 0 (TP1_HIT / TP2_HIT case), the userTrades query also
+  // returned the earlier TP fills. We've intentionally NOT deduplicated by
+  // close timestamp because we'd then need to reconstruct which fill belongs
+  // to which TP — too brittle. Instead: trust the existing closes[] entries
+  // (already refined by the WS handler if it caught them) and ONLY append a
+  // single RECONCILED close for the remaining residualPercent share. Use the
+  // userTrades realizedPnl SUM minus what's already accounted for in closes[].
+  // This converges to the right total whether the prior TP fills were caught
+  // by WS or not.
+  const priorRealized = priorCloses.reduce((a: number, c: any) => a + (Number(c?.pnlUsd) || 0), 0)
+  const priorFees = priorCloses.reduce((a: number, c: any) => a + (Number(c?.feePaidUsd) || 0), 0)
+  const residualRealizedPnl = totRealizedPnl - priorRealized
+  const residualFees = Math.max(0, totCommission - priorFees)
+
+  // Best-effort: cancel any algo orders still on the exchange (Binance auto-
+  // cancels reduceOnly STOP_MARKET/TAKE_PROFIT_MARKET when position hits 0,
+  // but our DB array may still reference them — clean up so /Биржа tab and
+  // future sweeps don't act on stale ids).
+  await cancelSlOnExchange(trade).catch(() => { /* best-effort */ })
+  await cancelAllTpsOnExchange(trade).catch(() => { /* best-effort */ })
+
+  await prisma.breakoutLiveTradeC.update({
+    where: { id: trade.id },
+    data: {
+      status: 'CLOSED',
+      closedAt: new Date(lastTime || Date.now()),
+      closes: [
+        ...priorCloses,
+        {
+          price: avgFillPrice,
+          percent: residualPercent > 1e-6 ? residualPercent : 100,
+          pnlUsd: residualRealizedPnl,
+          feePaidUsd: residualFees,
+          closedAt: new Date(lastTime || Date.now()).toISOString(),
+          reason: 'SL',
+          reasonNote: 'reconciled-from-binance',
+          binanceOrderId: firstOrderId,
+        },
+      ] as any,
+      binanceSlOrderId: null,
+      binanceTpOrderIds: [] as any,
+    },
+  })
+
+  // Lazy import to avoid circular dependency with virtualSltp → reconcile.
+  const { recomputeTradeMoney } = await import('./virtualSltp')
+  await recomputeTradeMoney(trade.id)
+
+  console.log(`${LOG} reconcileClosed: finalized #${trade.id} ${trade.symbol} via Binance userTrades — closing qty=${totQty} avgPx=${avgFillPrice} commission=${totCommission.toFixed(4)} realizedPnl=${totRealizedPnl.toFixed(4)}`)
+
+  // Telegram notify so the user sees the recovery happened. Mirrors the format
+  // notifyExitTelegram uses but with a reconcile badge so it's clear this
+  // wasn't a real-time WS-driven close.
+  const netPnl = residualRealizedPnl - residualFees
+  const sign = netPnl >= 0 ? '+' : '−'
+  await sendLiveTelegram([
+    `♻ <b>Reconciled exit</b>  · #${trade.id} ${trade.symbol} ${trade.side}`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `Биржа закрыла позицию (вероятно SL); WS-событие не пришло, восстановлено по userTrades.`,
+    `Цена: <code>${avgFillPrice.toFixed(8).replace(/0+$/, '').replace(/\.$/, '')}</code>`,
+    `P&L: <b>${sign}$${Math.abs(netPnl).toFixed(2)}</b>  (комиссия ${residualFees.toFixed(2)}$)`,
+  ].join('\n')).catch(() => { /* best-effort */ })
 }
