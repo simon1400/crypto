@@ -9,7 +9,7 @@ import { refreshAggTradeSubscriptions } from './aggTrade'
 import { flattenAllOpenC, cancelOrphanPendingLimits, cancelAllPendingLimits } from './flatten'
 import { pruneOldAttempts } from './attempts'
 import { closeLowMarginPositions, sweepStrayAlgoOrders, reconcileClosedPositionsLiveC } from './reconcile'
-import { reconcileSlTrailedLevel } from './exchangeSl'
+import { reconcileSlOnExchange } from './exchangeSl'
 import { reconcileTpsForActiveTrades } from './exchangeTp'
 import { sendLiveCEodSummary } from './eod'
 
@@ -66,11 +66,13 @@ export async function runLiveCycle(): Promise<void> {
     // orders so don't depend on aggTrade.
     await refreshAggTradeSubscriptions()
 
-    // Reconcile trailed SLs that didn't make it to the exchange (TP1 fired but
-    // retrail bailed on rate-limit ban → STOP_MARKET still at initial level).
-    // Runs every cycle so a 30s ban window auto-recovers on the next tick.
-    await reconcileSlTrailedLevel().catch((e) =>
-      console.warn(`${LOG} reconcileSlTrailedLevel threw: ${e?.message ?? e}`))
+    // SL heartbeat — confirm every active trade still has its STOP_MARKET on
+    // the exchange. Covers (a) missing initial SL on OPEN (algo silently dropped
+    // from book), (b) missing trailed SL on TP1_HIT/TP2_HIT (retrail bailed on
+    // rate-limit ban), and (c) trigger-price drift. Retrail path triggers a
+    // MARKET catch-up if mark is already past the would-be trigger.
+    await reconcileSlOnExchange().catch((e) =>
+      console.warn(`${LOG} reconcileSlOnExchange threw: ${e?.message ?? e}`))
 
     // TP heartbeat: confirm every un-hit TP for active trades is actually on
     // the exchange. If one silently disappeared (Binance auto-cleanup, missed

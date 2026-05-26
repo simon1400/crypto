@@ -39,7 +39,7 @@
 
 import { prisma } from '../../db/prisma'
 import { BinanceApiError } from '../exchanges/binanceFutures'
-import { LOG, state, SPLITS } from './state'
+import { LOG, state, snapshot, lastMarkPriceWs, ACTIVE_STATUSES, SPLITS } from './state'
 import { getFilters } from './filters'
 
 export interface TpAlgoEntry { tpIdx: 1 | 2 | 3; algoId: string }
@@ -124,7 +124,12 @@ export async function placeTpsOnExchange(trade: any, onlyIdx?: ReadonlyArray<1 |
       }
     }
     if (!placedThis) {
-      console.warn(`${LOG} placeTps #${trade.id} TP${tpIdx}: failed — ${lastErr} (virtual TP still active)`)
+      // -2021 here means mark already past trigger. Caller (reconcileTpsForActiveTrades)
+      // detects this state upstream and routes to catchUpMissedTp before reaching
+      // placeTpsOnExchange, but log explicitly so the entry-time attach path
+      // (attachTpsAfterEntry) surfaces it visibly — that path will get caught
+      // by the next reconcile heartbeat.
+      console.warn(`${LOG} placeTps #${trade.id} TP${tpIdx}: failed — ${lastErr}`)
     }
   }
 
@@ -205,6 +210,112 @@ export async function cancelAllTpsOnExchange(trade: any): Promise<void> {
 }
 
 /**
+ * Catch-up close for a TP whose algo went missing on the exchange WHILE mark
+ * price has already moved past the trigger. Attempting to (re)place at that
+ * point returns -2021 — nothing lands on the book, and (since the virtual
+ * tracker was removed 2026-05-20) the TP slice would never fire.
+ *
+ * Replays what the algo would have done: MARKET reduceOnly for the slice qty
+ * with cid 'exL{id}_TP{n}' so handleExitFillUpdate refines closes[] with the
+ * authoritative Binance fill numbers. applyVirtualClose handles the SL trail
+ * (TP1→BE / TP2→TP1 / TP3 terminal) the same way as a normal algo fill.
+ *
+ * Idempotency: ACTIVE_STATUSES gate + closes[] reason check inside
+ * applyVirtualClose's caller convention — we also guard with a per-trade
+ * tradeBusy-style lock via the existing applyVirtualClose status guard.
+ */
+export async function catchUpMissedTp(tradeId: number, tpIdx: 1 | 2 | 3): Promise<void> {
+  if (!state.current) return
+  const fresh = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!fresh) return
+  if (!ACTIVE_STATUSES.includes(fresh.status as any)) return
+
+  // Has this TP already been recorded (race with the real algo finally firing,
+  // or a concurrent catch-up)? Skip.
+  const closesArr = ((fresh.closes as any[]) ?? []) as Array<{ reason?: string }>
+  if (closesArr.some((c) => c.reason === `TP${tpIdx}`)) return
+
+  // Don't re-catch-up a TP for a status that's already past it (e.g. trying
+  // to catch up TP1 when status is already TP2_HIT).
+  if (fresh.status === 'TP1_HIT' && tpIdx === 1) return
+  if (fresh.status === 'TP2_HIT' && (tpIdx === 1 || tpIdx === 2)) return
+
+  const filtersMap = await getFilters(state.current.client).catch(() => null)
+  const f = filtersMap?.get(fresh.symbol)
+  if (!f) {
+    console.warn(`${LOG} catchUpMissedTp #${fresh.id}: no filter for ${fresh.symbol}`)
+    return
+  }
+
+  const splitFrac = SPLITS[tpIdx - 1] ?? 0
+  if (splitFrac <= 0) return
+
+  // Slice qty: same geometry as placeTpsOnExchange (positionUnits × split,
+  // floor to stepSize). TP3 falls back to remainder when called from the
+  // ladder; for catch-up we just use the static split — if TP1/TP2 already
+  // partially closed, exchange remaining < planned and the reduceOnly will
+  // clamp, but the algo-original split is the right number to record.
+  const step = f.stepSize
+  let qty = Math.floor((fresh.positionUnits * splitFrac) / step) * step
+  qty = Number(qty.toFixed(f.quantityPrecision))
+  if (qty < f.minQty) {
+    console.warn(`${LOG} catchUpMissedTp #${fresh.id} TP${tpIdx}: qty ${qty} < minQty ${f.minQty} — skipping`)
+    return
+  }
+
+  // Cap qty by the exchange's remaining position — TP1's planned 50% slice
+  // could exceed what's actually open if a manual close shaved the position.
+  const snapPos = snapshot.current?.positions.find((p) => p.symbol === fresh.symbol)
+  const exchangeRemaining = snapPos ? Math.abs(snapPos.positionAmt) : 0
+  if (exchangeRemaining > 0 && qty > exchangeRemaining) {
+    let capped = Math.floor(exchangeRemaining / step) * step
+    capped = Number(capped.toFixed(f.quantityPrecision))
+    if (capped < f.minQty) {
+      console.warn(`${LOG} catchUpMissedTp #${fresh.id} TP${tpIdx}: exchange remaining ${exchangeRemaining} < minQty — skipping`)
+      return
+    }
+    qty = capped
+  }
+
+  const closeSide: 'BUY' | 'SELL' = fresh.side === 'BUY' ? 'SELL' : 'BUY'
+  const exitCid = `exL${fresh.id}_TP${tpIdx}`
+  try {
+    await state.current.client.placeOrder({
+      symbol: fresh.symbol,
+      side: closeSide,
+      type: 'MARKET',
+      quantity: qty,
+      reduceOnly: true,
+      newClientOrderId: exitCid,
+    })
+  } catch (e: any) {
+    if (e instanceof BinanceApiError && e.code === -2022) {
+      // ReduceOnly rejected — position already 0 (TPs/SL already finalized).
+      console.warn(`${LOG} catchUpMissedTp #${fresh.id} TP${tpIdx}: -2022 (no position) — reconcileClosed will finalize`)
+      return
+    }
+    console.warn(`${LOG} catchUpMissedTp #${fresh.id} TP${tpIdx} MARKET failed: ${e?.message ?? e}`)
+    return
+  }
+
+  // Placeholder uses trigger price for pnlR (matches handleTpOrderUpdate
+  // convention). WS refine via cid='exL{id}_TP{n}' overwrites price/pnl/fee
+  // with the exact fill once ORDER_TRADE_UPDATE lands.
+  const triggerPrice = (fresh.tpLadder as number[])[tpIdx - 1] ?? lastMarkPriceWs.get(fresh.symbol) ?? fresh.entryPrice
+  const isLong = fresh.side === 'BUY'
+  const initialRisk = Math.abs(fresh.entryPrice - fresh.initialStop)
+  const pnlR = initialRisk > 0
+    ? ((isLong ? triggerPrice - fresh.entryPrice : fresh.entryPrice - triggerPrice) / initialRisk) * splitFrac
+    : 0
+  const grossPnl = (isLong ? triggerPrice - fresh.entryPrice : fresh.entryPrice - triggerPrice) * qty
+  const estFee = qty * triggerPrice * ((fresh.feeTakerPct ?? 0.04) / 100)
+
+  const { applyVirtualClose } = await import('./virtualSltp')
+  await applyVirtualClose(fresh, `TP${tpIdx}` as 'TP1' | 'TP2' | 'TP3', triggerPrice, splitFrac, pnlR, grossPnl - estFee, Date.now(), estFee, true)
+  console.log(`${LOG} 🛟 catch-up TP${tpIdx} #${fresh.id} ${fresh.symbol} qty=${qty} (algo was missing on book + mark past trigger)`)
+}
+
+/**
  * Heartbeat verification for the TP ladder of every active trade.
  *
  * Why: exchange-side algo TPs are the SOLE exit path for TP1/TP2/TP3 after the
@@ -270,6 +381,29 @@ export async function reconcileTpsForActiveTrades(): Promise<void> {
     const missing = expectedIdx.filter((i) => !liveCids.has(`tpL${t.id}_${i}`))
     if (missing.length === 0) continue
 
+    // Split missing TPs into two buckets:
+    //   pastTrigger — mark price has already crossed this TP. Re-placing would
+    //                 return -2021 "would immediately trigger". Catch up via
+    //                 MARKET reduceOnly with cid 'exL{id}_TP{n}' so the slice
+    //                 actually fires and the SL trails correctly.
+    //   reattachable — mark hasn't crossed yet, safe to re-place as algo.
+    const tpLadder = ((t.tpLadder as number[]) ?? []) as number[]
+    const isLong = t.side === 'BUY'
+    const mark = lastMarkPriceWs.get(t.symbol)
+      ?? snapshot.current?.positions.find((p) => p.symbol === t.symbol)?.markPrice
+      ?? null
+
+    const pastTrigger: Array<1 | 2 | 3> = []
+    const reattachable: Array<1 | 2 | 3> = []
+    for (const idx of missing) {
+      const trig = tpLadder[idx - 1]
+      if (mark != null && trig && (isLong ? mark >= trig : mark <= trig)) {
+        pastTrigger.push(idx)
+      } else {
+        reattachable.push(idx)
+      }
+    }
+
     // Drop the missing entries from binanceTpOrderIds so re-attach can re-place
     // them under the same cid (deterministic — Binance will throw -4116 if the
     // old one is somehow still alive but it's safer to ASK the exchange via
@@ -283,29 +417,43 @@ export async function reconcileTpsForActiveTrades(): Promise<void> {
       }).catch(() => { /* noop */ })
     }
 
-    // Compute the remaining position the TPs should cover. For TP1_HIT/TP2_HIT
-    // the original split percentages of the FULL positionUnits are still the
-    // right qty per TP (since each TP is independent reduceOnly slicing of the
-    // original size). We pass a synthetic trade object with positionUnits set
-    // to the original full size so placeTpsOnExchange computes the SAME splits
-    // the entry-time call used — guarantees the re-attached TPs match what
-    // was originally on the book.
+    // Catch up past-trigger levels first. Each catch-up call mutates the row
+    // (status flip / trail), so subsequent ones see the latest state.
+    if (pastTrigger.length > 0) {
+      console.warn(`${LOG} ⚠ TP heartbeat: mark past trigger for TP${pastTrigger.join('/')} on #${t.id} ${t.symbol} — catching up via MARKET`)
+      for (const idx of pastTrigger) {
+        await catchUpMissedTp(t.id, idx).catch((e) =>
+          console.warn(`${LOG} catchUpMissedTp #${t.id} TP${idx} threw: ${e?.message ?? e}`))
+      }
+    }
+
+    if (reattachable.length === 0) continue
+
     const refreshed = await prisma.breakoutLiveTradeC.findUnique({ where: { id: t.id } })
     if (!refreshed) continue
+    // Re-fetch missing set against the post-catchup state — a catch-up flipped
+    // OPEN→TP1_HIT, so TP1 is no longer "missing", it's "filled".
+    const stillExpected: Array<1 | 2 | 3> = []
+    if (refreshed.status === 'OPEN') stillExpected.push(1, 2, 3)
+    else if (refreshed.status === 'TP1_HIT') stillExpected.push(2, 3)
+    else if (refreshed.status === 'TP2_HIT') stillExpected.push(3)
+    const toPlace = reattachable.filter((idx) => stillExpected.includes(idx))
+    if (toPlace.length === 0) continue
 
-    // Re-place ONLY the missing levels — passing onlyIdx prevents the function
-    // from recreating any already-filled lower TPs that would immediately fire
-    // at the old trigger and double-close the position (would-be catastrophic
-    // for TP2_HIT trades where TP1's trigger is now far in profit).
-    console.warn(`${LOG} ⚠ TP heartbeat: re-attaching missing TP${missing.join('/')} for #${t.id} ${t.symbol} (status=${t.status})`)
-    const newOnes = await placeTpsOnExchange(refreshed, missing).catch((e) => {
+    console.warn(`${LOG} ⚠ TP heartbeat: re-attaching missing TP${toPlace.join('/')} for #${t.id} ${t.symbol} (status=${refreshed.status})`)
+    const newOnes = await placeTpsOnExchange(refreshed, toPlace).catch((e) => {
       console.warn(`${LOG} reconcileTps: placeTpsOnExchange #${t.id} threw: ${e?.message ?? e}`)
       return [] as TpAlgoEntry[]
     })
     if (newOnes.length === 0) continue
 
+    // Re-read the row again — applyVirtualClose during catch-up may have
+    // cleared binanceTpOrderIds on terminal exits, so we can't use the
+    // pre-catchup `survivors` snapshot as the base.
+    const t2 = await prisma.breakoutLiveTradeC.findUnique({ where: { id: t.id } })
+    const baseTps = ((t2?.binanceTpOrderIds as any[]) ?? []) as TpAlgoEntry[]
     const merged: TpAlgoEntry[] = [
-      ...survivors.filter((e) => !newOnes.some((n) => Number(n.tpIdx) === Number(e.tpIdx))),
+      ...baseTps.filter((e) => !newOnes.some((n) => Number(n.tpIdx) === Number(e.tpIdx))),
       ...newOnes,
     ]
     await prisma.breakoutLiveTradeC.update({

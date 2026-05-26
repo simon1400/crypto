@@ -32,7 +32,7 @@
 
 import { prisma } from '../../db/prisma'
 import { BinanceApiError } from '../exchanges/binanceFutures'
-import { LOG, state } from './state'
+import { LOG, state, snapshot, lastMarkPriceWs, ACTIVE_STATUSES } from './state'
 import { getFilters } from './filters'
 import { sendLiveTelegram } from './telegram'
 
@@ -118,15 +118,26 @@ export async function attachSlAfterEntry(tradeId: number): Promise<void> {
       data: { binanceSlOrderId: r.algoId },
     })
     console.log(`${LOG} 🛡 SL placed on exchange #${tradeId} ${fresh.symbol} @ ${fresh.currentStop} (algoId=${r.algoId})`)
-  } else {
-    console.warn(`${LOG} ⚠ SL placement failed for #${tradeId} ${fresh.symbol}: ${r.error} — virtual SL still active`)
-    sendLiveTelegram([
-      `⚠️ <b>${fresh.symbol}</b> · SL не выставлен на бирже`,
-      `━━━━━━━━━━━━━━━━━━`,
-      `Причина: <code>${r.error}</code>`,
-      `Виртуальный SL продолжает работать (бот закроет MARKET при касании).`,
-    ].join('\n'))
+    return
   }
+  // -2021 "Order would immediately trigger" right after entry → mark price has
+  // already crossed the initial stop (entry slippage exceeded the stop distance).
+  // That's exactly what the SL would have done; replay it via MARKET reduceOnly
+  // instead of leaving the position stranded. The virtual SL tracker was removed
+  // 2026-05-20 so there's no other safety net.
+  if (r.error.includes('-2021')) {
+    console.warn(`${LOG} ⚠ SL placement #${tradeId} ${fresh.symbol}: -2021 (mark already past trigger) — catching up via MARKET`)
+    await closeMissedSl(tradeId).catch((e) =>
+      console.warn(`${LOG} closeMissedSl #${tradeId} threw: ${e?.message ?? e}`))
+    return
+  }
+  console.warn(`${LOG} ⚠ SL placement failed for #${tradeId} ${fresh.symbol}: ${r.error}`)
+  sendLiveTelegram([
+    `⚠️ <b>${fresh.symbol}</b> · SL не выставлен на бирже`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `Причина: <code>${r.error}</code>`,
+    `SL heartbeat попробует переставить на следующем цикле.`,
+  ].join('\n'))
 }
 
 /**
@@ -182,7 +193,18 @@ export async function retrailSlOnExchange(tradeId: number): Promise<void> {
     })
     console.log(`${LOG} 🛡 SL retrailed #${tradeId} ${refreshed.symbol} → ${refreshed.currentStop}`)
   } else {
-    console.warn(`${LOG} ⚠ SL retrail failed #${tradeId}: ${r.error} — virtual SL still active`)
+    // -2021 "Order would immediately trigger" — mark price has already crossed
+    // the (trailed or initial) stop. Replay what the algo would have done via
+    // MARKET reduceOnly so the position doesn't sit stranded. Same fix as in
+    // attachSlAfterEntry. The virtual SL tracker was removed 2026-05-20 so
+    // there's nothing else covering this gap.
+    if (r.error.includes('-2021')) {
+      console.warn(`${LOG} ⚠ SL retrail #${tradeId}: -2021 (mark already past trigger) — catching up via MARKET`)
+      await closeMissedSl(tradeId).catch((e) =>
+        console.warn(`${LOG} closeMissedSl #${tradeId} threw: ${e?.message ?? e}`))
+      return
+    }
+    console.warn(`${LOG} ⚠ SL retrail failed #${tradeId}: ${r.error}`)
     // -4116 means our deterministic cid is still alive on the book — the
     // earlier cancel didn't fully take. Try to recover the algoId so the
     // ref points at SOMETHING (otherwise repair-sltp can't see it either).
@@ -205,19 +227,25 @@ export async function retrailSlOnExchange(tradeId: number): Promise<void> {
 }
 
 /**
- * Reconcile SL trigger price between DB and exchange. Iterates active trades
- * whose status is TP1_HIT / TP2_HIT (i.e. currentStop should be trailed) and
- * checks the live STOP_MARKET trigger price on Binance. If they diverge —
- * usually because retrailSlOnExchange bailed on rate-limit ban earlier —
- * tries retrail again. Idempotent: noop if SL already at trailed level.
+ * SL heartbeat — verify every active trade still has its STOP_MARKET on the
+ * exchange at the right trigger price. Covers three failure modes:
  *
- * Runs from cycle.ts every minute, so a transient ban during TP1 fire gets
+ *   1. OPEN trade with missing SL — attachSlAfterEntry failed or the algo
+ *      silently disappeared from the book (testnet auto-cleanup, sweep race).
+ *      Without this nothing re-attaches it; the position is "naked" until SL
+ *      fires manually (the FARTCOINUSDT #23654 case 2026-05-26).
+ *   2. TP1_HIT / TP2_HIT trade with missing SL — same as above but on a
+ *      partially-closed position; original retrailSl bailed on rate-limit ban.
+ *   3. SL trigger drift — DB.currentStop diverged from exchange triggerPrice
+ *      (typically rounding noise; covered by the half-tick tolerance below).
+ *
+ * Runs from cycle.ts every minute so a transient ban during TP1 fire gets
  * auto-recovered on the next tick after the ban window expires.
  */
-export async function reconcileSlTrailedLevel(): Promise<void> {
+export async function reconcileSlOnExchange(): Promise<void> {
   if (!state.current) return
   const trails = await prisma.breakoutLiveTradeC.findMany({
-    where: { status: { in: ['TP1_HIT', 'TP2_HIT'] } },
+    where: { status: { in: [...ACTIVE_STATUSES] } },
     select: {
       id: true, symbol: true, currentStop: true, binanceSlOrderId: true,
     },
@@ -271,6 +299,103 @@ export async function reconcileSlTrailedLevel(): Promise<void> {
     await retrailSlOnExchange(t.id).catch((e) =>
       console.warn(`${LOG} reconcileSl retrail #${t.id} failed: ${e?.message ?? e}`))
   }
+}
+
+/**
+ * Catch-up close when the SL algo was missing on the exchange AND mark price
+ * has already moved past the trigger. In that state, attempting to (re)place
+ * STOP_MARKET returns -2021 "Order would immediately trigger" — nothing lands
+ * on the book, the bot used to log "virtual SL still active" but the virtual
+ * tracker was removed 2026-05-20, so the position was stranded open.
+ *
+ * The fix replays what the algo would have done: a MARKET reduceOnly for the
+ * remaining position with cid 'exL{id}_SL'. ORDER_TRADE_UPDATE then arrives
+ * via handleExitFillUpdate and refines closes[] with Binance's authoritative
+ * fill price + commission + realizedPnl. applyVirtualClose writes the closes[]
+ * placeholder + runs the same terminal cleanup any normal SL would.
+ *
+ * Idempotency: the entire helper is gated by ACTIVE_STATUSES + a sub-1e-6
+ * remainingFrac check, so a double-call from concurrent reconcile / retrail
+ * paths is a no-op on the second one.
+ */
+export async function closeMissedSl(tradeId: number): Promise<void> {
+  if (!state.current) return
+  const fresh = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!fresh) return
+  if (!ACTIVE_STATUSES.includes(fresh.status as any)) return
+
+  const closesArr = ((fresh.closes as any[]) ?? []) as Array<{ percent?: number }>
+  const closedFrac = closesArr.reduce((a, c) => a + (c.percent ?? 0), 0) / 100
+  const remainingFrac = Math.max(0, 1 - closedFrac)
+  if (remainingFrac < 1e-6) return
+
+  const filtersMap = await getFilters(state.current.client).catch(() => null)
+  const f = filtersMap?.get(fresh.symbol)
+  if (!f) {
+    console.warn(`${LOG} closeMissedSl #${fresh.id}: no filter for ${fresh.symbol}`)
+    return
+  }
+
+  // Prefer the exchange's actual remaining size — TP1/TP2 step-rounding can
+  // leave a different qty on the book than (positionUnits × remainingFrac).
+  const snapPos = snapshot.current?.positions.find((p) => p.symbol === fresh.symbol)
+  const exchangeRemaining = snapPos ? Math.abs(snapPos.positionAmt) : 0
+  const plannedRemaining = fresh.positionUnits * remainingFrac
+  const remainingQty = exchangeRemaining > 0 ? exchangeRemaining : plannedRemaining
+
+  const step = f.stepSize
+  let qty = Math.floor(remainingQty / step) * step
+  qty = Number(qty.toFixed(f.quantityPrecision))
+  if (qty < f.minQty) {
+    console.warn(`${LOG} closeMissedSl #${fresh.id} ${fresh.symbol}: qty ${qty} < minQty ${f.minQty} — finalizing as dust`)
+    // Below minimum tradeable — still flip the DB to closed so reconcile
+    // doesn't keep retrying. closeLowMarginPositions on the next exit-event
+    // sweep will clean up the exchange-side residue.
+    const { applyVirtualClose } = await import('./virtualSltp')
+    await applyVirtualClose(fresh, 'SL', fresh.currentStop, remainingFrac, 0, 0, Date.now(), 0, true)
+    return
+  }
+
+  // Cancel any orphan TPs first — without this, our MARKET reduceOnly races
+  // a still-live algo TP and one of them gets -2022 ReduceOnly rejected.
+  const { cancelAllTpsOnExchange } = await import('./exchangeTp')
+  await cancelAllTpsOnExchange(fresh).catch(() => { /* best-effort */ })
+
+  // Best-known mark price for the placeholder pnl/fee — WS refine overwrites it.
+  const mark = lastMarkPriceWs.get(fresh.symbol) ?? snapPos?.markPrice ?? fresh.currentStop
+  const isLong = fresh.side === 'BUY'
+  const initialRisk = Math.abs(fresh.entryPrice - fresh.initialStop)
+  const pnlR = initialRisk > 0
+    ? ((isLong ? mark - fresh.entryPrice : fresh.entryPrice - mark) / initialRisk) * remainingFrac
+    : 0
+  const grossPnl = (isLong ? mark - fresh.entryPrice : fresh.entryPrice - mark) * qty
+  const estFee = qty * mark * ((fresh.feeTakerPct ?? 0.04) / 100)
+
+  const closeSide: 'BUY' | 'SELL' = fresh.side === 'BUY' ? 'SELL' : 'BUY'
+  const exitCid = `exL${fresh.id}_SL`
+  try {
+    await state.current.client.placeOrder({
+      symbol: fresh.symbol,
+      side: closeSide,
+      type: 'MARKET',
+      quantity: qty,
+      reduceOnly: true,
+      newClientOrderId: exitCid,
+    })
+  } catch (e: any) {
+    if (e instanceof BinanceApiError && e.code === -2022) {
+      // ReduceOnly rejected — position already 0 on the exchange. Let the
+      // periodic reconcileClosedPositionsLiveC finalize from userTrades.
+      console.warn(`${LOG} closeMissedSl #${fresh.id} ${fresh.symbol}: -2022 (no position) — reconcileClosed will finalize`)
+      return
+    }
+    console.warn(`${LOG} closeMissedSl #${fresh.id} ${fresh.symbol} MARKET failed: ${e?.message ?? e}`)
+    return
+  }
+
+  const { applyVirtualClose } = await import('./virtualSltp')
+  await applyVirtualClose(fresh, 'SL', mark, remainingFrac, pnlR, grossPnl - estFee, Date.now(), estFee, true)
+  console.log(`${LOG} 🛟 catch-up SL #${fresh.id} ${fresh.symbol} @ ~${mark} qty=${qty} (algo was missing on book + mark past trigger)`)
 }
 
 /**
