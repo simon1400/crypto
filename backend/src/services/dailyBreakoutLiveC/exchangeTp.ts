@@ -48,8 +48,13 @@ export interface TpAlgoEntry { tpIdx: 1 | 2 | 3; algoId: string }
  * Place all three TPs as TAKE_PROFIT_MARKET reduceOnly algo orders. Best-
  * effort: if any one fails (e.g. -2021 already past trigger, rare for TPs at
  * entry), we still place the others. The virtual tracker covers any gaps.
+ *
+ * `onlyIdx` (optional): restrict placement to a subset of the ladder. Used by
+ * reconcileTpsForActiveTrades to re-attach only TPs that disappeared, NEVER
+ * to recreate already-filled lower TPs (which would immediately fire and
+ * double-close at the old level).
  */
-export async function placeTpsOnExchange(trade: any): Promise<TpAlgoEntry[]> {
+export async function placeTpsOnExchange(trade: any, onlyIdx?: ReadonlyArray<1 | 2 | 3>): Promise<TpAlgoEntry[]> {
   if (!state.current) return []
   const filters = await getFilters(state.current.client)
   const f = filters.get(trade.symbol)
@@ -82,6 +87,7 @@ export async function placeTpsOnExchange(trade: any): Promise<TpAlgoEntry[]> {
 
   for (let i = 0; i < 3; i++) {
     const tpIdx = (i + 1) as 1 | 2 | 3
+    if (onlyIdx && !onlyIdx.includes(tpIdx)) continue
     const qty = qtys[i]
     if (qty < f.minQty) {
       console.warn(`${LOG} placeTps #${trade.id} TP${tpIdx}: qty ${qty} < minQty ${f.minQty} — skipping`)
@@ -196,6 +202,118 @@ export async function cancelAllTpsOnExchange(trade: any): Promise<void> {
     where: { id: trade.id },
     data: { binanceTpOrderIds: stillOpen as any },
   }).catch(() => { /* noop */ })
+}
+
+/**
+ * Heartbeat verification for the TP ladder of every active trade.
+ *
+ * Why: exchange-side algo TPs are the SOLE exit path for TP1/TP2/TP3 after the
+ * virtual tracker was removed (2026-05-20). If one of them disappears from the
+ * book for any reason — Binance testnet auto-cleanup, a missed -2011 race, a
+ * sweep that misclassified the cid, the WS event for our own cancel arriving
+ * late — the corresponding profit target stops firing and the position stays
+ * open through what should be a clean exit. We saw exactly this on #23636
+ * SEIUSDT 2026-05-26: TP1+TP2 fired, TP3 was placed at entry (algoId=...377),
+ * mark price crossed TP3 for 40 minutes, no fill ever happened because the
+ * algo had silently gone from the book.
+ *
+ * For every trade in OPEN / TP1_HIT / TP2_HIT we cross-check our DB record of
+ * placed TP algos (binanceTpOrderIds) against the live openAlgoOrders list. If
+ * an expected TP for an UN-hit level is missing, we re-attach it.
+ *
+ * Idempotent + safe:
+ *   - We only re-place TPs for levels that haven't been hit yet (skip TP1 if
+ *     status >= TP1_HIT, etc.) — re-placing a fired TP would double-close.
+ *   - We use the same deterministic clientAlgoId 'tpL{id}_{idx}' so a true
+ *     duplicate (rare race) gets -4116 and is logged-but-tolerated.
+ *   - Falls through silently if state.current isn't set yet.
+ */
+export async function reconcileTpsForActiveTrades(): Promise<void> {
+  if (!state.current) return
+  const trades = await prisma.breakoutLiveTradeC.findMany({
+    where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+  })
+  if (trades.length === 0) return
+
+  let algos: Awaited<ReturnType<typeof state.current.client.getOpenAlgoOrders>>
+  try {
+    algos = await state.current.client.getOpenAlgoOrders()
+  } catch (e: any) {
+    // Rate-limit / ban / network — retry next tick.
+    if (!(e instanceof BinanceApiError) || e.code !== -1003) {
+      console.warn(`${LOG} reconcileTps: getOpenAlgoOrders failed: ${e.message}`)
+    }
+    return
+  }
+
+  // Group algos by symbol for O(1) lookup.
+  const algoCidsBySymbol = new Map<string, Set<string>>()
+  for (const a of algos) {
+    if (!a.clientAlgoId) continue
+    let set = algoCidsBySymbol.get(a.symbol)
+    if (!set) { set = new Set(); algoCidsBySymbol.set(a.symbol, set) }
+    set.add(a.clientAlgoId)
+  }
+
+  for (const t of trades) {
+    // For each trade, which TP indices SHOULD still be on the book?
+    //   OPEN     → TP1, TP2, TP3
+    //   TP1_HIT  → TP2, TP3
+    //   TP2_HIT  → TP3
+    const expectedIdx: Array<1 | 2 | 3> = []
+    if (t.status === 'OPEN') expectedIdx.push(1, 2, 3)
+    else if (t.status === 'TP1_HIT') expectedIdx.push(2, 3)
+    else if (t.status === 'TP2_HIT') expectedIdx.push(3)
+    if (expectedIdx.length === 0) continue
+
+    const liveCids = algoCidsBySymbol.get(t.symbol) ?? new Set<string>()
+    const missing = expectedIdx.filter((i) => !liveCids.has(`tpL${t.id}_${i}`))
+    if (missing.length === 0) continue
+
+    // Drop the missing entries from binanceTpOrderIds so re-attach can re-place
+    // them under the same cid (deterministic — Binance will throw -4116 if the
+    // old one is somehow still alive but it's safer to ASK the exchange via
+    // a fresh placeAlgoOrder than to trust DB ref of a maybe-dead algo id).
+    const currentStored = ((t.binanceTpOrderIds as any[]) ?? []) as TpAlgoEntry[]
+    const survivors = currentStored.filter((e) => !missing.includes(Number(e.tpIdx) as 1 | 2 | 3))
+    if (survivors.length !== currentStored.length) {
+      await prisma.breakoutLiveTradeC.update({
+        where: { id: t.id },
+        data: { binanceTpOrderIds: survivors as any },
+      }).catch(() => { /* noop */ })
+    }
+
+    // Compute the remaining position the TPs should cover. For TP1_HIT/TP2_HIT
+    // the original split percentages of the FULL positionUnits are still the
+    // right qty per TP (since each TP is independent reduceOnly slicing of the
+    // original size). We pass a synthetic trade object with positionUnits set
+    // to the original full size so placeTpsOnExchange computes the SAME splits
+    // the entry-time call used — guarantees the re-attached TPs match what
+    // was originally on the book.
+    const refreshed = await prisma.breakoutLiveTradeC.findUnique({ where: { id: t.id } })
+    if (!refreshed) continue
+
+    // Re-place ONLY the missing levels — passing onlyIdx prevents the function
+    // from recreating any already-filled lower TPs that would immediately fire
+    // at the old trigger and double-close the position (would-be catastrophic
+    // for TP2_HIT trades where TP1's trigger is now far in profit).
+    console.warn(`${LOG} ⚠ TP heartbeat: re-attaching missing TP${missing.join('/')} for #${t.id} ${t.symbol} (status=${t.status})`)
+    const newOnes = await placeTpsOnExchange(refreshed, missing).catch((e) => {
+      console.warn(`${LOG} reconcileTps: placeTpsOnExchange #${t.id} threw: ${e?.message ?? e}`)
+      return [] as TpAlgoEntry[]
+    })
+    if (newOnes.length === 0) continue
+
+    const merged: TpAlgoEntry[] = [
+      ...survivors.filter((e) => !newOnes.some((n) => Number(n.tpIdx) === Number(e.tpIdx))),
+      ...newOnes,
+    ]
+    await prisma.breakoutLiveTradeC.update({
+      where: { id: t.id },
+      data: { binanceTpOrderIds: merged as any },
+    }).catch(() => { /* noop */ })
+    console.log(`${LOG} 🎯 TP heartbeat re-attached #${t.id} ${t.symbol}: ${newOnes.map((n) => `TP${n.tpIdx}=${n.algoId}`).join(', ')}`)
+  }
 }
 
 /**

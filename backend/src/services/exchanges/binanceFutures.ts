@@ -213,6 +213,15 @@ export class BinanceFuturesClient {
   // Persistent serverTimeOffset (server - local). Updated on `syncTime()`.
   private timeOffsetMs = 0
 
+  // Ban gate: when Binance returns 418/-1003 with "banned until <ms>", we cache
+  // that timestamp here and short-circuit subsequent requests until it passes.
+  // Without this, every caller keeps hammering REST during the ban window which
+  // extends the ban (Binance lengthens the window on continued violation —
+  // observed cascading bans 2026-05-19..26 on testnet). Public so getters can
+  // expose it for monitoring and so the WS layer can pause its REST keepalive.
+  private bannedUntilMs = 0
+  private bannedReason = ''
+
   constructor(creds: BinanceCreds) {
     this.apiKey = creds.apiKey
     this.apiSecret = creds.apiSecret
@@ -222,6 +231,14 @@ export class BinanceFuturesClient {
 
   get usedWeight1m(): number { return this.lastUsedWeight1m }
   get orderCount1m(): number { return this.lastOrderCount1m }
+
+  /** Currently banned by Binance? Returns ms remaining or 0 if not banned. */
+  get banRemainingMs(): number {
+    const rem = this.bannedUntilMs - Date.now()
+    return rem > 0 ? rem : 0
+  }
+  get banReason(): string { return this.bannedReason }
+  isBanned(): boolean { return this.banRemainingMs > 0 }
 
   /**
    * Sync clock with Binance server. SIGNED endpoints reject if timestamp drift
@@ -524,6 +541,19 @@ export class BinanceFuturesClient {
   }
 
   private async request<T>(method: string, path: string, headers: Record<string, string> = {}): Promise<T> {
+    // Ban-gate: if we're inside an active 418/-1003 window, refuse the call
+    // BEFORE hitting the network. Each request during the window only convinces
+    // Binance to extend it ("banned until X" increases on every violation).
+    // The thrown error carries the SAME shape callers already handle for live
+    // 418/-1003 responses, so all existing try/catches keep working.
+    if (this.bannedUntilMs > Date.now()) {
+      throw new BinanceApiError(
+        418,
+        -1003,
+        `IP banned (local gate) until ${this.bannedUntilMs} — ${this.bannedReason}`,
+      )
+    }
+
     const url = `${this.base}${path}`
     const res = await fetch(url, { method, headers })
 
@@ -543,6 +573,34 @@ export class BinanceFuturesClient {
         code = j.code ?? -1
         msg = j.msg ?? text
       } catch { /* non-JSON body */ }
+
+      // 418/-1003: parse "banned until <ms>" and cache. Binance returns either
+      //   "Way too many requests; IP(x.x.x.x) banned until 1779786659174."
+      //   "Too many requests; current limit ... requests per minute. ..."
+      // Only the first form pins a ban-until; the second is rate-limit (429)
+      // without a hard ban. Honor both by setting a short cooldown.
+      if (res.status === 418 || res.status === 429 || code === -1003) {
+        const m = /banned until\s+(\d{10,16})/i.exec(msg)
+        if (m) {
+          const untilMs = Number(m[1])
+          if (Number.isFinite(untilMs) && untilMs > this.bannedUntilMs) {
+            this.bannedUntilMs = untilMs
+            this.bannedReason = msg.slice(0, 200)
+            const remaining = Math.max(0, untilMs - Date.now())
+            console.warn(`[BinanceClient] ban gate ENGAGED for ${(remaining / 1000).toFixed(0)}s — ${msg.slice(0, 120)}`)
+          }
+        } else if (res.status === 429) {
+          // Soft rate-limit without explicit ban-until — back off for 60s to
+          // give the per-minute counter time to roll.
+          const softUntil = Date.now() + 60_000
+          if (softUntil > this.bannedUntilMs) {
+            this.bannedUntilMs = softUntil
+            this.bannedReason = '429 soft rate-limit (60s cooldown)'
+            console.warn('[BinanceClient] soft rate-limit — 60s REST cooldown engaged')
+          }
+        }
+      }
+
       throw new BinanceApiError(res.status, code, msg)
     }
     // Empty body (some POSTs return 200 + empty)

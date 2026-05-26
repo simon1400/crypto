@@ -10,6 +10,7 @@ import { flattenAllOpenC, cancelOrphanPendingLimits, cancelAllPendingLimits } fr
 import { pruneOldAttempts } from './attempts'
 import { closeLowMarginPositions, sweepStrayAlgoOrders, reconcileClosedPositionsLiveC } from './reconcile'
 import { reconcileSlTrailedLevel } from './exchangeSl'
+import { reconcileTpsForActiveTrades } from './exchangeTp'
 import { sendLiveCEodSummary } from './eod'
 
 /**
@@ -70,6 +71,14 @@ export async function runLiveCycle(): Promise<void> {
     // Runs every cycle so a 30s ban window auto-recovers on the next tick.
     await reconcileSlTrailedLevel().catch((e) =>
       console.warn(`${LOG} reconcileSlTrailedLevel threw: ${e?.message ?? e}`))
+
+    // TP heartbeat: confirm every un-hit TP for active trades is actually on
+    // the exchange. If one silently disappeared (Binance auto-cleanup, missed
+    // cancel race, etc.) re-attach it. Without this, a missing TP3 stays
+    // un-fired even when mark price runs straight through it — exactly the
+    // #23636 SEIUSDT incident on 2026-05-26.
+    await reconcileTpsForActiveTrades().catch((e) =>
+      console.warn(`${LOG} reconcileTpsForActiveTrades threw: ${e?.message ?? e}`))
 
     // Safety-net: detect DB rows still OPEN whose position has closed on the
     // exchange (SL/TP fill WS event lost or cid-rewritten). Self-heals using

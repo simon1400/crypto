@@ -129,8 +129,12 @@ export class BinanceUserDataStream {
     try {
       this.listenKey = await this.opts.client.startUserDataStream()
     } catch (e: any) {
+      // If the client is IP-banned, REST POST listenKey is throwing locally
+      // via the gate. Don't pile up reconnect attempts — wait out the ban
+      // window before trying again.
+      const remaining = (this.opts.client as any).banRemainingMs ?? 0
       console.error('[BinanceWS user] startUserDataStream failed:', e.message)
-      this.scheduleReconnect()
+      this.scheduleReconnect(remaining)
       return
     }
 
@@ -141,18 +145,23 @@ export class BinanceUserDataStream {
 
     ws.on('open', () => {
       console.log(`[BinanceWS user] connected (${this.opts.net})`)
-      this.reconnectAttempt = 0
+      // Don't reset reconnectAttempt here — a connection that opens but
+      // immediately drops would mask the issue. We reset on first real event.
       // Refresh listenKey every 30 min (expires at 60 min).
       if (this.keepaliveTimer) clearInterval(this.keepaliveTimer)
       this.keepaliveTimer = setInterval(() => {
         this.opts.client.keepaliveUserDataStream()
           .catch((e) => console.warn('[BinanceWS user] keepalive failed:', e.message))
       }, 30 * 60 * 1000)
-      // Heartbeat watchdog: any message resets lastMessageAt. If silent for 3 min → reconnect.
+      // Heartbeat watchdog: any inbound activity (message OR ping OR pong)
+      // refreshes lastMessageAt. User-data may be genuinely silent for hours
+      // when there's no order activity — Binance keeps the connection alive
+      // with periodic pings at the WS protocol level. We raise the threshold
+      // to 10 min so a quiet stretch doesn't churn us through reconnects.
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
       this.heartbeatTimer = setInterval(() => {
-        if (Date.now() - this.lastMessageAt > 3 * 60 * 1000) {
-          console.warn('[BinanceWS user] heartbeat silent 3min, reconnecting')
+        if (Date.now() - this.lastMessageAt > 10 * 60 * 1000) {
+          console.warn('[BinanceWS user] heartbeat silent 10min, reconnecting')
           try { ws.terminate() } catch { /* noop */ }
         }
       }, 30 * 1000)
@@ -162,6 +171,9 @@ export class BinanceUserDataStream {
       this.lastMessageAt = Date.now()
       try {
         const ev = JSON.parse(raw.toString()) as UserDataEvent
+        // First real payload → reset reconnect backoff. We treat any parsed
+        // JSON event as proof the stream is healthy.
+        if (this.reconnectAttempt !== 0) this.reconnectAttempt = 0
         Promise.resolve(this.opts.onEvent(ev)).catch((e) => {
           console.error('[BinanceWS user] handler error:', e.message)
         })
@@ -169,6 +181,12 @@ export class BinanceUserDataStream {
         console.warn('[BinanceWS user] non-JSON message:', raw.toString().slice(0, 200))
       }
     })
+
+    // ws library auto-pongs to pings, but the activity isn't surfaced through
+    // 'message'. Track ping and pong as keepalive evidence so the heartbeat
+    // watchdog doesn't kill a connection that's just quietly alive.
+    ws.on('ping', () => { this.lastMessageAt = Date.now() })
+    ws.on('pong', () => { this.lastMessageAt = Date.now() })
 
     ws.on('close', (code, reason) => {
       console.warn(`[BinanceWS user] closed code=${code} reason=${reason?.toString() || ''}`)
@@ -187,10 +205,13 @@ export class BinanceUserDataStream {
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null }
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(minDelayMs = 0): void {
     if (this.stopped) return
     this.reconnectAttempt++
-    const delay = Math.min(60_000, 1000 * 2 ** Math.min(this.reconnectAttempt, 6))
+    const expoDelay = Math.min(60_000, 1000 * 2 ** Math.min(this.reconnectAttempt, 6))
+    // Honor ban-window if caller passed one (REST listenKey gated locally).
+    // +500ms jitter so we don't all wake at the exact ban-expiry millisecond.
+    const delay = Math.max(expoDelay, minDelayMs + 500)
     console.log(`[BinanceWS user] reconnect in ${delay}ms (attempt ${this.reconnectAttempt})`)
     setTimeout(() => this.connect(), delay)
   }
@@ -279,7 +300,7 @@ export class BinanceMarketDataStream {
 
     ws.on('open', () => {
       console.log(`[BinanceWS market] connected (${this.opts.net})`)
-      this.reconnectAttempt = 0
+      // Reset on first parsed aggTrade — not on open. See user-data stream.
       // Re-subscribe previously tracked symbols.
       if (this.subscribed.size > 0) {
         const params = Array.from(this.subscribed).map((s) => `${s}@aggTrade`)
@@ -289,8 +310,8 @@ export class BinanceMarketDataStream {
       }
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
       this.heartbeatTimer = setInterval(() => {
-        if (Date.now() - this.lastMessageAt > 3 * 60 * 1000) {
-          console.warn('[BinanceWS market] heartbeat silent 3min, reconnecting')
+        if (Date.now() - this.lastMessageAt > 10 * 60 * 1000) {
+          console.warn('[BinanceWS market] heartbeat silent 10min, reconnecting')
           try { ws.terminate() } catch { /* noop */ }
         }
       }, 30 * 1000)
@@ -303,6 +324,7 @@ export class BinanceMarketDataStream {
         // Combined-stream payload shape: { stream: 'btcusdt@aggTrade', data: {...} }
         const data = msg.data ?? msg
         if (data?.e === 'aggTrade') {
+          if (this.reconnectAttempt !== 0) this.reconnectAttempt = 0
           const sym = String(data.s).toUpperCase()
           const price = Number(data.p)
           const ts = Number(data.T)
@@ -311,6 +333,11 @@ export class BinanceMarketDataStream {
         }
       } catch { /* subscription ack or non-trade message */ }
     })
+
+    // Ping / pong are auto-handled by ws lib at protocol level but not exposed
+    // as 'message' events. Surface them as activity for the heartbeat watchdog.
+    ws.on('ping', () => { this.lastMessageAt = Date.now() })
+    ws.on('pong', () => { this.lastMessageAt = Date.now() })
 
     ws.on('close', (code) => {
       console.warn(`[BinanceWS market] closed code=${code}`)
