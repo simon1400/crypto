@@ -24,7 +24,7 @@ import { sendLiveTelegram } from './telegram'
 import { cancelSlOnExchange, retrailSlOnExchange } from './exchangeSl'
 import { cancelTpOnExchange, cancelAllTpsOnExchange } from './exchangeTp'
 import { seedSnapshotFromRest } from './snapshot'
-import { cancelAllExchangeOrdersForTrade, sweepStrayAlgoOrders, closeLowMarginPositions } from './reconcile'
+import { cancelAllExchangeOrdersForTrade, sweepStrayAlgoOrders, closeLowMarginPositions, closeUntrackedPositions } from './reconcile'
 import type { BinanceFuturesClient } from '../exchanges/binanceFutures'
 
 // Post-close cleanup debounce — sweepStrayAlgoOrders + closeLowMarginPositions
@@ -43,6 +43,11 @@ async function maybeRunPostCloseCleanup(client: BinanceFuturesClient): Promise<v
     console.warn(`${LOG} post-close sweepStrayAlgoOrders failed: ${e?.message ?? e}`))
   await closeLowMarginPositions(client).catch((e) =>
     console.warn(`${LOG} post-close closeLowMarginPositions failed: ${e?.message ?? e}`))
+  // Catch zombie positions (any margin mode) that incomplete terminal closes
+  // leave behind — closeLowMarginPositions only handles isolated < $1, missing
+  // cross-margin residuals that accumulate over days (SEI/ORDI 2026-05-27).
+  await closeUntrackedPositions(client).catch((e) =>
+    console.warn(`${LOG} post-close closeUntrackedPositions failed: ${e?.message ?? e}`))
 }
 
 /**

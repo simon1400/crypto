@@ -22,7 +22,7 @@ import {
 } from '../services/exchanges/binanceFutures'
 import { refreshLiveBalance } from './_liveBalanceShared'
 import { buildSharedReadHandlers } from './breakoutPaper/index'
-import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot, attachMissingSlTp, sendLiveCEodSummary, getLiveGuards, reconcileClosedPositionsLiveC } from '../services/dailyBreakoutLiveC'
+import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot, attachMissingSlTp, sendLiveCEodSummary, getLiveGuards, reconcileClosedPositionsLiveC, closeUntrackedPositions } from '../services/dailyBreakoutLiveC'
 
 // Re-export so existing import paths (`from './breakoutLiveC'`) keep working.
 export { refreshLiveBalance }
@@ -882,6 +882,25 @@ router.post('/trades/reconcile-closed', async (_req, res) => {
     if (!creds) return res.status(400).json({ error: 'no Binance creds configured' })
     const client = getBinanceClient(creds)
     const r = await reconcileClosedPositionsLiveC(client)
+    res.json({ ok: true, ...r })
+  } catch (e: any) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /trades/sweep-untracked — close "zombie" exchange positions that have
+// no active DB row (leftover residuals from incomplete terminal closes, any
+// margin mode incl. cross). Same closer that now runs on boot reconcile +
+// event-driven cleanup; exposed for an immediate manual sweep when the header
+// shows "биржа N, БД M" with N > M.
+router.post('/trades/sweep-untracked', async (_req, res) => {
+  try {
+    const cfg = await prisma.breakoutLiveConfigC.findUnique({ where: { id: 1 } })
+    if (!cfg) return res.status(400).json({ error: 'config missing' })
+    const creds = await getBinanceCreds(cfg.useTestnet)
+    if (!creds) return res.status(400).json({ error: 'no Binance creds configured' })
+    const client = getBinanceClient(creds)
+    const r = await closeUntrackedPositions(client)
     res.json({ ok: true, ...r })
   } catch (e: any) {
     res.status(500).json({ error: e.message })

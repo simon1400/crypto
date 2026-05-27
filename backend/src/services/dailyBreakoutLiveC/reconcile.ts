@@ -212,12 +212,45 @@ export async function reconcileWithExchange(client: BinanceFuturesClient): Promi
 
   // --- Exchange positions without DB row ---
   // Symbols where we have a non-zero position on exchange but no OPEN row.
+  // First try to AUTO-CLOSE them — they're almost always zombie residuals
+  // from incomplete terminal closes (step-rounding remainders that piled up).
+  // Only flag → kill-switch the ones that survive the close attempt (e.g. a
+  // genuinely foreign position whose reduceOnly close fails). Previously ANY
+  // untracked position tripped the kill-switch, which on a tiny dust residual
+  // (AAVEUSDT=0.1 2026-05-27) silently froze the whole trader until manual
+  // release — and the dust would've been swept on the next cycle anyway.
   const dbSymbolsOpen = new Set(dbOpen.map((t) => t.symbol))
-  for (const [sym, pos] of positionsBySymbol) {
-    if (pos.amt === 0) continue
-    if (dbSymbolsOpen.has(sym)) continue
-    report.details.untrackedPositions.push({ symbol: sym, amt: pos.amt })
-    report.hasUntrackedPositions = true
+  const untrackedCandidates = Array.from(positionsBySymbol.entries())
+    .filter(([sym, pos]) => pos.amt !== 0 && !dbSymbolsOpen.has(sym))
+    .map(([sym, pos]) => ({ symbol: sym, amt: pos.amt }))
+
+  if (untrackedCandidates.length > 0) {
+    console.warn(`${LOG} reconcile: ${untrackedCandidates.length} untracked position(s) — attempting auto-close: ${untrackedCandidates.map((u) => `${u.symbol}=${u.amt}`).join(', ')}`)
+    await closeUntrackedPositions(client).catch((e) =>
+      console.warn(`${LOG} reconcile: closeUntrackedPositions threw: ${e?.message ?? e}`))
+
+    // Re-query — anything still open is a true drift that needs manual review.
+    let survivors: typeof untrackedCandidates = []
+    try {
+      const after = await client.getOpenPositions()
+      const afterBySymbol = new Map(after.map((p) => [p.symbol, Number(p.positionAmt)]))
+      survivors = untrackedCandidates.filter((u) => {
+        const amt = afterBySymbol.get(u.symbol) ?? 0
+        return amt !== 0
+      })
+    } catch (e: any) {
+      // Couldn't re-verify — be conservative, treat all as survivors so we
+      // flag for manual review rather than silently assume they closed.
+      survivors = untrackedCandidates
+      console.warn(`${LOG} reconcile: post-close re-query failed: ${e.message} — flagging all untracked for review`)
+    }
+    for (const s of survivors) {
+      report.details.untrackedPositions.push(s)
+      report.hasUntrackedPositions = true
+    }
+    if (survivors.length === 0) {
+      console.log(`${LOG} reconcile: all untracked positions auto-closed — no kill-switch needed`)
+    }
   }
 
   // (Exchange-orders-without-DB-row check removed 2026-05-19 — entry orders
@@ -318,6 +351,121 @@ export async function closeLowMarginPositions(client: BinanceFuturesClient, marg
     }
   }
   return { closed }
+}
+
+/**
+ * Close "zombie" exchange positions — any non-zero position whose symbol has
+ * NO active DB row. Unlike closeLowMarginPositions (isolated margin < $1 only,
+ * skips cross), this handles ANY size and ANY margin mode.
+ *
+ * Root case 2026-05-27: SEIUSDT 84096 (+$546) and ORDIUSDT 1822 (-$303)
+ * cross-margin LONGs accumulated over ~3 days from incomplete LONG terminal
+ * closes (reduceOnly TP/SL qty rounded DOWN at each rung → residual remained;
+ * cross-margin so closeLowMarginPositions skipped it). They sat naked (no
+ * SL/TP), distorting wallet vs DB-tracked P&L (the "прочее +$3883" residual)
+ * and carrying uncovered directional risk.
+ *
+ * Safety — never touch a live/just-opened trade:
+ *   - Skip symbol if it has an active DB row (OPEN/TP1_HIT/TP2_HIT) OR a
+ *     PENDING_LIMIT row OR any row opened in the last 5 min. The 5-min window
+ *     covers the gap between an entry MARKET fill landing on the exchange and
+ *     tryFillVirtualLimit writing the OPEN row (and any WS-race during it).
+ *
+ * Chunks the close if remaining qty exceeds MARKET_LOT_SIZE.maxQty (symmetric
+ * with flatten.ts / aggTrade.ts entry chunking — KAS-class large positions).
+ *
+ * Sends a Telegram alert per closed zombie so the operator knows it happened
+ * (these are abnormal — a healthy bot shouldn't accumulate them).
+ */
+export async function closeUntrackedPositions(client: BinanceFuturesClient): Promise<{ closed: number; checked: number }> {
+  let positions: Awaited<ReturnType<typeof client.getOpenPositions>>
+  try {
+    positions = await client.getOpenPositions()
+  } catch (e: any) {
+    console.warn(`${LOG} closeUntrackedPositions: getOpenPositions failed: ${e.message}`)
+    return { closed: 0, checked: 0 }
+  }
+  const nonZero = positions.filter((p) => Number(p.positionAmt) !== 0)
+  if (nonZero.length === 0) return { closed: 0, checked: 0 }
+
+  const filtersMap = state.current ? await getFilters(state.current.client).catch(() => null) : null
+  const freshCutoff = new Date(Date.now() - 5 * 60 * 1000)
+  let closed = 0
+  let checked = 0
+
+  for (const p of nonZero) {
+    const amt = Number(p.positionAmt)
+    // Tracked or too-fresh → leave alone.
+    const guardRow = await prisma.breakoutLiveTradeC.findFirst({
+      where: {
+        symbol: p.symbol,
+        OR: [
+          { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+          { limitOrderState: 'PENDING_LIMIT' },
+          { openedAt: { gte: freshCutoff } },
+        ],
+      },
+      select: { id: true },
+    })
+    if (guardRow) continue
+    checked++
+
+    const f = filtersMap?.get(p.symbol)
+    if (!f) {
+      console.warn(`${LOG} closeUntracked ${p.symbol} amt=${amt}: no filter — skipping`)
+      continue
+    }
+    const closeSide: 'BUY' | 'SELL' = amt > 0 ? 'SELL' : 'BUY'
+    const step = f.stepSize
+    let qty = Math.floor(Math.abs(amt) / step) * step
+    qty = Number(qty.toFixed(f.quantityPrecision))
+    if (qty < f.minQty) {
+      console.warn(`${LOG} closeUntracked ${p.symbol} amt=${amt} < minQty ${f.minQty} — sub-min dust, leaving`)
+      continue
+    }
+
+    // Chunk if qty exceeds MARKET_LOT_SIZE.maxQty.
+    const marketCap = Math.max(f.minQty, f.marketMaxQty || qty)
+    const chunks: number[] = []
+    if (qty <= marketCap) {
+      chunks.push(qty)
+    } else {
+      let remaining = qty
+      while (remaining > 1e-9) {
+        let qc = Math.floor(Math.min(remaining, marketCap) / step) * step
+        qc = Number(qc.toFixed(f.quantityPrecision))
+        if (qc < f.minQty) break
+        chunks.push(qc)
+        remaining -= qc
+      }
+    }
+
+    const uPnl = Number((p as any).unRealizedProfit ?? 0)
+    try {
+      for (const chunkQty of chunks) {
+        await client.placeOrder({
+          symbol: p.symbol,
+          side: closeSide,
+          type: 'MARKET',
+          quantity: chunkQty,
+          reduceOnly: true,
+        })
+      }
+      console.log(`${LOG} 🧟 closeUntracked closed zombie ${p.symbol} amt=${amt} qty=${qty} uPnl=$${uPnl.toFixed(2)} (${(p as any).marginType ?? '?'} margin, no DB row)${chunks.length > 1 ? ` × ${chunks.length} legs` : ''}`)
+      closed++
+      const sign = uPnl >= 0 ? '+' : '−'
+      await sendLiveTelegram([
+        `🧟 <b>Закрыта untracked-позиция</b>  · ${p.symbol}`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `Позиция на бирже без DB-строки (остаток от неполного закрытия). Закрыта MARKET reduceOnly.`,
+        `Кол-во: <code>${Math.abs(amt)}</code> · реализ. ${sign}$${Math.abs(uPnl).toFixed(2)}`,
+      ].join('\n')).catch(() => { /* best-effort */ })
+    } catch (e: any) {
+      if (e instanceof BinanceApiError && e.code === -2022) continue  // already gone
+      console.warn(`${LOG} closeUntracked ${p.symbol} qty=${qty} failed: ${e.message}`)
+    }
+  }
+  return { closed, checked }
 }
 
 /**
