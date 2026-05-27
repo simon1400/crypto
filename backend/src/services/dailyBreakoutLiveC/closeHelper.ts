@@ -31,6 +31,10 @@ export interface CloseResult {
   ok: boolean
   reason?: string
   usedPlainFallback?: boolean
+  /** true only when an order was actually sent (false for "already flat" /
+   *  "sub-min dust" no-ops). Callers use this to avoid false "closed" logs
+   *  and Telegram alerts when the helper found nothing to do. */
+  placed?: boolean
 }
 
 /**
@@ -48,7 +52,7 @@ export async function closeReduceOnlyOrPlain(
   },
 ): Promise<CloseResult> {
   const { symbol, closeSide, quantity, clientOrderId } = args
-  if (!(quantity > 0)) return { ok: true, reason: 'zero qty' }
+  if (!(quantity > 0)) return { ok: true, placed: false, reason: 'zero qty' }
 
   // Attempt 1 — reduceOnly (the only path that runs on prod in the common case).
   try {
@@ -60,7 +64,7 @@ export async function closeReduceOnlyOrPlain(
       reduceOnly: true,
       ...(clientOrderId ? { newClientOrderId: clientOrderId } : {}),
     })
-    return { ok: true }
+    return { ok: true, placed: true }
   } catch (e: any) {
     if (e instanceof BinanceApiError && e.code === -2022) {
       // fall through to the verify-then-plain path
@@ -81,11 +85,11 @@ export async function closeReduceOnlyOrPlain(
   const amt = p ? Number(p.positionAmt) : 0
   if (amt === 0) {
     // -2022 genuinely meant "nothing to reduce" — position already flat.
-    return { ok: true, reason: 'already flat (-2022 = no position)' }
+    return { ok: true, placed: false, reason: 'already flat (-2022 = no position)' }
   }
   const reduces = (closeSide === 'SELL' && amt > 0) || (closeSide === 'BUY' && amt < 0)
   if (!reduces) {
-    return { ok: false, reason: `closeSide ${closeSide} would not reduce amt ${amt} — refusing plain MARKET (flip guard)` }
+    return { ok: false, placed: false, reason: `closeSide ${closeSide} would not reduce amt ${amt} — refusing plain MARKET (flip guard)` }
   }
 
   // Plain MARKET sized to AT MOST the live position, floored to step → can't flip.
@@ -96,7 +100,7 @@ export async function closeReduceOnlyOrPlain(
   if (step > 0) {
     q = Number((Math.floor(q / step) * step).toFixed(f!.quantityPrecision))
   }
-  if (!(q > 0)) return { ok: true, reason: 'sub-step dust after floor' }
+  if (!(q > 0)) return { ok: true, placed: false, reason: 'sub-step dust after floor' }
 
   try {
     await client.placeOrder({
@@ -109,13 +113,13 @@ export async function closeReduceOnlyOrPlain(
       ...(clientOrderId ? { newClientOrderId: clientOrderId } : {}),
     })
     console.log(`${LOG} closeReduceOnlyOrPlain: ${symbol} ${closeSide} ${q} via plain MARKET (reduceOnly was -2022; live amt=${amt})`)
-    return { ok: true, usedPlainFallback: true }
+    return { ok: true, placed: true, usedPlainFallback: true }
   } catch (e: any) {
     if (e instanceof BinanceApiError && e.code === -4164) {
       // notional < min and reduceOnly not allowed → true sub-min dust, harmless.
-      return { ok: true, reason: 'sub-min dust (-4164)' }
+      return { ok: true, placed: false, reason: 'sub-min dust (-4164)' }
     }
-    return { ok: false, reason: e?.message ?? String(e) }
+    return { ok: false, placed: false, reason: e?.message ?? String(e) }
   }
 }
 
@@ -166,7 +170,7 @@ export async function closeFullPositionMarket(
       : undefined
     const r = await closeReduceOnlyOrPlain(client, { symbol, closeSide, quantity: chunks[i], clientOrderId: cid })
     if (!r.ok) anyFail = true
-    else closedQty += chunks[i]
+    else if (r.placed) closedQty += chunks[i]  // only count legs that actually sent an order
     if (r.usedPlainFallback) plain = true
   }
   return { ok: !anyFail, usedPlainFallback: plain, closedQty }
