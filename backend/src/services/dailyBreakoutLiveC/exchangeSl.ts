@@ -35,6 +35,7 @@ import { BinanceApiError } from '../exchanges/binanceFutures'
 import { LOG, state, snapshot, lastMarkPriceWs, ACTIVE_STATUSES } from './state'
 import { getFilters } from './filters'
 import { sendLiveTelegram } from './telegram'
+import { closeReduceOnlyOrPlain } from './closeHelper'
 
 type PlaceSlResult = { ok: true; algoId: bigint } | { ok: false; error: string }
 
@@ -47,16 +48,17 @@ export async function placeSlOnExchange(trade: any): Promise<PlaceSlResult> {
   const closeSide: 'BUY' | 'SELL' = trade.side === 'BUY' ? 'SELL' : 'BUY'
   const tick = f.tickSize
   const triggerPrice = Number((Math.round(trade.currentStop / tick) * tick).toFixed(f.pricePrecision))
-  // Round quantity DOWN to stepSize — retrailSlOnExchange passes the remaining
-  // position fraction (e.g. 8375 × 0.5 = 4187.5 after TP1), which Binance rejects
-  // with -1111 Precision when stepSize=1 (UBUSDT bug 2026-05-19 #4898). Apply
-  // the same floor-to-step that placeOrder uses for entries / exit slices.
-  const step = f.stepSize
-  let qty = Math.floor(trade.positionUnits / step) * step
-  qty = Number(qty.toFixed(f.quantityPrecision))
-  if (qty < f.minQty) {
-    return { ok: false, error: `qty ${qty} below minQty ${f.minQty} after step rounding` }
-  }
+  // closePosition=true instead of reduceOnly+quantity. The SL closes the ENTIRE
+  // remaining position when mark crosses the trigger. Critical 2026-05-27 fix:
+  //   - It CANNOT open or flip a position (close-only at the matching-engine
+  //     level). The old reduceOnly STOP_MARKET, on trigger, was observed FLIPPING
+  //     the short into an equal-size long on testnet (reduceOnly silently
+  //     ignored) — the resulting naked, wrong-side "zombie" ran with no SL until
+  //     a boot/EOD sweep, bleeding for hours (ENA −710, FARTCOIN −434, …).
+  //   - No quantity → no -1111/-4005/-1106 step-rounding rejects, and no qty
+  //     recompute on retrail after a partial TP (it always closes whatever's left).
+  //   - Not a reduceOnly order → immune to the testnet -2022 reduceOnly rejection.
+  //   - Binance auto-cancels it when the position reaches 0 (TP3 / manual close).
   const slClientId = `slL${trade.id}`
 
   let lastErr = ''
@@ -67,8 +69,7 @@ export async function placeSlOnExchange(trade: any): Promise<PlaceSlResult> {
         side: closeSide,
         type: 'STOP_MARKET',
         triggerPrice,
-        quantity: qty,
-        reduceOnly: true,
+        closePosition: true,
         workingType: 'MARK_PRICE',
         clientAlgoId: slClientId,
       })
@@ -177,15 +178,11 @@ export async function retrailSlOnExchange(tradeId: number): Promise<void> {
     where: { id: tradeId },
     data: { binanceSlOrderId: null },
   })
-  // The remaining position size is smaller after a partial TP — re-fetch and
-  // pass it to placeSlOnExchange via positionUnits. We adjust by closed fraction.
+  // closePosition=true SL closes the full remaining position on trigger — no
+  // qty/closed-fraction recalculation needed after a partial TP.
   const refreshed = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
   if (!refreshed) return
-  const closesArr = ((refreshed.closes as any[]) ?? []) as Array<{ percent?: number }>
-  const closedFrac = closesArr.reduce((a, c) => a + (c.percent ?? 0), 0) / 100
-  const remainingUnits = refreshed.positionUnits * Math.max(0, 1 - closedFrac)
-  const tradeForSl = { ...refreshed, positionUnits: remainingUnits }
-  const r = await placeSlOnExchange(tradeForSl)
+  const r = await placeSlOnExchange(refreshed)
   if (r.ok) {
     await prisma.breakoutLiveTradeC.update({
       where: { id: tradeId },
@@ -373,23 +370,17 @@ export async function closeMissedSl(tradeId: number): Promise<void> {
 
   const closeSide: 'BUY' | 'SELL' = fresh.side === 'BUY' ? 'SELL' : 'BUY'
   const exitCid = `exL${fresh.id}_SL`
-  try {
-    await state.current.client.placeOrder({
-      symbol: fresh.symbol,
-      side: closeSide,
-      type: 'MARKET',
-      quantity: qty,
-      reduceOnly: true,
-      newClientOrderId: exitCid,
-    })
-  } catch (e: any) {
-    if (e instanceof BinanceApiError && e.code === -2022) {
-      // ReduceOnly rejected — position already 0 on the exchange. Let the
-      // periodic reconcileClosedPositionsLiveC finalize from userTrades.
-      console.warn(`${LOG} closeMissedSl #${fresh.id} ${fresh.symbol}: -2022 (no position) — reconcileClosed will finalize`)
-      return
-    }
-    console.warn(`${LOG} closeMissedSl #${fresh.id} ${fresh.symbol} MARKET failed: ${e?.message ?? e}`)
+  // Safe close: reduceOnly first, plain-MARKET fallback on testnet -2022 (guarded
+  // by a live position re-read so it can never open a fresh position).
+  const cr = await closeReduceOnlyOrPlain(state.current.client, {
+    symbol: fresh.symbol, closeSide, quantity: qty, clientOrderId: exitCid,
+  })
+  if (!cr.ok) {
+    console.warn(`${LOG} closeMissedSl #${fresh.id} ${fresh.symbol} close failed: ${cr.reason}`)
+    return
+  }
+  if (cr.reason && cr.reason.includes('already flat')) {
+    console.warn(`${LOG} closeMissedSl #${fresh.id} ${fresh.symbol}: position already flat — reconcileClosed will finalize`)
     return
   }
 

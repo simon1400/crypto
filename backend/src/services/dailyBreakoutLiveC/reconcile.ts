@@ -24,6 +24,7 @@ import { getFilters } from './filters'
 import { attachSlAfterEntry, cancelSlOnExchange } from './exchangeSl'
 import { attachTpsAfterEntry, cancelAllTpsOnExchange } from './exchangeTp'
 import { sendLiveTelegram } from './telegram'
+import { closeFullPositionMarket } from './closeHelper'
 
 export interface ReconcileReport {
   hasUntrackedPositions: boolean
@@ -377,13 +378,22 @@ export async function closeLowMarginPositions(client: BinanceFuturesClient, marg
  * Sends a Telegram alert per closed zombie so the operator knows it happened
  * (these are abnormal — a healthy bot shouldn't accumulate them).
  */
-export async function closeUntrackedPositions(client: BinanceFuturesClient): Promise<{ closed: number; checked: number }> {
+export async function closeUntrackedPositions(
+  client: BinanceFuturesClient,
+  prefetched?: Awaited<ReturnType<typeof client.getOpenPositions>>,
+): Promise<{ closed: number; checked: number }> {
   let positions: Awaited<ReturnType<typeof client.getOpenPositions>>
-  try {
-    positions = await client.getOpenPositions()
-  } catch (e: any) {
-    console.warn(`${LOG} closeUntrackedPositions: getOpenPositions failed: ${e.message}`)
-    return { closed: 0, checked: 0 }
+  if (prefetched) {
+    // Reuse positions already fetched by the caller (reconcileClosedPositionsLiveC
+    // in the 60s cycle) — zero extra REST for the periodic naked-zombie sweep.
+    positions = prefetched
+  } else {
+    try {
+      positions = await client.getOpenPositions()
+    } catch (e: any) {
+      console.warn(`${LOG} closeUntrackedPositions: getOpenPositions failed: ${e.message}`)
+      return { closed: 0, checked: 0 }
+    }
   }
   const nonZero = positions.filter((p) => Number(p.positionAmt) !== 0)
   if (nonZero.length === 0) return { closed: 0, checked: 0 }
@@ -415,55 +425,26 @@ export async function closeUntrackedPositions(client: BinanceFuturesClient): Pro
       console.warn(`${LOG} closeUntracked ${p.symbol} amt=${amt}: no filter — skipping`)
       continue
     }
-    const closeSide: 'BUY' | 'SELL' = amt > 0 ? 'SELL' : 'BUY'
-    const step = f.stepSize
-    let qty = Math.floor(Math.abs(amt) / step) * step
-    qty = Number(qty.toFixed(f.quantityPrecision))
-    if (qty < f.minQty) {
-      console.warn(`${LOG} closeUntracked ${p.symbol} amt=${amt} < minQty ${f.minQty} — sub-min dust, leaving`)
+    const uPnl = Number((p as any).unRealizedProfit ?? 0)
+    // Safe close: reduceOnly first, plain-MARKET fallback (≤ live amt) on the
+    // testnet -2022 reduceOnly rejection. Without the fallback this used to just
+    // `continue` on -2022 — which is exactly why naked zombies survived every
+    // boot/EOD sweep and ran for days (2026-05-27 root cause).
+    const cr = await closeFullPositionMarket(client, p.symbol, amt, f)
+    if (!cr.ok) {
+      console.warn(`${LOG} closeUntracked ${p.symbol} amt=${amt} close failed: ${cr.reason}`)
       continue
     }
-
-    // Chunk if qty exceeds MARKET_LOT_SIZE.maxQty.
-    const marketCap = Math.max(f.minQty, f.marketMaxQty || qty)
-    const chunks: number[] = []
-    if (qty <= marketCap) {
-      chunks.push(qty)
-    } else {
-      let remaining = qty
-      while (remaining > 1e-9) {
-        let qc = Math.floor(Math.min(remaining, marketCap) / step) * step
-        qc = Number(qc.toFixed(f.quantityPrecision))
-        if (qc < f.minQty) break
-        chunks.push(qc)
-        remaining -= qc
-      }
-    }
-
-    const uPnl = Number((p as any).unRealizedProfit ?? 0)
-    try {
-      for (const chunkQty of chunks) {
-        await client.placeOrder({
-          symbol: p.symbol,
-          side: closeSide,
-          type: 'MARKET',
-          quantity: chunkQty,
-          reduceOnly: true,
-        })
-      }
-      console.log(`${LOG} 🧟 closeUntracked closed zombie ${p.symbol} amt=${amt} qty=${qty} uPnl=$${uPnl.toFixed(2)} (${(p as any).marginType ?? '?'} margin, no DB row)${chunks.length > 1 ? ` × ${chunks.length} legs` : ''}`)
-      closed++
-      const sign = uPnl >= 0 ? '+' : '−'
-      await sendLiveTelegram([
-        `🧟 <b>Закрыта untracked-позиция</b>  · ${p.symbol}`,
-        `━━━━━━━━━━━━━━━━━━`,
-        `Позиция на бирже без DB-строки (остаток от неполного закрытия). Закрыта MARKET reduceOnly.`,
-        `Кол-во: <code>${Math.abs(amt)}</code> · реализ. ${sign}$${Math.abs(uPnl).toFixed(2)}`,
-      ].join('\n')).catch(() => { /* best-effort */ })
-    } catch (e: any) {
-      if (e instanceof BinanceApiError && e.code === -2022) continue  // already gone
-      console.warn(`${LOG} closeUntracked ${p.symbol} qty=${qty} failed: ${e.message}`)
-    }
+    if (cr.closedQty <= 0) continue  // sub-min dust — nothing actionable
+    console.log(`${LOG} 🧟 closeUntracked closed zombie ${p.symbol} amt=${amt} uPnl=$${uPnl.toFixed(2)} (${(p as any).marginType ?? '?'} margin, no DB row)${cr.usedPlainFallback ? ' [plain-fallback]' : ''}`)
+    closed++
+    const sign = uPnl >= 0 ? '+' : '−'
+    await sendLiveTelegram([
+      `🧟 <b>Закрыта untracked-позиция</b>  · ${p.symbol}`,
+      `━━━━━━━━━━━━━━━━━━`,
+      `Позиция на бирже без DB-строки (наведённая/перевёрнутая). Закрыта MARKET.`,
+      `Кол-во: <code>${Math.abs(amt)}</code> · реализ. ${sign}$${Math.abs(uPnl).toFixed(2)}`,
+    ].join('\n')).catch(() => { /* best-effort */ })
   }
   return { closed, checked }
 }
@@ -665,8 +646,23 @@ export async function reconcileClosedPositionsLiveC(
   let checked = 0
   for (const t of ripeRows) {
     const amt = positionsBySymbol.get(t.symbol)
-    if (amt !== undefined && amt !== 0) continue  // position alive — nothing to do
+    const dbLong = t.side === 'BUY'
+    const aligned = amt !== undefined && amt !== 0 && (amt > 0) === dbLong
+    if (aligned) continue  // position alive AND correct direction — nothing to do
     checked++
+
+    // Direction mismatch: DB says short but exchange holds a long (or vice
+    // versa). The tracked position is GONE and a naked, wrong-side position sits
+    // on the book — the 2026-05-27 testnet reduceOnly-STOP flip. finalizeOrphanRow
+    // can't handle this (it looks for a clean closing fill; a flip has none, so
+    // it would skip and strand the row OPEN forever in a retrail→-2021→-2022
+    // loop). Close the wrong-side position and finalize the row directly.
+    if (amt !== undefined && amt !== 0 && (amt > 0) !== dbLong) {
+      await handleFlippedPosition(client, t, amt).catch((e) =>
+        console.warn(`${LOG} reconcileClosed flip #${t.id} ${t.symbol} failed: ${e?.message ?? e}`))
+      finalized++
+      continue
+    }
 
     try {
       await finalizeOrphanRow(client, t)
@@ -675,6 +671,16 @@ export async function reconcileClosedPositionsLiveC(
       console.warn(`${LOG} reconcileClosed #${t.id} ${t.symbol} failed: ${e?.message ?? e}`)
     }
   }
+
+  // Periodic naked-zombie sweep — reuse the positions already fetched above
+  // (zero extra REST). Closes any non-zero position with NO active DB row (the
+  // residue of a flip whose DB row was already finalized, or a foreign/manual
+  // position). This is the safety-critical EXCEPTION to "no periodic cleanup":
+  // a naked position carries uncovered directional risk and must die within one
+  // 60s cycle, not wait for the next boot/EOD. With closePosition-SL preventing
+  // flips at the source, this should almost never find anything to do.
+  await closeUntrackedPositions(client, positions).catch((e) =>
+    console.warn(`${LOG} reconcileClosed: periodic untracked sweep threw: ${e?.message ?? e}`))
 
   if (finalized > 0) {
     // Roll up aggregate stats (totalTrades/totalPnLUsd/peakDeposit/maxDD) after
@@ -850,5 +856,77 @@ async function finalizeOrphanRow(
     `Биржа закрыла позицию (${inferredReason}); WS-событие не пришло, восстановлено по userTrades.`,
     `Цена: <code>${avgFillPrice.toFixed(8).replace(/0+$/, '').replace(/\.$/, '')}</code>`,
     `P&L: <b>${sign}$${Math.abs(netPnl).toFixed(2)}</b>  (комиссия ${residualFees.toFixed(2)}$)`,
+  ].join('\n')).catch(() => { /* best-effort */ })
+}
+
+/**
+ * Handle a flipped position — DB row is still OPEN/TP*_HIT for one side while the
+ * exchange holds a non-zero position on the OPPOSITE side. Root cause 2026-05-27:
+ * a reduceOnly STOP_MARKET on testnet, when triggered, flipped the short into an
+ * equal-size long instead of closing it (reduceOnly silently ignored). The
+ * original tracked position never realized a clean close, so finalizeOrphanRow's
+ * userTrades path can't categorize it — we finalize directly here.
+ *
+ * Steps: cancel any stale algos for the trade, close the naked wrong-side
+ * position at MARKET (safe reduceOnly→plain fallback), then finalize the DB row
+ * CLOSED. The original entry's P&L is recorded as 0 — it flipped, it never
+ * realized; the naked-leg loss is exchange-side noise not attributable to the
+ * strategy row. (closePosition-SL now prevents the flip; this is the recovery
+ * net for anything already flipped or a TP-side flip that slips through.)
+ */
+async function handleFlippedPosition(
+  client: BinanceFuturesClient,
+  trade: any,
+  amt: number,
+): Promise<void> {
+  // Cancel stale algos (all now wrong-side for the flipped position).
+  await cancelSlOnExchange(trade).catch(() => { /* best-effort */ })
+  await cancelAllTpsOnExchange(trade).catch(() => { /* best-effort */ })
+
+  const filtersMap = state.current ? await getFilters(state.current.client).catch(() => null) : null
+  const f = filtersMap?.get(trade.symbol)
+  let closedOk = false
+  if (f) {
+    const cr = await closeFullPositionMarket(client, trade.symbol, amt, f)
+    closedOk = cr.ok && cr.closedQty > 0
+  } else {
+    console.warn(`${LOG} flip #${trade.id} ${trade.symbol}: no filter — can't close naked leg`)
+  }
+
+  const priorCloses = ((trade.closes as any[]) ?? []) as Array<{ percent?: number }>
+  const priorPercent = priorCloses.reduce((a, c) => a + (c?.percent ?? 0), 0)
+  const residualPercent = Math.max(0, 100 - priorPercent)
+  await prisma.breakoutLiveTradeC.update({
+    where: { id: trade.id },
+    data: {
+      status: 'CLOSED',
+      closedAt: new Date(),
+      binanceSlOrderId: null,
+      binanceTpOrderIds: [] as any,
+      closes: residualPercent > 1e-6
+        ? [
+            ...priorCloses,
+            {
+              price: trade.entryPrice,
+              percent: residualPercent,
+              pnlUsd: 0,
+              feePaidUsd: 0,
+              reason: 'SL',
+              reasonNote: 'flip-auto-cleanup',
+              closedAt: new Date().toISOString(),
+            },
+          ] as any
+        : (priorCloses as any),
+    },
+  })
+
+  const { recomputeTradeMoney } = await import('./virtualSltp')
+  await recomputeTradeMoney(trade.id).catch(() => { /* noop */ })
+
+  console.log(`${LOG} ⚠ flip auto-cleanup #${trade.id} ${trade.symbol}: DB ${trade.side} vs exchange amt=${amt} — ${closedOk ? 'closed wrong-side leg + ' : 'close FAILED, '}finalized row`)
+  await sendLiveTelegram([
+    `🔀 <b>Flip auto-cleanup</b>  · #${trade.id} ${trade.symbol} ${trade.side}`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `Позиция перевернулась на бирже (DB ${trade.side}, биржа amt=${amt}). ${closedOk ? 'Встречная нога закрыта' : '⚠ закрыть ногу не удалось'}, строка финализирована.`,
   ].join('\n')).catch(() => { /* best-effort */ })
 }
