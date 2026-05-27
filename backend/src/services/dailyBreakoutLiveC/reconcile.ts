@@ -234,10 +234,18 @@ export async function reconcileWithExchange(client: BinanceFuturesClient): Promi
     let survivors: typeof untrackedCandidates = []
     try {
       const after = await client.getOpenPositions()
-      const afterBySymbol = new Map(after.map((p) => [p.symbol, Number(p.positionAmt)]))
+      const afterMap = new Map(after.map((p) => [p.symbol, p]))
       survivors = untrackedCandidates.filter((u) => {
-        const amt = afterBySymbol.get(u.symbol) ?? 0
-        return amt !== 0
+        const p = afterMap.get(u.symbol)
+        const amt = p ? Number(p.positionAmt) : 0
+        if (amt === 0) return false
+        // Sub-min-notional dust (step-rounding residue that can't be closed via
+        // order: reduceOnly → -2022, plain MARKET → -4164 "notional < min") is
+        // harmless. Don't trip the kill-switch over $2 of un-closeable dust —
+        // it would freeze the trader on every boot.
+        const notional = Math.abs(amt) * Number((p as any)?.markPrice ?? (p as any)?.entryPrice ?? 0)
+        if (notional > 0 && notional < 5) return false
+        return true
       })
     } catch (e: any) {
       // Couldn't re-verify — be conservative, treat all as survivors so we
@@ -425,6 +433,11 @@ export async function closeUntrackedPositions(
       console.warn(`${LOG} closeUntracked ${p.symbol} amt=${amt}: no filter — skipping`)
       continue
     }
+    // Sub-min dust pre-skip: un-closeable via order (reduceOnly -2022 / plain
+    // MARKET -4164). Skip BEFORE the close helper so we don't burn a getOpenPositions
+    // on the -2022 path every 60s cycle for the same inert residue.
+    const flooredQty = Number((Math.floor(Math.abs(amt) / f.stepSize) * f.stepSize).toFixed(f.quantityPrecision))
+    if (flooredQty < f.minQty) continue
     const uPnl = Number((p as any).unRealizedProfit ?? 0)
     // Safe close: reduceOnly first, plain-MARKET fallback (≤ live amt) on the
     // testnet -2022 reduceOnly rejection. Without the fallback this used to just
