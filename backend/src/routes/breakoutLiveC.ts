@@ -53,7 +53,8 @@ interface AlgoOrderRow {
   createdAt: number | null
 }
 const algoOrdersCache: { at: number; data: AlgoOrderRow[] } = { at: 0, data: [] }
-const ALGO_ORDERS_TTL_MS = 5 * 60 * 1000   // 5 min — see /status doc-note
+// TTL fallback removed 2026-05-27 — algoOrders only refreshed on explicit
+// ?refresh=1 (Биржа tab "Обновить" button). See /status route comment.
 
 
 // ============================================================================
@@ -255,21 +256,18 @@ router.get('/status', async (req, res) => {
     })
     const pendingOrders = new Set(pendingRows.map((r) => r.symbol)).size
 
-    // Conditional TP/SL list — refreshed at most once per ALGO_ORDERS_TTL_MS.
-    // If the refresh fails (rate-limit, network) we still serve the previous
-    // snapshot so the UI doesn't flicker to empty between polls.
+    // Conditional TP/SL list — fetched ONLY on explicit ?refresh=1. The auto
+    // 5-min TTL fallback was removed 2026-05-27 per user request: every
+    // /status poll (every 10s) refreshing algos at TTL expiry contributed
+    // weight-5 calls that piled up with terminal-close burst traffic and
+    // helped push us over the 6000 req/min IP-ban threshold. User triggers
+    // refresh manually via the "Обновить" button on the "Биржа" tab.
     const now = Date.now()
-    if (forceRefresh || now - algoOrdersCache.at >= ALGO_ORDERS_TTL_MS) {
+    if (forceRefresh) {
       try {
         const client = getBinanceClient(creds)
         if (client) {
           const raw = await client.getOpenAlgoOrders()
-          if (raw.length > 0) {
-            // Once-per-refresh sample so we can see what Binance actually
-            // returns (field naming differs across endpoint versions: type vs
-            // algoType, triggerPrice vs stopPrice, etc.).
-            console.log('[breakoutLiveC] /status algoOrders sample:', JSON.stringify(raw[0]))
-          }
           algoOrdersCache.data = raw.map((o) => {
             const anyO = o as any
             const qtyStr = o.quantity ?? o.origQty ?? '0'

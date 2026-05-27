@@ -629,6 +629,39 @@ async function finalizeOrphanRow(
   await cancelSlOnExchange(trade).catch(() => { /* best-effort */ })
   await cancelAllTpsOnExchange(trade).catch(() => { /* best-effort */ })
 
+  // Infer the close reason from realizedPnl + direction. The OLD code
+  // hard-coded reason='SL' which mislabelled profitable reconciles as SL_HIT
+  // (DOGE #25989: SHORT closed at +$25 within 2s of open, marked as SL — UI
+  // showed "SL" with positive P&L, contradictory).
+  //
+  // Rules:
+  //   - residualRealizedPnl > 0 AND avgFillPrice is on the profit side of
+  //     entry for this trade.side → label as TPn (pick the ladder rung
+  //     closest to avgFillPrice; reconciled rows are always 100% closures
+  //     so "which TP fired" is best-guess).
+  //   - Otherwise → SL (loss or zero P&L, or weird mid-range fill that
+  //     wasn't a clean TP).
+  //
+  // Status: terminal close that came through a TP-direction fill maps to
+  // CLOSED (not TP3_HIT — TP3_HIT implies the full ladder fired and we
+  // can't confirm that from a single reconciled fill). buildOutcomeLabel
+  // renders status='CLOSED' + reason='TPn' as just "TPn" — readable.
+  const isLong = trade.side === 'BUY'
+  const isTpDirection = isLong
+    ? avgFillPrice > trade.entryPrice
+    : avgFillPrice < trade.entryPrice
+  const ladder = ((trade.tpLadder as number[]) ?? []) as number[]
+  let inferredReason: 'SL' | 'TP1' | 'TP2' | 'TP3' = 'SL'
+  if (residualRealizedPnl > 0 && isTpDirection && ladder.length > 0) {
+    let bestIdx = 0
+    let bestDist = Infinity
+    for (let i = 0; i < ladder.length; i++) {
+      const d = Math.abs(ladder[i] - avgFillPrice)
+      if (d < bestDist) { bestDist = d; bestIdx = i }
+    }
+    inferredReason = (`TP${bestIdx + 1}` as 'TP1' | 'TP2' | 'TP3')
+  }
+
   await prisma.breakoutLiveTradeC.update({
     where: { id: trade.id },
     data: {
@@ -642,7 +675,7 @@ async function finalizeOrphanRow(
           pnlUsd: residualRealizedPnl,
           feePaidUsd: residualFees,
           closedAt: new Date(lastTime || Date.now()).toISOString(),
-          reason: 'SL',
+          reason: inferredReason,
           reasonNote: 'reconciled-from-binance',
           binanceOrderId: firstOrderId,
         },
@@ -666,7 +699,7 @@ async function finalizeOrphanRow(
   await sendLiveTelegram([
     `♻ <b>Reconciled exit</b>  · #${trade.id} ${trade.symbol} ${trade.side}`,
     `━━━━━━━━━━━━━━━━━━`,
-    `Биржа закрыла позицию (вероятно SL); WS-событие не пришло, восстановлено по userTrades.`,
+    `Биржа закрыла позицию (${inferredReason}); WS-событие не пришло, восстановлено по userTrades.`,
     `Цена: <code>${avgFillPrice.toFixed(8).replace(/0+$/, '').replace(/\.$/, '')}</code>`,
     `P&L: <b>${sign}$${Math.abs(netPnl).toFixed(2)}</b>  (комиссия ${residualFees.toFixed(2)}$)`,
   ].join('\n')).catch(() => { /* best-effort */ })

@@ -25,6 +25,25 @@ import { cancelSlOnExchange, retrailSlOnExchange } from './exchangeSl'
 import { cancelTpOnExchange, cancelAllTpsOnExchange } from './exchangeTp'
 import { seedSnapshotFromRest } from './snapshot'
 import { cancelAllExchangeOrdersForTrade, sweepStrayAlgoOrders, closeLowMarginPositions } from './reconcile'
+import type { BinanceFuturesClient } from '../exchanges/binanceFutures'
+
+// Post-close cleanup debounce — sweepStrayAlgoOrders + closeLowMarginPositions
+// are also run on every 60s cycle heartbeat. Re-running them on every single
+// terminal close burned through REST budget when 5+ positions closed in burst
+// (mass SL on volatile move / breaker trip). 30s window matches snapshot
+// staleness — close enough that anything genuinely missed by one close gets
+// picked up by the next cycle tick or the next close 30s+ later.
+const POST_CLOSE_DEBOUNCE_MS = 30_000
+const postCloseGuard = { lastCleanupAt: 0, lastSnapshotAt: 0 }
+
+async function maybeRunPostCloseCleanup(client: BinanceFuturesClient): Promise<void> {
+  if (Date.now() - postCloseGuard.lastCleanupAt < POST_CLOSE_DEBOUNCE_MS) return
+  postCloseGuard.lastCleanupAt = Date.now()
+  await sweepStrayAlgoOrders(client).catch((e) =>
+    console.warn(`${LOG} post-close sweepStrayAlgoOrders failed: ${e?.message ?? e}`))
+  await closeLowMarginPositions(client).catch((e) =>
+    console.warn(`${LOG} post-close closeLowMarginPositions failed: ${e?.message ?? e}`))
+}
 
 /**
  * Rebuild realizedPnlUsd / feesPaidUsd / netPnlUsd as absolute values from the
@@ -313,44 +332,34 @@ export async function applyVirtualClose(
       await cancelAllExchangeOrdersForTrade(state.current.client, fresh.id, fresh.symbol).catch((e) =>
         console.warn(`${LOG} post-close cancelAllExchangeOrdersForTrade failed: ${e?.message ?? e}`))
     }
-    // Stray-algo sweep right after a terminal close — picks up any random-cid
-    // orphans (Binance auto-cid when our signed POST dropped clientAlgoId on
-    // a rate-limited retry) and size-stale algos.
+    // Stray-algo sweep + dust cleanup — debounced to ≥30s across all closes.
+    // The cycle.ts heartbeat (60s) covers the same ground, so running it per-
+    // close adds redundant REST traffic. When several trades close in burst
+    // (mass SL hit from a breaker or sharp market move), the old per-close
+    // path fired 2 getOpen* + N cancel + 1 getOpenPositions + N place +
+    // 1 getAccount per trade — easily 50-75 REST in seconds, contributing
+    // directly to the 6000 req/min IP ban we hit 2026-05-27 04:06 UTC.
     if (state.current) {
-      await sweepStrayAlgoOrders(state.current.client).catch((e) =>
-        console.warn(`${LOG} post-close sweepStrayAlgoOrders failed: ${e?.message ?? e}`))
-    }
-    // Close any exchange-side dust positions whose isolated margin is below
-    // $1. Includes step-rounding residue from this terminal close — the old
-    // dust sweep gated on `qty < minQty` and refused to act, leaving the
-    // position visible in Binance UI. Margin-based gate handles it directly
-    // (if Binance refuses qty < minQty we just log; the position stays but
-    // the trader keeps working).
-    if (state.current) {
-      await closeLowMarginPositions(state.current.client).catch((e) =>
-        console.warn(`${LOG} post-close closeLowMarginPositions failed: ${e?.message ?? e}`))
+      await maybeRunPostCloseCleanup(state.current.client)
     }
   } else if (reason === 'TP1' || reason === 'TP2') {
     await retrailSlOnExchange(fresh.id).catch((e) =>
       console.warn(`${LOG} retrailSlOnExchange threw: ${e?.message ?? e}`))
-    // Same stray-algo sweep on TP partial close — orphans with stale qty
-    // (created at original position size) outlive the retrail and need
-    // cleanup before they get triggered on the wrong size.
+    // Partial-close cleanup — same debounce as terminal. The cycle heartbeat
+    // catches orphans within 60s anyway.
     if (state.current) {
-      await sweepStrayAlgoOrders(state.current.client).catch((e) =>
-        console.warn(`${LOG} post-TP sweepStrayAlgoOrders failed: ${e?.message ?? e}`))
-    }
-    // Also check for any below-$1-margin dust positions while we're at it.
-    if (state.current) {
-      await closeLowMarginPositions(state.current.client).catch((e) =>
-        console.warn(`${LOG} post-TP closeLowMarginPositions failed: ${e?.message ?? e}`))
+      await maybeRunPostCloseCleanup(state.current.client)
     }
   }
 
   // Force-refresh balance from REST after any exit. Realized PnL just hit the
   // wallet — without a refresh, sizing/UI keeps reading stale currentDepositUsd
-  // until the next 30s tick. One weight=5 call per close.
-  if (state.current) {
+  // until the next 30s tick. Debounced (≥30s) so a burst of closes doesn't
+  // fire 5+ getAccount calls in the same second. SNAPSHOT_STALE_MS=30s already
+  // means subsequent getLiveSnapshot() callers refresh themselves on the next
+  // poll, so the realized P&L still lands within a tick.
+  if (state.current && Date.now() - postCloseGuard.lastSnapshotAt >= POST_CLOSE_DEBOUNCE_MS) {
+    postCloseGuard.lastSnapshotAt = Date.now()
     await seedSnapshotFromRest(state.current.client, state.current.net, 'rest-refresh').catch((e) =>
       console.warn(`${LOG} post-close balance refresh failed: ${e?.message ?? e}`))
   }

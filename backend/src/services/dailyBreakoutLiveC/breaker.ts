@@ -143,19 +143,32 @@ export async function isLiveCircuitBreakerTripped(cfg: any): Promise<CircuitBrea
  * When the breaker trips, cancel all still-pending entry limits on the
  * exchange so no new exposure opens. Existing OPEN positions are left alone
  * (they have real SL/TP children that will close them in normal flow).
+ *
+ * Since the virtual-limit refactor 2026-05-19, PENDING_LIMIT rows are DB-only
+ * — no exchange order behind them — so `binanceClientOrderId` is normally null
+ * and no REST call is needed. We still keep the cancelOrder call for any
+ * legacy rows that DO carry an exchange ref (e.g. a row migrated from the
+ * pre-virtual model that never finalized), but we skip the REST entirely
+ * when the field is null. Without this gate, a breaker trip that cancels
+ * 46 PENDING rows used to fire 46 cancelOrder REST calls back-to-back —
+ * contributing to the 6000 req/min IP ban observed 2026-05-27 04:06 UTC.
+ *
+ * The DB update (status → CANCELLED) still happens for every row regardless.
  */
 export async function cancelAllPendingForBreaker(client: BinanceFuturesClient, reason: string): Promise<void> {
   const pending = await prisma.breakoutLiveTradeC.findMany({
     where: { limitOrderState: 'PENDING_LIMIT' },
   })
+  let restCancels = 0
   for (const t of pending) {
-    try {
-      if (t.binanceClientOrderId) {
+    if (t.binanceClientOrderId) {
+      try {
         await client.cancelOrder(t.symbol, { origClientOrderId: t.binanceClientOrderId })
-      }
-    } catch (e: any) {
-      if (!(e instanceof BinanceApiError) || (e.code !== -2011 && e.code !== -2013)) {
-        console.warn(`${LOG} breaker cancel ${t.symbol} failed: ${e.message}`)
+        restCancels++
+      } catch (e: any) {
+        if (!(e instanceof BinanceApiError) || (e.code !== -2011 && e.code !== -2013)) {
+          console.warn(`${LOG} breaker cancel ${t.symbol} failed: ${e.message}`)
+        }
       }
     }
     await prisma.breakoutLiveTradeC.update({
@@ -168,7 +181,7 @@ export async function cancelAllPendingForBreaker(client: BinanceFuturesClient, r
     })
   }
   if (pending.length > 0) {
-    console.log(`${LOG} breaker cancelled ${pending.length} PENDING limits (${reason})`)
+    console.log(`${LOG} breaker cancelled ${pending.length} PENDING limits (${reason}) — ${restCancels} REST cancel(s), ${pending.length - restCancels} DB-only`)
   }
 }
 
