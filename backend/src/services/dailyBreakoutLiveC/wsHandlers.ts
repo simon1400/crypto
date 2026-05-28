@@ -385,7 +385,18 @@ async function handleTpOrderUpdate(
   const closesArr = ((fresh.closes as any[]) ?? []) as Array<{ reason?: string; percent?: number }>
   if (closesArr.some((c) => c.reason === reason)) return  // virtual tracker won the race
 
-  const fillPrice = Number(o.ap) || Number(o.L) || 0
+  // Fallback to trigger price when testnet returns ap=0 / L=0 on the algo
+  // fill (same family of quirks as feedback_binance_testnet_unrealized_zero).
+  // 2026-05-28 ETH #32311: Binance fired TP1 algo correctly (position shrank
+  // 3.639 -> 1.434 = exactly 50%), but ap=0 in the WS event made this handler
+  // bail at `if (fillPrice <= 0) return`. DB stayed OPEN, heartbeat kept
+  // re-arming TP1, user saw "trade still hanging" while half the position was
+  // already gone on the exchange. Use the trigger as best-effort price; the
+  // P&L/fee that recomputeTradeMoney later reconciles from userTrades will
+  // overwrite this on convergence.
+  const tpLadderArr = ((fresh.tpLadder as number[]) ?? []) as number[]
+  const triggerFallback = tpLadderArr[tpIdx - 1] ?? 0
+  const fillPrice = Number(o.ap) || Number(o.L) || triggerFallback
   if (fillPrice <= 0) return
   const fee = Number(o.n) || 0
   const exactRealizedPnl = Number(o.rp) || 0  // Binance's authoritative realizedProfit
