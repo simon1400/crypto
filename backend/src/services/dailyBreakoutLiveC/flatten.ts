@@ -9,6 +9,7 @@ import { cancelSlOnExchange } from './exchangeSl'
 import { cancelAllTpsOnExchange } from './exchangeTp'
 import { sendLiveTelegram } from './telegram'
 import { recomputeTradeMoney } from './virtualSltp'
+import { closeReduceOnlyOrPlain } from './closeHelper'
 
 /**
  * Close every BreakoutLiveTradeC row still in an open status: cancel its SL/TP
@@ -261,18 +262,28 @@ async function flattenOneRow(t: any, reason: string): Promise<'closed' | 'finali
     console.log(`${LOG} flatten #${t.id} ${t.symbol} qty ${qty} > MARKET_LOT_SIZE.maxQty ${marketCap} — splitting into ${chunks.length} legs`)
   }
 
+  // Each chunk through the safe close helper: reduceOnly first, plain-MARKET
+  // fallback (≤ live |amt|) on testnet -2022. Otherwise EOD-FLAT / manual
+  // close / kill-switch silently fail on testnet (-2022 cascade) and positions
+  // survive to the next day.
+  let placedAnyLeg = false
+  let lastErr: string | null = null
   try {
     for (let i = 0; i < chunks.length; i++) {
       const chunkQty = chunks[i]
       const cidForChunk = chunks.length === 1 ? exitCid : `${exitCid}_${i + 1}`
-      await state.current.client.placeOrder({
-        symbol: t.symbol,
-        side: closeSide,
-        type: 'MARKET',
-        quantity: chunkQty,
-        reduceOnly: true,
-        newClientOrderId: cidForChunk,
+      const cr = await closeReduceOnlyOrPlain(state.current.client, {
+        symbol: t.symbol, closeSide, quantity: chunkQty, clientOrderId: cidForChunk,
       })
+      if (!cr.ok) { lastErr = cr.reason ?? 'unknown'; continue }
+      if (cr.placed) placedAnyLeg = true
+    }
+    if (!placedAnyLeg) {
+      // Nothing actually closed (every leg returned "already flat" / sub-min /
+      // hard error). Don't pretend we flattened — let reconcileClosed handle it.
+      console.warn(`${LOG} flatten #${t.id} ${t.symbol}: no leg placed (${lastErr ?? 'already flat'}) — leaving for reconcileClosed`)
+      lastFlattenError.set(t.id, lastErr ?? 'already flat')
+      return 'failed'
     }
     await prisma.breakoutLiveTradeC.update({
       where: { id: t.id },

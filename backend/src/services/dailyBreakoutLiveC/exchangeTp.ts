@@ -41,6 +41,7 @@ import { prisma } from '../../db/prisma'
 import { BinanceApiError } from '../exchanges/binanceFutures'
 import { LOG, state, snapshot, lastMarkPriceWs, ACTIVE_STATUSES, SPLITS } from './state'
 import { getFilters } from './filters'
+import { closeReduceOnlyOrPlain } from './closeHelper'
 
 export interface TpAlgoEntry { tpIdx: 1 | 2 | 3; algoId: string }
 
@@ -279,22 +280,20 @@ export async function catchUpMissedTp(tradeId: number, tpIdx: 1 | 2 | 3): Promis
 
   const closeSide: 'BUY' | 'SELL' = fresh.side === 'BUY' ? 'SELL' : 'BUY'
   const exitCid = `exL${fresh.id}_TP${tpIdx}`
-  try {
-    await state.current.client.placeOrder({
-      symbol: fresh.symbol,
-      side: closeSide,
-      type: 'MARKET',
-      quantity: qty,
-      reduceOnly: true,
-      newClientOrderId: exitCid,
-    })
-  } catch (e: any) {
-    if (e instanceof BinanceApiError && e.code === -2022) {
-      // ReduceOnly rejected — position already 0 (TPs/SL already finalized).
-      console.warn(`${LOG} catchUpMissedTp #${fresh.id} TP${tpIdx}: -2022 (no position) — reconcileClosed will finalize`)
-      return
-    }
-    console.warn(`${LOG} catchUpMissedTp #${fresh.id} TP${tpIdx} MARKET failed: ${e?.message ?? e}`)
+  // Safe close: reduceOnly first, plain-MARKET fallback on testnet -2022 (guarded
+  // by a live position re-read). Without this, every TP heartbeat tick burned a
+  // -2022 and returned, stranding ETH/DYDX-class trades OPEN forever in a 60s
+  // loop while mark was clearly past TP1 (root cascade: 2026-05-27 ETH #32311).
+  const cr = await closeReduceOnlyOrPlain(state.current.client, {
+    symbol: fresh.symbol, closeSide, quantity: qty, clientOrderId: exitCid,
+  })
+  if (!cr.ok) {
+    console.warn(`${LOG} catchUpMissedTp #${fresh.id} TP${tpIdx} close failed: ${cr.reason}`)
+    return
+  }
+  if (cr.placed !== true) {
+    // "already flat" or sub-min dust — no order went out; let reconcileClosed handle it.
+    console.warn(`${LOG} catchUpMissedTp #${fresh.id} TP${tpIdx}: ${cr.reason ?? 'no order placed'} — reconcileClosed will finalize`)
     return
   }
 
