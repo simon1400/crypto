@@ -326,7 +326,11 @@ router.get('/status', async (req, res) => {
       totalPnlUsd: Math.round(totalPnlUsd * 100) / 100,
       totalPnlPct: Math.round(totalPnlPct * 100) / 100,
       baselineSnapshottedAt: cfg.resetAt,
-      openPositions: snap.positions.length,
+      // Filter sub-min-notional dust (e.g. VANA 0.02 ≈ $0.03 leftover from prior
+      // testnet flip cleanups that can't be closed via order: reduceOnly -2022,
+      // plain MARKET -4164). Counting it inflates "biржа N" vs "БД M" and reads
+      // as drift to the user. $5 threshold matches reconcile.ts survivor filter.
+      openPositions: snap.positions.filter((p) => Math.abs(p.positionAmt) * (p.markPrice || p.entryPrice) >= 5).length,
       openOrders: pendingOrders,
       snapshotAge: Date.now() - snap.updatedAt,
       snapshotSource: snap.source,
