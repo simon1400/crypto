@@ -140,14 +140,40 @@ export async function placeLimitsForRanges(
       // rows are ignored: they mean the pair never fired (slippage-cancel,
       // sizing-fail, orphan cleanup before fill) so the symbol still deserves
       // a fresh try today.
-      const existing = await prisma.breakoutLiveTradeC.findFirst({
+      //
+      // ALSO skip if there's a still-OPEN row from ANY prior UTC date — that's a
+      // legacy position EOD-FLAT failed to close (e.g. yesterday on testnet -2022
+      // before the safe-helper fix). In one-way mode a new same-side entry would
+      // MERGE on Binance, and the new row's closePosition SL placement would be
+      // rejected with -4130 ("closePosition in the direction is existing") →
+      // naked position. Observed 2026-05-29 USELESSUSDT #32343 (legacy) + #32389
+      // (today's, no SL ever placed). Telegram alert so operator can clean up.
+      const todayExisting = await prisma.breakoutLiveTradeC.findFirst({
         where: {
           symbol,
           openedAt: { gte: todayStartUtc },
           NOT: { status: 'CANCELLED' },
         },
       })
-      if (existing) continue
+      if (todayExisting) continue
+      const legacyOpen = await prisma.breakoutLiveTradeC.findFirst({
+        where: {
+          symbol,
+          openedAt: { lt: todayStartUtc },
+          status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] },
+        },
+        select: { id: true, openedAt: true },
+      })
+      if (legacyOpen) {
+        console.warn(`${LOG} ${symbol} placement blocked — legacy OPEN row #${legacyOpen.id} from ${legacyOpen.openedAt.toISOString()} not closed by EOD. Manual cleanup required.`)
+        await recordAttempt({
+          symbol, side: 'BUY', rangeDate: utcDate,
+          status: 'SKIPPED_FILTER',
+          reasonCode: 'legacyOpen',
+          reasonText: `legacy OPEN row #${legacyOpen.id} from ${legacyOpen.openedAt.toISOString().slice(0,10)} not closed by EOD`,
+        })
+        continue
+      }
 
       // Live C trades on Binance — use Binance klines for range detection so
       // rangeHigh/rangeLow match the order book we're placing limits into.
