@@ -818,15 +818,27 @@ async function finalizeOrphanRow(
     ? avgFillPrice > trade.entryPrice
     : avgFillPrice < trade.entryPrice
   const ladder = ((trade.tpLadder as number[]) ?? []) as number[]
+  // How many TP rungs already fired (recorded in priorCloses). The residual can
+  // only have hit a rung ABOVE those — it can never re-hit an already-taken TP.
+  // The OLD logic picked the globally-nearest rung, so a runner that took TP1
+  // then pulled back toward BE before the residual closed got re-labelled as a
+  // second "TP1" → "TP1 → TP1" in the UI (POL #38200, SIREN #38207, VVV #38202).
+  // Restrict candidates to the not-yet-taken tail AND require the fill to have
+  // actually reached the rung (price at/beyond it in the TP direction). If the
+  // residual closed short of the next rung it was a trailing-stop exit, not a
+  // TP → 'SL', which buildOutcomeLabel renders as "TP1 → SL@BE" / "→ SL@TP1".
+  const takenTps = priorCloses.filter(
+    (c: any) => typeof c?.reason === 'string' && c.reason.startsWith('TP'),
+  ).length
   let inferredReason: 'SL' | 'TP1' | 'TP2' | 'TP3' = 'SL'
-  if (residualRealizedPnl > 0 && isTpDirection && ladder.length > 0) {
-    let bestIdx = 0
-    let bestDist = Infinity
-    for (let i = 0; i < ladder.length; i++) {
-      const d = Math.abs(ladder[i] - avgFillPrice)
-      if (d < bestDist) { bestDist = d; bestIdx = i }
+  if (residualRealizedPnl > 0 && isTpDirection && ladder.length > takenTps) {
+    // Highest not-yet-taken rung the fill actually reached.
+    let reachedIdx = -1
+    for (let i = takenTps; i < ladder.length; i++) {
+      const reached = isLong ? avgFillPrice >= ladder[i] : avgFillPrice <= ladder[i]
+      if (reached) reachedIdx = i
     }
-    inferredReason = (`TP${bestIdx + 1}` as 'TP1' | 'TP2' | 'TP3')
+    if (reachedIdx >= 0) inferredReason = (`TP${reachedIdx + 1}` as 'TP1' | 'TP2' | 'TP3')
   }
 
   await prisma.breakoutLiveTradeC.update({
@@ -906,13 +918,35 @@ async function handleFlippedPosition(
     console.warn(`${LOG} flip #${trade.id} ${trade.symbol}: no filter — can't close naked leg`)
   }
 
-  const priorCloses = ((trade.closes as any[]) ?? []) as Array<{ percent?: number }>
+  const priorCloses = ((trade.closes as any[]) ?? []) as Array<{ percent?: number; reason?: string }>
   const priorPercent = priorCloses.reduce((a, c) => a + (c?.percent ?? 0), 0)
   const residualPercent = Math.max(0, 100 - priorPercent)
+  const residualFrac = residualPercent / 100
+
+  // P&L for the strategy-attributable leg. The OLD code recorded 0 here, arguing
+  // the naked flipped leg's loss is "exchange-side noise". But the ORIGINAL
+  // position did take a real stop when the STOP_MARKET executed (entry →
+  // currentStop): that loss already hit the wallet. Recording 0 under-reports
+  // the row and inflates the equity-curve "прочее" residual (Δwallet vs Σ rows).
+  // Reconstruct it from geometry the same way handleSlOrderUpdate does:
+  //   - bare flip (no prior TP)  → currentStop == initialStop → full ≈ −1R loss
+  //   - flip after TP1/TP2       → currentStop trailed to BE / TP1 → ≈ 0 residual
+  // The post-flip naked-leg fill stays out of the row (it's the part we genuinely
+  // can't attribute); this only books the original position's stop result.
+  const isLong = trade.side === 'BUY'
+  const stop = trade.currentStop ?? trade.initialStop ?? trade.entryPrice
+  const grossPnl = (isLong ? stop - trade.entryPrice : trade.entryPrice - stop)
+    * (trade.positionUnits ?? 0) * residualFrac
+  const priorTps = priorCloses.filter(
+    (c) => typeof c?.reason === 'string' && c.reason.startsWith('TP'),
+  ).length
   await prisma.breakoutLiveTradeC.update({
     where: { id: trade.id },
     data: {
-      status: 'CLOSED',
+      // Match applyVirtualClose: bare SL (no prior TP) terminalises as SL_HIT
+      // (red badge, consistent with sibling stops); a flip after a partial TP
+      // is a trailing-stop close → CLOSED (renders "TP1 → SL@BE").
+      status: priorTps === 0 ? 'SL_HIT' : 'CLOSED',
       closedAt: new Date(),
       binanceSlOrderId: null,
       binanceTpOrderIds: [] as any,
@@ -920,9 +954,9 @@ async function handleFlippedPosition(
         ? [
             ...priorCloses,
             {
-              price: trade.entryPrice,
+              price: stop,
               percent: residualPercent,
-              pnlUsd: 0,
+              pnlUsd: grossPnl,
               feePaidUsd: 0,
               reason: 'SL',
               reasonNote: 'flip-auto-cleanup',

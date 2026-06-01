@@ -43,7 +43,13 @@ export function buildOutcomeLabel(
 ): string {
   const arr = closes ?? []
   const reasons = arr.map(c => c.reason).filter(Boolean) as string[]
-  const tps = reasons.filter(r => r === 'TP1' || r === 'TP2' || r === 'TP3')
+  // Collapse consecutive duplicate TP rungs. Legacy reconciled rows (before the
+  // finalizeOrphanRow rung-aware fix) stored a runner's trailing-stop exit as a
+  // second identical TP → closes=[TP1, TP1] rendered "TP1 → TP1". A genuine
+  // ladder is strictly ascending (TP1→TP2→TP3) so a repeat is always an
+  // artefact; TP1→TP2→TP1 (SL trailed to TP1) isn't consecutive, so it survives.
+  const tpsRaw = reasons.filter(r => r === 'TP1' || r === 'TP2' || r === 'TP3')
+  const tps = tpsRaw.filter((r, i) => i === 0 || r !== tpsRaw[i - 1])
   const finalReason = reasons[reasons.length - 1]
   const finalNote = arr[arr.length - 1]?.reasonNote
 
