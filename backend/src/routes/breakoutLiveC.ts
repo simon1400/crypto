@@ -22,7 +22,7 @@ import {
 } from '../services/exchanges/binanceFutures'
 import { refreshLiveBalance } from './_liveBalanceShared'
 import { buildSharedReadHandlers } from './breakoutPaper/index'
-import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot, attachMissingSlTp, sendLiveCEodSummary, getLiveGuards, reconcileClosedPositionsLiveC, closeUntrackedPositions } from '../services/dailyBreakoutLiveC'
+import { flattenAllOpenLiveC, flattenOneOpenLiveC, getLiveSnapshot, attachMissingSlTp, sendLiveCEodSummary, getLiveGuards, reconcileClosedPositionsLiveC, closeUntrackedPositions, restartBreakoutLiveTraderC } from '../services/dailyBreakoutLiveC'
 
 // Re-export so existing import paths (`from './breakoutLiveC'`) keep working.
 export { refreshLiveBalance }
@@ -531,8 +531,24 @@ router.post('/switch-network', async (req, res) => {
         totalLosses: 0,
         totalPnLUsd: 0,
         totalFundingUsd: 0,
+        // CRITICAL (2026-06-06): also wipe the per-day equity history and EOD
+        // marker. They belong to the OLD net — leaving testnet's
+        // eodEquityByDate behind makes the breaker read yesterday's testnet SOD
+        // (e.g. $4885) against the new net's real $100 wallet → instant "-98%
+        // day" trip on the first trade. lastEodReportDate likewise must reset
+        // so the new net's first EOD summary isn't suppressed as a duplicate.
+        eodEquityByDate: {},
+        lastEodReportDate: null,
       },
     })
+
+    // CRITICAL (2026-06-06): restart the trader so it reconnects with the
+    // freshly-selected net's creds. Without this the running process keeps its
+    // OLD client (WS + REST + snapshot + order routing) — the config flips to
+    // prod but the bot keeps trading on testnet. Symptom we hit: net="prod" in
+    // /status yet $5837 testnet balance + testnet positions, real $100 untouched.
+    await restartBreakoutLiveTraderC().catch((e) =>
+      console.error('[BreakoutLiveC] switch-network: trader restart failed:', e?.message ?? e))
 
     res.json({
       ok: true,
