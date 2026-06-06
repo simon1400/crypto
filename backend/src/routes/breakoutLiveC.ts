@@ -488,9 +488,18 @@ router.post('/switch-network', async (req, res) => {
       try {
         const client = getBinanceClient(creds)
         const positions = await client.getOpenPositions().catch(() => null)
-        if (positions && positions.length > 0) {
+        // Ignore sub-min-notional dust (e.g. -0.001 ETH, 0.1 ORDI accumulated
+        // on testnet). Binance rejects any order on these with -4164 (notional
+        // below the ~$5 minimum), so they can NEVER be closed — gating the
+        // switch on them would lock the operator out of switching forever.
+        // Only real, closeable positions (notional ≥ $5) should block.
+        const real = (positions ?? []).filter((p) => {
+          const notional = Math.abs(Number(p.positionAmt)) * Number(p.entryPrice)
+          return notional >= 5
+        })
+        if (real.length > 0) {
           return res.status(400).json({
-            error: `Cannot switch: ${positions.length} position(s) still open on Binance ${net}. Close them first.`,
+            error: `Cannot switch: ${real.length} position(s) still open on Binance ${net}. Close them first.`,
           })
         }
       } catch {
