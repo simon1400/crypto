@@ -90,7 +90,17 @@ export async function placeTpsOnExchange(trade: any, onlyIdx?: ReadonlyArray<1 |
     const tpIdx = (i + 1) as 1 | 2 | 3
     if (onlyIdx && !onlyIdx.includes(tpIdx)) continue
     const qty = qtys[i]
-    if (qty < f.minQty) {
+    // TP3 is the terminal exit — place it as closePosition=true (same as SL)
+    // instead of reduceOnly+quantity. Rationale (2026-06-06):
+    //   - closePosition closes the ENTIRE remaining position on trigger → no
+    //     step-rounding dust left on the book after the final exit.
+    //   - It CANNOT flip the position (close-only at the matching-engine level),
+    //     so it's immune to the testnet reduceOnly-ignored flip bug for the
+    //     last leg. (TP1/TP2 stay reduceOnly+qty — they're genuinely partial.)
+    //   - No quantity → no -1111/-4005 step rejects, no minQty gate needed.
+    //   - Binance auto-cancels it once the position reaches 0 (e.g. SL fired).
+    const isFinal = tpIdx === 3
+    if (!isFinal && qty < f.minQty) {
       console.warn(`${LOG} placeTps #${trade.id} TP${tpIdx}: qty ${qty} < minQty ${f.minQty} — skipping`)
       continue
     }
@@ -106,10 +116,12 @@ export async function placeTpsOnExchange(trade: any, onlyIdx?: ReadonlyArray<1 |
           side: closeSide,
           type: 'TAKE_PROFIT_MARKET',
           triggerPrice,
-          quantity: qty,
-          reduceOnly: true,
           workingType: 'MARK_PRICE',
           clientAlgoId: tpClientId,
+          // Terminal leg → closePosition; partial legs → reduceOnly+quantity.
+          ...(isFinal
+            ? { closePosition: true }
+            : { quantity: qty, reduceOnly: true }),
         })
         placed.push({ tpIdx, algoId: String(r.algoId) })
         placedThis = true
@@ -248,14 +260,20 @@ export async function catchUpMissedTp(tradeId: number, tpIdx: 1 | 2 | 3): Promis
     return
   }
 
-  const splitFrac = SPLITS[tpIdx - 1] ?? 0
+  // TP3 closes the ENTIRE remaining position (mirrors its closePosition algo —
+  // 2026-06-06). For the catch-up MARKET we therefore size + record TP3 by the
+  // open remainder (1 − Σ prior closes), not the static 0.2. TP1/TP2 keep their
+  // fixed split.
+  let splitFrac = SPLITS[tpIdx - 1] ?? 0
+  if (tpIdx === 3) {
+    const closedFrac = closesArr.reduce((a, c) => a + ((c as any).percent ?? 0), 0) / 100
+    splitFrac = Math.max(0, 1 - closedFrac)
+  }
   if (splitFrac <= 0) return
 
   // Slice qty: same geometry as placeTpsOnExchange (positionUnits × split,
-  // floor to stepSize). TP3 falls back to remainder when called from the
-  // ladder; for catch-up we just use the static split — if TP1/TP2 already
-  // partially closed, exchange remaining < planned and the reduceOnly will
-  // clamp, but the algo-original split is the right number to record.
+  // floor to stepSize). The exchange-remaining cap below clamps it to what's
+  // actually open if TP1/TP2 already shaved the position.
   const step = f.stepSize
   let qty = Math.floor((fresh.positionUnits * splitFrac) / step) * step
   qty = Number(qty.toFixed(f.quantityPrecision))

@@ -406,7 +406,18 @@ async function handleTpOrderUpdate(
   // should sit — so passing the exact split here is correct even though Binance
   // could in theory deliver a partial fill (which we already gate against above
   // by requiring X === 'FILLED').
-  const splitFrac = SPLITS[tpIdx - 1] ?? 0
+  //
+  // TP3 is now a closePosition order (2026-06-06) — it closes the ENTIRE
+  // remaining position on trigger, not a fixed 20%. So its slice fraction is
+  // whatever's still open (1 − Σ prior closes): normally 0.2 after TP1+TP2, but
+  // 1.0 if mark jumped straight to TP3 and closePosition took the whole thing.
+  // Using the static 0.2 would under-report the closed percent on the row.
+  // (P&L is unaffected — closes[].pnlUsd is set from Binance's o.rp below.)
+  let splitFrac = SPLITS[tpIdx - 1] ?? 0
+  if (tpIdx === 3) {
+    const priorClosedFrac = closesArr.reduce((a, c) => a + (c.percent ?? 0), 0) / 100
+    splitFrac = Math.max(0, 1 - priorClosedFrac)
+  }
   const isLong = fresh.side === 'BUY'
   const initialRisk = Math.abs(fresh.entryPrice - fresh.initialStop)
   // pnlR rebuilt from triggerPrice for consistency with virtual path; the
