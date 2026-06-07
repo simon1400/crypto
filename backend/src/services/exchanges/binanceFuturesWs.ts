@@ -147,12 +147,19 @@ export class BinanceUserDataStream {
       console.log(`[BinanceWS user] connected (${this.opts.net})`)
       // Don't reset reconnectAttempt here — a connection that opens but
       // immediately drops would mask the issue. We reset on first real event.
-      // Refresh listenKey every 30 min (expires at 60 min).
+      // Refresh listenKey every 20 min (expires at 60 min). 20 (not 30) gives
+      // margin: if a couple of keepalives get swallowed by an IP-ban window
+      // (REST gated locally), later ones still land inside the 60-min window
+      // and the key survives. Root cause 2026-06-07: at 30-min cadence a single
+      // multi-minute ban could skip the only keepalive before expiry → the key
+      // died, every keepalive after returned -1125, and the WS became a zombie
+      // (TCP alive via pings, ZERO ORDER_TRADE_UPDATE pushes) so every SL/TP
+      // exit fell through to the 60s REST reconcile ("Reconciled exit" spam).
       if (this.keepaliveTimer) clearInterval(this.keepaliveTimer)
       this.keepaliveTimer = setInterval(() => {
         this.opts.client.keepaliveUserDataStream()
-          .catch((e) => console.warn('[BinanceWS user] keepalive failed:', e.message))
-      }, 30 * 60 * 1000)
+          .catch((e) => this.onKeepaliveError(e))
+      }, 20 * 60 * 1000)
       // Heartbeat watchdog: any inbound activity (message OR ping OR pong)
       // refreshes lastMessageAt. User-data may be genuinely silent for hours
       // when there's no order activity — Binance keeps the connection alive
@@ -174,6 +181,13 @@ export class BinanceUserDataStream {
         // First real payload → reset reconnect backoff. We treat any parsed
         // JSON event as proof the stream is healthy.
         if (this.reconnectAttempt !== 0) this.reconnectAttempt = 0
+        // Binance pushes 'listenKeyExpired' just before it stops serving this
+        // stream. The WS layer OWNS recovery here — mint a fresh key + reconnect
+        // immediately rather than waiting for the next keepalive to discover the
+        // key is dead. (Still forwarded to the consumer below, which just logs.)
+        if ((ev as any).e === 'listenKeyExpired') {
+          this.forceReconnect('listenKeyExpired event')
+        }
         Promise.resolve(this.opts.onEvent(ev)).catch((e) => {
           console.error('[BinanceWS user] handler error:', e.message)
         })
@@ -203,6 +217,56 @@ export class BinanceUserDataStream {
   private cleanupTimers(): void {
     if (this.keepaliveTimer) { clearInterval(this.keepaliveTimer); this.keepaliveTimer = null }
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null }
+  }
+
+  /**
+   * Classify a keepalive PUT failure and act:
+   *   -1125 "listenKey does not exist" → the key is DEAD (expired after a ban
+   *      blocked our keepalives, or was invalidated server-side). The socket is
+   *      now a zombie: still TCP-alive via protocol pings but Binance pushes no
+   *      order/account events on it. The heartbeat watchdog can't see this (pings
+   *      keep lastMessageAt fresh), so the keepalive failure is our ONLY signal.
+   *      Force a full reconnect to mint a fresh key.
+   *   418/-1003 (IP banned, REST gated locally) → can't POST a new key right now
+   *      anyway. Leave the socket up and schedule a prompt keepalive retry just
+   *      after the ban window so the key gets refreshed before it expires (rather
+   *      than waiting the full 20-min interval and risking expiry).
+   */
+  private onKeepaliveError(e: any): void {
+    if (this.stopped) return
+    const msg = e?.message ?? String(e)
+    if (msg.includes('-1125') || /listenKey does not exist/i.test(msg)) {
+      this.forceReconnect(`listenKey dead on keepalive (${msg.slice(0, 80)})`)
+      return
+    }
+    console.warn('[BinanceWS user] keepalive failed:', msg)
+    const banRem = (this.opts.client as any).banRemainingMs ?? 0
+    if (banRem > 0) {
+      setTimeout(() => {
+        if (this.stopped) return
+        this.opts.client.keepaliveUserDataStream().catch((e2) => this.onKeepaliveError(e2))
+      }, banRem + 1000)
+    }
+  }
+
+  /**
+   * Tear down the current socket and reconnect with a freshly-minted listenKey.
+   * Detaches the old ws (removeAllListeners so its 'close' doesn't double-schedule)
+   * then routes through scheduleReconnect → connect() which POSTs a new key. If
+   * we're inside a ban window connect() honors banRemainingMs and retries after
+   * it clears, so this self-heals without hammering the gate.
+   */
+  private forceReconnect(reason: string): void {
+    if (this.stopped) return
+    console.warn(`[BinanceWS user] forcing reconnect — ${reason}`)
+    this.cleanupTimers()
+    const old = this.ws
+    this.ws = null
+    if (old) {
+      try { old.removeAllListeners() } catch { /* noop */ }
+      try { old.terminate() } catch { /* noop */ }
+    }
+    this.scheduleReconnect()
   }
 
   private scheduleReconnect(minDelayMs = 0): void {
