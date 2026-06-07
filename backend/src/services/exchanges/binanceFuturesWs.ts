@@ -275,8 +275,8 @@ export class BinanceMarketDataStream {
     const toRm: string[] = []
     for (const s of want) if (!this.subscribed.has(s)) toAdd.push(s)
     for (const s of this.subscribed) if (!want.has(s)) toRm.push(s)
-    if (toAdd.length) this.send('SUBSCRIBE', toAdd.map((s) => `${s}@aggTrade`))
-    if (toRm.length) this.send('UNSUBSCRIBE', toRm.map((s) => `${s}@aggTrade`))
+    if (toAdd.length) this.send('SUBSCRIBE', toAdd.map((s) => `${s}@bookTicker`))
+    if (toRm.length) this.send('UNSUBSCRIBE', toRm.map((s) => `${s}@bookTicker`))
     for (const s of toAdd) this.subscribed.add(s)
     for (const s of toRm) this.subscribed.delete(s)
   }
@@ -300,10 +300,10 @@ export class BinanceMarketDataStream {
 
     ws.on('open', () => {
       console.log(`[BinanceWS market] connected (${this.opts.net})`)
-      // Reset on first parsed aggTrade — not on open. See user-data stream.
+      // Reset on first parsed tick — not on open. See user-data stream.
       // Re-subscribe previously tracked symbols.
       if (this.subscribed.size > 0) {
-        const params = Array.from(this.subscribed).map((s) => `${s}@aggTrade`)
+        const params = Array.from(this.subscribed).map((s) => `${s}@bookTicker`)
         try {
           ws.send(JSON.stringify({ method: 'SUBSCRIBE', params, id: this.msgId++ }))
         } catch { /* noop */ }
@@ -321,15 +321,29 @@ export class BinanceMarketDataStream {
       this.lastMessageAt = Date.now()
       try {
         const msg = JSON.parse(raw.toString()) as any
-        // Combined-stream payload shape: { stream: 'btcusdt@aggTrade', data: {...} }
+        // Combined-stream payload shape: { stream: 'btcusdt@bookTicker', data: {...} }
         const data = msg.data ?? msg
-        if (data?.e === 'aggTrade') {
+        // We subscribe to @bookTicker, NOT @aggTrade. Root cause 2026-06-07:
+        // on Binance PROD futures (fstream.binance.com) the aggTrade / markPrice
+        // / kline streams deliver ZERO messages to our server (connection opens,
+        // SUBSCRIBE acks, but no data ever pushes) — while @bookTicker streams
+        // thousands of bid/ask updates per second from the same socket. aggTrade
+        // worked on testnet, so this only surfaced after going live: the bot ran
+        // a full day with pending limits that never filled even though price
+        // crossed the levels. bookTicker's mid = (bid+ask)/2 is a fine fill
+        // reference (and a fine UI mark proxy); virtual-limit crossing logic in
+        // aggTrade.ts only needs a live price per symbol.
+        if (data?.e === 'bookTicker') {
           if (this.reconnectAttempt !== 0) this.reconnectAttempt = 0
           const sym = String(data.s).toUpperCase()
-          const price = Number(data.p)
-          const ts = Number(data.T)
-          Promise.resolve(this.opts.onAggTrade(sym, price, ts))
-            .catch((e) => console.error('[BinanceWS market] handler error:', e.message))
+          const bid = Number(data.b)
+          const ask = Number(data.a)
+          const price = (bid > 0 && ask > 0) ? (bid + ask) / 2 : (bid || ask)
+          const ts = Number(data.E) || Number(data.T) || 0
+          if (price > 0) {
+            Promise.resolve(this.opts.onAggTrade(sym, price, ts))
+              .catch((e) => console.error('[BinanceWS market] handler error:', e.message))
+          }
         }
       } catch { /* subscription ack or non-trade message */ }
     })
