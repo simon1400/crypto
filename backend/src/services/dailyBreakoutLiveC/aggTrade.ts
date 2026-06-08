@@ -24,6 +24,7 @@ import { recordAttempt } from './attempts'
 import { cancelPairOrder } from './wsHandlers'
 import { attachSlAfterEntry } from './exchangeSl'
 import { attachTpsAfterEntry } from './exchangeTp'
+import { confirmExitsOnPrice } from './priceExit'
 import { seedSnapshotFromRest } from './snapshot'
 import { getLeverageBrackets, bracketMaxLeverageFor } from './brackets'
 
@@ -48,12 +49,20 @@ export function handleAggTrade(sym: string, price: number, ts: number): void {
   if (now - last < TICK_THROTTLE_MS) return
   lastTickProcessedAt.set(sym, now)
 
-  // Fire-and-forget. Exit handling (SL/TP) is owned by Binance algo orders —
-  // STOP_MARKET + 3x TAKE_PROFIT_MARKET placed at entry, triggered by mark
-  // price. WS ORDER_TRADE_UPDATE fires handleSlOrderUpdate / handleTpOrderUpdate
-  // which write DB + Telegram + retrail SL on TP fills. We only watch
-  // aggTrade for ENTRY fills here.
+  // Fire-and-forget, two independent jobs (both throttled by the tick gate above):
+  //   1. ENTRY fills — cross of a PENDING_LIMIT level → MARKET open.
+  //   2. EXIT confirm (variant C) — exchange SL/TP algo orders close the position
+  //      by mark price, but on the prod Multi-Assets/BNFCR account the user-data
+  //      WS delivers ZERO order events (proven 2026-06-08), so handleSlOrderUpdate
+  //      / handleTpOrderUpdate never run. confirmExitsOnPrice uses this live
+  //      bookTicker price as a TRIGGER: when it crosses a trade's SL or next TP,
+  //      it spends one REST getOpenPositions to confirm + replays the exact same
+  //      DB/trailing path (applyVirtualClose / finalizeOrphanRow). The exchange
+  //      still does the actual close — this only confirms it in ~2s instead of
+  //      the 60s reconcile, and revives SL→BE trailing. See priceExit.ts.
   void processAggTradeForSymbol(sym, price, ts)
+  void confirmExitsOnPrice(sym, price).catch((e) =>
+    console.warn(`${LOG} confirmExitsOnPrice ${sym} threw: ${e?.message ?? e}`))
 }
 
 async function processAggTradeForSymbol(sym: string, price: number, ts: number): Promise<void> {

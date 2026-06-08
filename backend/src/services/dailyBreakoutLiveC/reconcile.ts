@@ -711,6 +711,57 @@ export async function reconcileClosedPositionsLiveC(
 }
 
 /**
+ * Single-row, on-demand version of reconcileClosedPositionsLiveC's per-row
+ * branch — used by the price-triggered exit confirm (variant C, priceExit.ts)
+ * so a closed position is finalized within ~2s of the price cross instead of
+ * waiting for the 60s cycle. Returns true if it finalized/flipped the row.
+ *
+ *   prefetched   — positions already fetched by the caller (zero extra REST).
+ *   notifyStyle  — 'live' renders a normal SL/TP exit card (price-confirmed),
+ *                  'reconciled' keeps the slow-catch-up badge.
+ *
+ * Only acts when the position is terminal (gone / sub-3%-dust / flipped). A
+ * partially-closed-but-still-open trade (e.g. 20% left after TP1+TP2) returns
+ * false here — the caller's TP path handles those.
+ */
+export async function reconcileOneClosedTrade(
+  client: BinanceFuturesClient,
+  tradeId: number,
+  prefetched?: Awaited<ReturnType<typeof client.getOpenPositions>>,
+  notifyStyle: 'reconciled' | 'live' = 'reconciled',
+): Promise<boolean> {
+  const t = await prisma.breakoutLiveTradeC.findUnique({ where: { id: tradeId } })
+  if (!t || !ACTIVE_STATUSES.includes(t.status as any)) return false
+
+  let positions = prefetched
+  if (!positions) {
+    try {
+      positions = await client.getOpenPositions()
+    } catch (e: any) {
+      console.warn(`${LOG} reconcileOne #${tradeId}: getOpenPositions failed: ${e.message}`)
+      return false
+    }
+  }
+  const pos = positions.find((p) => p.symbol === t.symbol)
+  const amt = pos ? Number(pos.positionAmt) : 0
+  const dbLong = t.side === 'BUY'
+  // Sub-3% of the ORIGINAL size = TP3 step-rounding dust → treat as closed.
+  const dust = t.positionUnits > 0 && Math.abs(amt) < t.positionUnits * 0.03
+
+  if (amt !== 0 && !dust && (amt > 0) === dbLong) return false // still genuinely open
+  if (amt !== 0 && !dust && (amt > 0) !== dbLong) {
+    await handleFlippedPosition(client, t, amt)
+    return true
+  }
+  await finalizeOrphanRow(client, t, notifyStyle)
+  try {
+    const { recomputeLiveCStats } = await import('./virtualSltp')
+    await recomputeLiveCStats()
+  } catch { /* best-effort */ }
+  return true
+}
+
+/**
  * Finalize one DB row whose exchange position is gone. Read all userTrades
  * since openedAt, sum the closing-side fills, and persist as a single
  * RECONCILED close entry. Cancel any leftover SL/TP algo orders best-effort.
@@ -718,6 +769,7 @@ export async function reconcileClosedPositionsLiveC(
 async function finalizeOrphanRow(
   client: BinanceFuturesClient,
   trade: any,
+  notifyStyle: 'reconciled' | 'live' = 'reconciled',
 ): Promise<void> {
   // Tolerate clock skew + funding events around openedAt; cap at 7 days to
   // bound the response size (Binance returns up to 1000 fills per call).
@@ -870,18 +922,30 @@ async function finalizeOrphanRow(
 
   console.log(`${LOG} reconcileClosed: finalized #${trade.id} ${trade.symbol} via Binance userTrades — closing qty=${totQty} avgPx=${avgFillPrice} commission=${totCommission.toFixed(4)} realizedPnl=${totRealizedPnl.toFixed(4)}`)
 
-  // Telegram notify so the user sees the recovery happened. Mirrors the format
-  // notifyExitTelegram uses but with a reconcile badge so it's clear this
-  // wasn't a real-time WS-driven close.
+  // Telegram notify so the user sees the close happened.
   const netPnl = residualRealizedPnl - residualFees
-  const sign = netPnl >= 0 ? '+' : '−'
-  await sendLiveTelegram([
-    `♻ <b>Reconciled exit</b>  · #${trade.id} ${trade.symbol} ${trade.side}`,
-    `━━━━━━━━━━━━━━━━━━`,
-    `Биржа закрыла позицию (${inferredReason}); WS-событие не пришло, восстановлено по userTrades.`,
-    `Цена: <code>${avgFillPrice.toFixed(8).replace(/0+$/, '').replace(/\.$/, '')}</code>`,
-    `P&L: <b>${sign}$${Math.abs(netPnl).toFixed(2)}</b>  (комиссия ${residualFees.toFixed(2)}$)`,
-  ].join('\n')).catch(() => { /* best-effort */ })
+  if (notifyStyle === 'live') {
+    // Price-confirmed real-time exit (variant C) — render the normal SL/TP exit
+    // card (🛑 SL@BE / ✅ TP3 …) instead of the reconcile badge. notifyExitTelegram
+    // reads the freshly-recomputed row, so it shows the same numbers as the UI.
+    const residualFrac = (residualPercent > 1e-6 ? residualPercent : 100) / 100
+    try {
+      const { notifyExitTelegram } = await import('./virtualSltp')
+      await notifyExitTelegram(trade.id, inferredReason, avgFillPrice, residualFrac, netPnl, false)
+    } catch (e: any) {
+      console.warn(`${LOG} finalizeOrphanRow live-notify #${trade.id} failed: ${e?.message ?? e}`)
+    }
+  } else {
+    // Slow 60s catch-up — make it explicit this wasn't a real-time close.
+    const sign = netPnl >= 0 ? '+' : '−'
+    await sendLiveTelegram([
+      `♻ <b>Reconciled exit</b>  · #${trade.id} ${trade.symbol} ${trade.side}`,
+      `━━━━━━━━━━━━━━━━━━`,
+      `Биржа закрыла позицию (${inferredReason}); WS-событие не пришло, восстановлено по userTrades.`,
+      `Цена: <code>${avgFillPrice.toFixed(8).replace(/0+$/, '').replace(/\.$/, '')}</code>`,
+      `P&L: <b>${sign}$${Math.abs(netPnl).toFixed(2)}</b>  (комиссия ${residualFees.toFixed(2)}$)`,
+    ].join('\n')).catch(() => { /* best-effort */ })
+  }
 }
 
 /**
