@@ -212,12 +212,17 @@ export async function notifyExitTelegram(
         `Σ сделка  <b>${fmtPnl(tradeNet)}</b>  <i>(вкл. entry fee)</i>`,
       ]
 
+  const walletAfter = snapshot.current?.total
+  const depoLine = walletAfter != null
+    ? `💼 Депо   <code>$${walletAfter.toFixed(2)}</code>`
+    : null
+
   sendLiveTelegram([
     `${emoji} <b>${t.symbol}</b> <b>${reasonLabel}</b>  · ${headerSuffix}`,
     `━━━━━━━━━━━━━━━━━━`,
-    `💰 Цена   <code>${fmtPrice(fillPrice)}</code>`,
     `📊 Закрыто  ${Math.round(frac * 100)}%`,
     ...pnlLines,
+    ...(depoLine ? [depoLine] : []),
     `🛡 ${trailNote}`,
   ].join('\n'))
 }
