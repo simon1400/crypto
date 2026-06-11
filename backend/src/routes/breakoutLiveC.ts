@@ -256,6 +256,16 @@ router.get('/status', async (req, res) => {
     })
     const pendingOrders = new Set(pendingRows.map((r) => r.symbol)).size
 
+    // Symbols with an ACTIVE DB row (OPEN/TP1_HIT/TP2_HIT). A partially-closed
+    // position (TP2_HIT) may have <$5 notional left yet is a legit live trade —
+    // it must still be counted as an exchange position. The bare $5 dust filter
+    // below would otherwise drop it and read as "биржа N, БД N+1" drift.
+    const activeDbRows = await prisma.breakoutLiveTradeC.findMany({
+      where: { status: { in: ['OPEN', 'TP1_HIT', 'TP2_HIT'] } },
+      select: { symbol: true },
+    })
+    const activeDbSymbols = new Set(activeDbRows.map((r) => r.symbol))
+
     // Conditional TP/SL list — fetched ONLY on explicit ?refresh=1. The auto
     // 5-min TTL fallback was removed 2026-05-27 per user request: every
     // /status poll (every 10s) refreshing algos at TTL expiry contributed
@@ -330,7 +340,14 @@ router.get('/status', async (req, res) => {
       // testnet flip cleanups that can't be closed via order: reduceOnly -2022,
       // plain MARKET -4164). Counting it inflates "biржа N" vs "БД M" and reads
       // as drift to the user. $5 threshold matches reconcile.ts survivor filter.
-      openPositions: snap.positions.filter((p) => Math.abs(p.positionAmt) * (p.markPrice || p.entryPrice) >= 5).length,
+      // BUT always count a position whose symbol has an active DB row — a TP2_HIT
+      // trade can have <$5 left and is still a real live position (the dust filter
+      // is only meant to drop orphan zombies with NO DB row).
+      openPositions: snap.positions.filter(
+        (p) =>
+          activeDbSymbols.has(p.symbol) ||
+          Math.abs(p.positionAmt) * (p.markPrice || p.entryPrice) >= 5
+      ).length,
       openOrders: pendingOrders,
       snapshotAge: Date.now() - snap.updatedAt,
       snapshotSource: snap.source,
