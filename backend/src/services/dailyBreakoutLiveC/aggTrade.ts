@@ -403,6 +403,43 @@ async function tryFillVirtualLimit(trade: any, price: number, ts: number): Promi
       return
     }
 
+    // REST refine of the exact avg fill. On the prod account the user-data WS
+    // delivers ZERO ORDER_TRADE_UPDATE events (Multi-Assets mode, see
+    // priceExit.ts), so handleEntryFillUpdate never refines entryPrice and it
+    // would stay at the bookTicker trigger price forever. That shifted the
+    // TP1→BE trail by the entry slippage (#49182 TRUMP 2026-06-11: trigger
+    // 1.669, real avg fill 1.67 → "BE" stop one tick under true break-even).
+    // The synchronous placeOrder response has avgPrice="0", but GET
+    // /fapi/v1/order indexes the fill within ~1s — query each leg by its cid
+    // and take the qty-weighted avg. Best-effort: on lookup failure we keep
+    // the tick placeholder (boot reconcile heals it later).
+    const legCids = chunks.length === 1 ? [entryCid] : chunks.map((_, i) => `${entryCid}_${i + 1}`)
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await new Promise((res) => setTimeout(res, attempt === 1 ? 500 : 1000))
+      if (!state.current) break
+      let restQty = 0
+      let restNotional = 0
+      try {
+        for (const cid of legCids) {
+          const o = await state.current.client.getOrder(trade.symbol, { origClientOrderId: cid })
+          const q = Number(o.executedQty)
+          const ap = Number(o.avgPrice)
+          if (q > 0 && ap > 0) {
+            restQty += q
+            restNotional += ap * q
+          }
+        }
+      } catch (e: any) {
+        console.warn(`${LOG} fillVirtual #${trade.id} ${trade.symbol} avgPrice lookup attempt ${attempt} failed: ${e?.message ?? e}`)
+        continue
+      }
+      if (restQty > 0) {
+        fillPrice = restNotional / restQty
+        fillQty = restQty
+        break
+      }
+    }
+
     const fillTime = new Date(ts)
     // Race protection: handleEntryFillUpdate can fire (via WS ORDER_TRADE_UPDATE)
     // before this row update completes — it sets binanceOrderId + exact entryPrice

@@ -21,7 +21,7 @@ import type { BinanceFuturesClient, UserTrade } from '../exchanges/binanceFuture
 import { BinanceApiError } from '../exchanges/binanceFutures'
 import { LOG, state, ACTIVE_STATUSES } from './state'
 import { getFilters } from './filters'
-import { attachSlAfterEntry, cancelSlOnExchange } from './exchangeSl'
+import { attachSlAfterEntry, cancelSlOnExchange, retrailSlOnExchange } from './exchangeSl'
 import { attachTpsAfterEntry, cancelAllTpsOnExchange } from './exchangeTp'
 import { sendLiveTelegram } from './telegram'
 import { closeFullPositionMarket } from './closeHelper'
@@ -150,15 +150,27 @@ export async function reconcileWithExchange(client: BinanceFuturesClient): Promi
         if (driftPct > 0.0005) {
           const newSize = exchangePos.entryPrice * t.positionUnits
           const newMargin = t.leverage ? newSize / t.leverage : t.marginUsd
+          // If the SL was already trailed to break-even (TP1_HIT sets
+          // currentStop = entryPrice as of that moment), this heal moves the
+          // entry out from under it — drag the stop along and retrail the
+          // exchange algo, otherwise "BE" stays at the stale trigger price one
+          // entry-slippage below true break-even (#49182 TRUMP 2026-06-11).
+          const wasBeStop = t.status === 'TP1_HIT'
+            && Math.abs(t.currentStop - t.entryPrice) <= t.entryPrice * 1e-6
           await prisma.breakoutLiveTradeC.update({
             where: { id: t.id },
             data: {
               entryPrice: exchangePos.entryPrice,
               positionSizeUsd: newSize,
               marginUsd: newMargin,
+              ...(wasBeStop ? { currentStop: exchangePos.entryPrice } : {}),
             },
           }).catch((e) => console.warn(`${LOG} reconcile: heal entryPrice #${t.id} failed: ${e?.message ?? e}`))
-          console.log(`${LOG} reconcile: #${t.id} ${t.symbol} entryPrice drift ${t.entryPrice} → ${exchangePos.entryPrice} (${(driftPct * 100).toFixed(2)}%) — healed`)
+          console.log(`${LOG} reconcile: #${t.id} ${t.symbol} entryPrice drift ${t.entryPrice} → ${exchangePos.entryPrice} (${(driftPct * 100).toFixed(2)}%) — healed${wasBeStop ? ' + BE stop dragged along' : ''}`)
+          if (wasBeStop) {
+            await retrailSlOnExchange(t.id).catch((e) =>
+              console.warn(`${LOG} reconcile: BE-stop retrail #${t.id} failed: ${e?.message ?? e}`))
+          }
         }
       }
       continue
